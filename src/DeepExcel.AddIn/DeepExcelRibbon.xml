@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ribbon>
+  <tabs>
+    <tab id="tabDeepExcel" label="DeepExcel">
+      <group id="grpAgent" label="Agent">
+        <button id="btnOpenPanel" label="打开面板" onAction="OpenPanelButton_Click" size="large" />
+        <button id="btnHelp" label="帮助" onAction="HelpButton_Click" size="normal" />
+      </group>
+    </tab>
+  </tabs>
+</ribbon>

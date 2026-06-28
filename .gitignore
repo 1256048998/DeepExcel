@@ -1,0 +1,59 @@
+# ===== 编译产物 =====
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+*.dll
+*.exe
+*.pdb
+
+# ===== NuGet 包 =====
+packages/
+nuget.exe
+
+# ===== 日志与临时文件 =====
+*.log
+com_test.log
+test_com.vbs
+
+# ===== 临时测试文件（下划线前缀） =====
+_test_*.py
+_test_*.ps1
+_decrypt_key.ps1
+_check_*.py
+_check_*.ps1
+_kill_orphans.ps1
+
+# ===== 临时编译测试 =====
+TestCom.*
+TestCom2.*
+TestMinimal.*
+QiTest.*
+
+# ===== 凭证与敏感数据 =====
+**/credentials/
+*.crypt
+key_*.crypt
+config.json
+
+# ===== IDE =====
+.vs/
+.idea/
+*.user
+*.suo
+
+# ===== 前端 =====
+src/DeepExcel.UI/node_modules/
+src/DeepExcel.UI/dist/
+src/DeepExcel.AddIn/WebViewAssets/assets/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# ===== 系统文件 =====
+Thumbs.db
+.DS_Store
