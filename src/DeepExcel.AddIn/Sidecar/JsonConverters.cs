@@ -61,14 +61,43 @@ namespace DeepExcel.AddIn.Sidecar
                 writer.WriteStartArray();
                 for (int j = colStart; j <= colEnd; j++)
                 {
-                    var item = value[i, j];
+                    T item;
+                    try
+                    {
+                        item = value[i, j];
+                    }
+                    catch
+                    {
+                        // 极端情况：越界访问（理论上不应发生，防御性编程）
+                        writer.WriteNullValue();
+                        continue;
+                    }
+
                     if (item == null)
                     {
                         writer.WriteNullValue();
                     }
+                    else if (item is string || item is int || item is long || item is double ||
+                             item is float || item is decimal || item is bool || item is DateTime)
+                    {
+                        // 基础类型直接写入，避免递归到 ObjectDefaultConverter
+                        JsonSerializer.Serialize(writer, item, item.GetType(), options);
+                    }
                     else
                     {
-                        JsonSerializer.Serialize(writer, item, item.GetType(), options);
+                        // ★ 非 base type 的元素（可能是 COM 对象如 Excel ErrorValue、嵌套 Range 等）
+                        // 强制转为字符串，避免递归序列化导致 IndexOutOfRangeException 或死循环。
+                        // 这是 range.Value2 返回的二维数组中元素可能不是基础类型的兜底处理。
+                        string strVal;
+                        try
+                        {
+                            strVal = item.GetType().IsValueType ? Convert.ToString(item) : item.ToString();
+                        }
+                        catch
+                        {
+                            strVal = item.GetType().Name;
+                        }
+                        writer.WriteStringValue(strVal);
                     }
                 }
                 writer.WriteEndArray();

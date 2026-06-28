@@ -19,6 +19,14 @@ namespace DeepExcel.AddIn.Sidecar
         private readonly Application _excelApp;
 
         /// <summary>
+        /// read_range 返回的最大行数限制。
+        /// Claude Agent SDK 内部消息缓冲区限制 1MB（1048576 bytes），
+        /// 超过会导致 "JSON message exceeded maximum buffer size" 崩溃。
+        /// 200 行 × 20 列 × 平均 30 字节 ≈ 120KB，留足余量。
+        /// </summary>
+        private const int MaxReadRangeRows = 200;
+
+        /// <summary>
         /// 共享的 JSON 序列化选项：注册 2D 数组转换器，避免序列化 RangeInfo 时崩溃。
         /// </summary>
         private static readonly JsonSerializerOptions _jsonOptions = BuildJsonOptions();
@@ -60,11 +68,16 @@ namespace DeepExcel.AddIn.Sidecar
                     case "read_range":
                         var address = GetArg<string>(args, "address");
                         var rangeData = _excel.ReadRange(address);
+                        // ★ Claude Agent SDK 内部消息缓冲区限制 1MB（1048576 bytes），
+                        // read_range 返回的 Values/Formulas 二维数组序列化后可能超过此限制，
+                        // 导致 SDK 抛 "JSON message exceeded maximum buffer size" 崩溃。
+                        // 解决：对超过 MaxRows 的数据截断，并附加 truncated 标志告知模型。
+                        var truncatedData = TruncateRangeData(rangeData, MaxReadRangeRows);
                         return new ToolResult
                         {
                             Name = toolName,
                             Success = true,
-                            Data = rangeData,
+                            Data = truncatedData,
                             Suggestion = GenerateRangeSuggestion(rangeData),
                             Context = BuildExcelSnapshot(),
                         };
@@ -139,6 +152,40 @@ namespace DeepExcel.AddIn.Sidecar
                     case "execute_python":
                         var pyCode = GetArg<string>(args, "code");
                         return _excel.ExecutePython(pyCode);
+
+                    case "add_sheet":
+                        return _excel.AddSheet(GetArg<string>(args, "name"));
+
+                    case "delete_sheet":
+                        return _excel.DeleteSheet(GetArg<string>(args, "name"));
+
+                    case "rename_sheet":
+                        return _excel.RenameSheet(
+                            GetArg<string>(args, "old_name"),
+                            GetArg<string>(args, "new_name"));
+
+                    case "set_number_format":
+                        return _excel.SetNumberFormat(
+                            GetArg<string>(args, "address"),
+                            GetArg<string>(args, "format"));
+
+                    case "set_column_width":
+                        return _excel.SetColumnWidth(
+                            GetArg<string>(args, "address"),
+                            GetArg<double>(args, "width"),
+                            GetArg<bool>(args, "auto_fit"));
+
+                    case "sort_data":
+                        return _excel.SortData(
+                            GetArg<string>(args, "range_address"),
+                            GetArg<string>(args, "sort_column"),
+                            GetArg<bool>(args, "descending"));
+
+                    case "filter_data":
+                        return _excel.FilterData(
+                            GetArg<string>(args, "range_address"),
+                            GetArg<int>(args, "column_index"),
+                            GetArg<string>(args, "criteria"));
 
                     case "create_snapshot":
                         var snapshotId = _excel.CreateSnapshot();
@@ -245,41 +292,135 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         /// <summary>
-        /// read_range 返回数据的类型检测：检测到 text/mixed 时返回澄清提示
+        /// 截断 RangeInfo 的二维数组到 MaxRows 行，避免 SDK 1MB 消息缓冲区限制。
+        /// 返回一个动态对象（包含截断标志和原始行数），供序列化发送给 sidecar。
+        /// </summary>
+        private object TruncateRangeData(object rangeData, int maxRows)
+        {
+            if (rangeData == null) return null;
+
+            try
+            {
+                var type = rangeData.GetType();
+
+                // 通过反射读取字段（避免直接依赖 RangeInfo 类型）
+                var addressProp = type.GetProperty("Address");
+                var wsProp = type.GetProperty("WorksheetName");
+                var rowProp = type.GetProperty("RowCount");
+                var colProp = type.GetProperty("ColumnCount");
+                var valuesProp = type.GetProperty("Values");
+                var formulasProp = type.GetProperty("Formulas");
+                var numFmtProp = type.GetProperty("NumberFormats");
+
+                int originalRows = (int)(rowProp?.GetValue(rangeData) ?? 0);
+                int cols = (int)(colProp?.GetValue(rangeData) ?? 0);
+
+                // 不需要截断
+                if (originalRows <= maxRows)
+                {
+                    return rangeData;
+                }
+
+                Logger.Instance.Info("ToolDispatcher",
+                    $"TruncateRangeData: originalRows={originalRows}, maxRows={maxRows}, truncating");
+
+                // 截断二维数组
+                object[,] origValues = valuesProp?.GetValue(rangeData) as object[,];
+                string[,] origFormulas = formulasProp?.GetValue(rangeData) as string[,];
+                string[,] origNumFmt = numFmtProp?.GetValue(rangeData) as string[,];
+
+                int rowStart = origValues?.GetLowerBound(0) ?? 0;
+                int colStart = origValues?.GetLowerBound(1) ?? 0;
+
+                var newValues = new object[maxRows, cols];
+                var newFormulas = origFormulas != null ? new string[maxRows, cols] : null;
+                var newNumFmt = origNumFmt != null ? new string[maxRows, cols] : null;
+
+                for (int i = 0; i < maxRows; i++)
+                {
+                    for (int j = 0; j < cols; j++)
+                    {
+                        if (origValues != null)
+                            newValues[i, j] = origValues[rowStart + i, colStart + j];
+                        if (newFormulas != null)
+                            newFormulas[i, j] = origFormulas[rowStart + i, colStart + j];
+                        if (newNumFmt != null)
+                            newNumFmt[i, j] = origNumFmt[rowStart + i, colStart + j];
+                    }
+                }
+
+                // 返回截断后的匿名对象（保持与 RangeInfo 相同的字段名）
+                return new
+                {
+                    Address = addressProp?.GetValue(rangeData),
+                    WorksheetName = wsProp?.GetValue(rangeData),
+                    RowCount = maxRows,
+                    ColumnCount = cols,
+                    Values = newValues,
+                    Formulas = newFormulas,
+                    NumberFormats = newNumFmt,
+                    // 截断标志：告知模型数据被截断，原始行数
+                    truncated = true,
+                    original_row_count = originalRows,
+                    truncation_hint = $"数据超过 {maxRows} 行被截断。如需查看后续数据，请用更精确的地址（如 A201:B400）再次调用 read_range。",
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ToolDispatcher", "TruncateRangeData failed, returning original", ex);
+                return rangeData;
+            }
+        }
+
+        /// <summary>
+        /// read_range 返回数据的类型检测：检测到 text/mixed 时返回澄清提示。
+        /// ★ 直接从 RangeInfo 对象读取，不序列化整个对象（避免 2D 数组序列化崩溃）。
         /// </summary>
         private string GenerateRangeSuggestion(object rangeData)
         {
             try
             {
-                // rangeData 是 RangeInfo/匿名对象，序列化为 JSON 再解析以提取 data_type
-                var json = JsonSerializer.Serialize(rangeData, _jsonOptions);
-                using var doc = JsonDocument.Parse(json);
-                var root = doc.RootElement;
+                // 尝试读取 RangeInfo.Values 进行类型检测
+                if (rangeData == null) return null;
 
-                if (root.TryGetProperty("data_type", out var dtEl))
+                // 通过反射读取 Values 属性（避免直接依赖 RangeInfo 类型）
+                var valuesProp = rangeData.GetType().GetProperty("Values");
+                if (valuesProp == null) return null;
+                var values = valuesProp.GetValue(rangeData) as object[,];
+                if (values == null) return null;
+
+                // 1-based 数组安全访问
+                int rowStart = values.GetLowerBound(0);
+                int rowEnd = values.GetUpperBound(0);
+                int colStart = values.GetLowerBound(1);
+                int colEnd = values.GetUpperBound(1);
+
+                bool hasNum = false, hasText = false, hasDate = false;
+                for (int i = rowStart; i <= rowEnd; i++)
                 {
-                    var dt = dtEl.GetString();
-                    if (dt == "text")
-                        return "该列是文本，无法直接求和。建议改用 COUNTA 计数，或确认是否要忽略文本。";
-                    if (dt == "mixed")
-                        return "该列同时包含数字和文本，无法直接求和。建议：求和(忽略文本)、计数(全部 COUNTA)、计数(仅数字 COUNT)";
-                    if (dt == "date")
-                        return "该列是日期，求和无意义。建议用 COUNTA 计数，或按日期分组。";
-                }
-                else if (root.TryGetProperty("cells", out var cellsEl))
-                {
-                    // 兜底：如果没有 data_type，自己检测
-                    bool hasNum = false, hasText = false;
-                    foreach (var cell in cellsEl.EnumerateArray())
+                    for (int j = colStart; j <= colEnd; j++)
                     {
-                        if (cell.ValueKind == JsonValueKind.Number) hasNum = true;
-                        else if (cell.ValueKind == JsonValueKind.String) hasText = true;
+                        var item = values[i, j];
+                        if (item == null) continue;
+                        if (item is double || item is int || item is long || item is decimal || item is float)
+                            hasNum = true;
+                        else if (item is DateTime)
+                            hasDate = true;
+                        else if (item is string)
+                            hasText = true;
+                        else if (item is bool)
+                            continue; // bool 不计入 text/num
+                        else
+                            hasText = true; // 其他类型按文本处理
                     }
-                    if (hasNum && hasText)
-                        return "该列同时包含数字和文本，无法直接求和。建议：求和(忽略文本)、计数(全部 COUNTA)、计数(仅数字 COUNT)";
-                    if (hasText && !hasNum)
-                        return "该列是文本，无法直接求和。建议改用 COUNTA 计数。";
                 }
+
+                if (hasDate && !hasNum && !hasText)
+                    return "该列是日期，求和无意义。建议用 COUNTA 计数，或按日期分组。";
+                if (hasNum && hasText)
+                    return "该列同时包含数字和文本，无法直接求和。建议：求和(忽略文本)、计数(全部 COUNTA)、计数(仅数字 COUNT)";
+                if (hasText && !hasNum)
+                    return "该列是文本，无法直接求和。建议改用 COUNTA 计数，或确认是否要忽略文本。";
             }
             catch (Exception ex)
             {

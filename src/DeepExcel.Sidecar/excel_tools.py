@@ -123,6 +123,66 @@ async def create_snapshot(args):
     return _wrap_result(result)
 
 
+@tool("add_sheet", "添加新的空白工作表（sheet）到当前工作簿", {"name": str})
+async def add_sheet(args):
+    result = await call_csharp("add_sheet", {"name": args["name"]})
+    return _wrap_result(result)
+
+
+@tool("delete_sheet", "删除指定名称的工作表", {"name": str})
+async def delete_sheet(args):
+    result = await call_csharp("delete_sheet", {"name": args["name"]})
+    return _wrap_result(result)
+
+
+@tool("rename_sheet", "重命名工作表", {"old_name": str, "new_name": str})
+async def rename_sheet(args):
+    result = await call_csharp("rename_sheet", {
+        "old_name": args["old_name"],
+        "new_name": args["new_name"],
+    })
+    return _wrap_result(result)
+
+
+@tool("set_number_format", "设置单元格区域的数字格式（如 #,##0.00 / 0% / yyyy-mm-dd）", {"address": str, "format": str})
+async def set_number_format(args):
+    result = await call_csharp("set_number_format", {
+        "address": args["address"],
+        "format": args["format"],
+    })
+    return _wrap_result(result)
+
+
+@tool("set_column_width", "设置列宽（auto_fit=True 时自动适应宽度，忽略 width）", {"address": str, "width": float, "auto_fit": bool})
+async def set_column_width(args):
+    result = await call_csharp("set_column_width", {
+        "address": args["address"],
+        "width": args.get("width", 10.0),
+        "auto_fit": args.get("auto_fit", False),
+    })
+    return _wrap_result(result)
+
+
+@tool("sort_data", "对指定区域排序（sort_column 可以是列字母如 'A' 或列序号如 '1'，descending=True 降序）", {"range_address": str, "sort_column": str, "descending": bool})
+async def sort_data(args):
+    result = await call_csharp("sort_data", {
+        "range_address": args["range_address"],
+        "sort_column": args["sort_column"],
+        "descending": args.get("descending", False),
+    })
+    return _wrap_result(result)
+
+
+@tool("filter_data", "对指定区域应用自动筛选（column_index 从 1 开始，criteria 如 '>100' 或 '北京'）", {"range_address": str, "column_index": int, "criteria": str})
+async def filter_data(args):
+    result = await call_csharp("filter_data", {
+        "range_address": args["range_address"],
+        "column_index": args["column_index"],
+        "criteria": args["criteria"],
+    })
+    return _wrap_result(result)
+
+
 @tool("rollback", "回滚到指定快照", {"snapshot_id": str})
 async def rollback(args):
     result = await call_csharp("rollback", {"snapshot_id": args["snapshot_id"]})
@@ -138,5 +198,8 @@ def register_all_tools() -> list:
         clean_data, create_chart, create_pivot_table,
         execute_vba, execute_python,
         create_snapshot, rollback,
+        add_sheet, delete_sheet, rename_sheet,
+        set_number_format, set_column_width,
+        sort_data, filter_data,
         clarify_intent,
     ]

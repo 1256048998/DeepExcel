@@ -259,11 +259,9 @@ namespace DeepExcel.AddIn.Executor
             sb.AppendLine("    result['__write_range'].append({'address': address, 'values': [[value]]})");
             sb.AppendLine();
 
-            sb.AppendLine("==========");
-            sb.AppendLine("# 用户代码开始");
+            sb.AppendLine("# ========== 用户代码开始 ==========");
             sb.AppendLine(userCode);
-            sb.AppendLine("# 用户代码结束");
-            sb.AppendLine("==========");
+            sb.AppendLine("# ========== 用户代码结束 ==========");
             sb.AppendLine();
 
             sb.AppendLine("# 输出结果");

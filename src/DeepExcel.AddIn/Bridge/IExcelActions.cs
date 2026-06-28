@@ -23,6 +23,19 @@ namespace DeepExcel.AddIn.Bridge
         ToolResult WriteFormula(string address, string formula);
         ToolResult WriteValue(string address, object value);
 
+        // Sheet 管理
+        ToolResult AddSheet(string name);
+        ToolResult DeleteSheet(string name);
+        ToolResult RenameSheet(string oldName, string newName);
+
+        // 格式化
+        ToolResult SetNumberFormat(string address, string format);
+        ToolResult SetColumnWidth(string address, double width, bool autoFit);
+
+        // 数据操作
+        ToolResult SortData(string rangeAddress, string sortColumn, bool descending);
+        ToolResult FilterData(string rangeAddress, int columnIndex, string criteria);
+
         // 安全类
         string CreateSnapshot();
         bool Rollback(string snapshotId);

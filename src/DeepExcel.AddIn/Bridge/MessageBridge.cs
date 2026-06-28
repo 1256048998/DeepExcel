@@ -478,5 +478,170 @@ namespace DeepExcel.AddIn.Bridge
         {
             return _snapshotManager.Rollback(snapshotId);
         }
+
+        // ============= Sheet 管理 =============
+
+        public ToolResult AddSheet(string name)
+        {
+            try
+            {
+                var ws = (Worksheet)_app.Worksheets.Add();
+                try { ws.Name = name; }
+                catch
+                {
+                    // 名称冲突或非法字符，保留默认名
+                }
+                return new ToolResult { Name = "add_sheet", Success = true, Data = new { sheet_name = ws.Name } };
+            }
+            catch (Exception ex)
+            {
+                return new ToolResult { Name = "add_sheet", Success = false, Error = ex.Message };
+            }
+        }
+
+        public ToolResult DeleteSheet(string name)
+        {
+            try
+            {
+                var wb = _app.ActiveWorkbook;
+                if (wb == null) return new ToolResult { Name = "delete_sheet", Success = false, Error = "No active workbook" };
+                if (wb.Worksheets.Count <= 1)
+                    return new ToolResult { Name = "delete_sheet", Success = false, Error = "工作簿至少要保留一个工作表" };
+
+                var sheet = wb.Worksheets[name] as Worksheet;
+                if (sheet == null) return new ToolResult { Name = "delete_sheet", Success = false, Error = $"找不到工作表: {name}" };
+
+                // 删除前禁用 Excel 的确认弹窗
+                _app.DisplayAlerts = false;
+                try { sheet.Delete(); }
+                finally { _app.DisplayAlerts = true; }
+
+                return new ToolResult { Name = "delete_sheet", Success = true };
+            }
+            catch (Exception ex)
+            {
+                try { _app.DisplayAlerts = true; } catch { }
+                return new ToolResult { Name = "delete_sheet", Success = false, Error = ex.Message };
+            }
+        }
+
+        public ToolResult RenameSheet(string oldName, string newName)
+        {
+            try
+            {
+                var wb = _app.ActiveWorkbook;
+                if (wb == null) return new ToolResult { Name = "rename_sheet", Success = false, Error = "No active workbook" };
+
+                var sheet = wb.Worksheets[oldName] as Worksheet;
+                if (sheet == null) return new ToolResult { Name = "rename_sheet", Success = false, Error = $"找不到工作表: {oldName}" };
+
+                sheet.Name = newName;  // 名称冲突会自动抛 COMException
+                return new ToolResult { Name = "rename_sheet", Success = true, Data = new { sheet_name = newName } };
+            }
+            catch (Exception ex)
+            {
+                return new ToolResult { Name = "rename_sheet", Success = false, Error = ex.Message };
+            }
+        }
+
+        // ============= 格式化 =============
+
+        public ToolResult SetNumberFormat(string address, string format)
+        {
+            try
+            {
+                var range = _app.Range[address];
+                range.NumberFormat = format;
+                return new ToolResult { Name = "set_number_format", Success = true };
+            }
+            catch (Exception ex)
+            {
+                return new ToolResult { Name = "set_number_format", Success = false, Error = ex.Message };
+            }
+        }
+
+        public ToolResult SetColumnWidth(string address, double width, bool autoFit)
+        {
+            try
+            {
+                var range = _app.Range[address];
+                var columns = range.Columns;
+                if (autoFit)
+                {
+                    columns.AutoFit();
+                }
+                else
+                {
+                    columns.ColumnWidth = width;
+                }
+                return new ToolResult { Name = "set_column_width", Success = true };
+            }
+            catch (Exception ex)
+            {
+                return new ToolResult { Name = "set_column_width", Success = false, Error = ex.Message };
+            }
+        }
+
+        // ============= 数据操作 =============
+
+        public ToolResult SortData(string rangeAddress, string sortColumn, bool descending)
+        {
+            try
+            {
+                var range = _app.Range[rangeAddress];
+                // sortColumn 是列字母（如 "A"）或列序号字符串（如 "1"）
+                Range sortKey;
+                if (int.TryParse(sortColumn, out int colIdx))
+                {
+                    sortKey = (Range)range.Columns[colIdx];
+                }
+                else
+                {
+                    // 字母列：在 range 内找对应列
+                    var fullCol = _app.Range[sortColumn + "1"];
+                    sortKey = (Range)_app.Intersect(range, fullCol.EntireColumn);
+                }
+
+                _app.DisplayAlerts = false;
+                try
+                {
+                    range.Sort(
+                        Key1: sortKey,
+                        Order1: descending ? XlSortOrder.xlDescending : XlSortOrder.xlAscending,
+                        Header: XlYesNoGuess.xlYes);
+                }
+                finally { _app.DisplayAlerts = true; }
+
+                return new ToolResult { Name = "sort_data", Success = true };
+            }
+            catch (Exception ex)
+            {
+                try { _app.DisplayAlerts = true; } catch { }
+                return new ToolResult { Name = "sort_data", Success = false, Error = ex.Message };
+            }
+        }
+
+        public ToolResult FilterData(string rangeAddress, int columnIndex, string criteria)
+        {
+            try
+            {
+                var range = _app.Range[rangeAddress];
+                _app.DisplayAlerts = false;
+                try
+                {
+                    range.AutoFilter(
+                        Field: columnIndex,
+                        Criteria1: criteria);
+                }
+                finally { _app.DisplayAlerts = true; }
+
+                return new ToolResult { Name = "filter_data", Success = true };
+            }
+            catch (Exception ex)
+            {
+                try { _app.DisplayAlerts = true; } catch { }
+                return new ToolResult { Name = "filter_data", Success = false, Error = ex.Message };
+            }
+        }
     }
 }
