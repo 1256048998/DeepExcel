@@ -36,6 +36,26 @@ namespace DeepExcel.AddIn.Bridge
         ToolResult SortData(string rangeAddress, string sortColumn, bool descending);
         ToolResult FilterData(string rangeAddress, int columnIndex, string criteria);
 
+        // 单元格操作
+        ToolResult MergeCells(string address);
+        ToolResult UnmergeCells(string address);
+        ToolResult SetCellStyle(string address, string fontName, double? fontSize, bool? bold, bool? italic, string fontColor, string bgColor, string hAlign, string vAlign, bool? wrapText);
+        ToolResult CopyRange(string sourceAddress, string destAddress);
+        ToolResult ClearRange(string address, string clearType);
+
+        // 行列操作
+        ToolResult InsertRows(int row, int count);
+        ToolResult DeleteRows(int row, int count);
+        ToolResult InsertColumns(int column, int count);
+        ToolResult DeleteColumns(int column, int count);
+
+        // 视图
+        ToolResult FreezePanes(string address);
+
+        // 高级
+        ToolResult ApplyConditionalFormat(string address, string ruleType, object ruleArgs);
+        ToolResult WriteTable(string address, string tableName);
+
         // 安全类
         string CreateSnapshot();
         bool Rollback(string snapshotId);

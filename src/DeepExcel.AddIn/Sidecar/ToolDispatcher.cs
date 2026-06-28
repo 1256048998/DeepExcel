@@ -187,6 +187,76 @@ namespace DeepExcel.AddIn.Sidecar
                             GetArg<int>(args, "column_index"),
                             GetArg<string>(args, "criteria"));
 
+                    case "merge_cells":
+                        return _excel.MergeCells(GetArg<string>(args, "address"));
+
+                    case "unmerge_cells":
+                        return _excel.UnmergeCells(GetArg<string>(args, "address"));
+
+                    case "set_cell_style":
+                        {
+                            var scsAddress = GetArg<string>(args, "address");
+                            var scsFontName = GetArg<string>(args, "font_name");
+                            var scsFontSize = GetArg<double?>(args, "font_size");
+                            var scsBold = GetArg<bool?>(args, "bold");
+                            var scsItalic = GetArg<bool?>(args, "italic");
+                            var scsFontColor = GetArg<string>(args, "font_color");
+                            var scsBgColor = GetArg<string>(args, "bg_color");
+                            var scsHAlign = GetArg<string>(args, "h_align");
+                            var scsVAlign = GetArg<string>(args, "v_align");
+                            var scsWrapText = GetArg<bool?>(args, "wrap_text");
+                            Logger.Instance.Info("ToolDispatcher",
+                                $"set_cell_style params: address={scsAddress}, fontName={scsFontName}, " +
+                                $"fontSize={scsFontSize}, bold={scsBold}, italic={scsItalic}, " +
+                                $"fontColor={scsFontColor}, bgColor={scsBgColor}, hAlign={scsHAlign}, vAlign={scsVAlign}, wrapText={scsWrapText}");
+                            return _excel.SetCellStyle(scsAddress, scsFontName, scsFontSize, scsBold, scsItalic,
+                                scsFontColor, scsBgColor, scsHAlign, scsVAlign, scsWrapText);
+                        }
+
+                    case "copy_range":
+                        return _excel.CopyRange(
+                            GetArg<string>(args, "source_address"),
+                            GetArg<string>(args, "dest_address"));
+
+                    case "clear_range":
+                        return _excel.ClearRange(
+                            GetArg<string>(args, "address"),
+                            GetArg<string>(args, "clear_type"));
+
+                    case "insert_rows":
+                        return _excel.InsertRows(
+                            GetArg<int>(args, "row"),
+                            GetArg<int>(args, "count"));
+
+                    case "delete_rows":
+                        return _excel.DeleteRows(
+                            GetArg<int>(args, "row"),
+                            GetArg<int>(args, "count"));
+
+                    case "insert_columns":
+                        return _excel.InsertColumns(
+                            GetArg<int>(args, "column"),
+                            GetArg<int>(args, "count"));
+
+                    case "delete_columns":
+                        return _excel.DeleteColumns(
+                            GetArg<int>(args, "column"),
+                            GetArg<int>(args, "count"));
+
+                    case "freeze_panes":
+                        return _excel.FreezePanes(GetArg<string>(args, "address"));
+
+                    case "apply_conditional_format":
+                        return _excel.ApplyConditionalFormat(
+                            GetArg<string>(args, "address"),
+                            GetArg<string>(args, "rule_type"),
+                            args.ContainsKey("rule_args") ? args["rule_args"] : null);
+
+                    case "write_table":
+                        return _excel.WriteTable(
+                            GetArg<string>(args, "address"),
+                            GetArg<string>(args, "table_name"));
+
                     case "create_snapshot":
                         var snapshotId = _excel.CreateSnapshot();
                         return new ToolResult
@@ -612,27 +682,54 @@ namespace DeepExcel.AddIn.Sidecar
 
                 if (val is JsonElement je)
                 {
+                    if (je.ValueKind == JsonValueKind.Null || je.ValueKind == JsonValueKind.Undefined)
+                        return default;
+
                     if (typeof(T) == typeof(string))
-                    {
-                        if (je.ValueKind == JsonValueKind.Null) return default;
                         return (T)(object)je.GetString();
-                    }
+
                     if (typeof(T) == typeof(int))
-                    {
-                        if (je.ValueKind == JsonValueKind.Null) return default;
                         return (T)(object)je.GetInt32();
-                    }
+
                     if (typeof(T) == typeof(bool))
-                    {
-                        if (je.ValueKind == JsonValueKind.Null) return default;
                         return (T)(object)je.GetBoolean();
-                    }
+
                     if (typeof(T) == typeof(double))
-                    {
-                        if (je.ValueKind == JsonValueKind.Null) return default;
                         return (T)(object)je.GetDouble();
-                    }
+
+                    // ★ 支持 Nullable<double> (double?)
+                    if (typeof(T) == typeof(double?))
+                        return (T)(object)(double?)je.GetDouble();
+
+                    // ★ 支持 Nullable<bool> (bool?)
+                    if (typeof(T) == typeof(bool?))
+                        return (T)(object)(bool?)je.GetBoolean();
+
+                    // ★ 支持 Nullable<int> (int?)
+                    if (typeof(T) == typeof(int?))
+                        return (T)(object)(int?)je.GetInt32();
+
                     return (T)Convert.ChangeType(je.GetRawText(), typeof(T));
+                }
+
+                // 处理字符串值转 nullable 类型（模型可能传 "true"/"false" 字符串）
+                if (val is string s)
+                {
+                    if (typeof(T) == typeof(double?))
+                    {
+                        if (double.TryParse(s, out double d)) return (T)(object)(double?)d;
+                        return default;
+                    }
+                    if (typeof(T) == typeof(bool?))
+                    {
+                        if (bool.TryParse(s, out bool b)) return (T)(object)(bool?)b;
+                        return default;
+                    }
+                    if (typeof(T) == typeof(int?))
+                    {
+                        if (int.TryParse(s, out int i)) return (T)(object)(int?)i;
+                        return default;
+                    }
                 }
 
                 return (T)Convert.ChangeType(val, typeof(T));

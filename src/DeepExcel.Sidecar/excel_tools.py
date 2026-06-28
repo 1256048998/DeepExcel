@@ -183,6 +183,114 @@ async def filter_data(args):
     return _wrap_result(result)
 
 
+@tool("merge_cells", "合并指定区域的单元格", {"address": str})
+async def merge_cells(args):
+    result = await call_csharp("merge_cells", {"address": args["address"]})
+    return _wrap_result(result)
+
+
+@tool("unmerge_cells", "拆分指定区域内所有合并单元格", {"address": str})
+async def unmerge_cells(args):
+    result = await call_csharp("unmerge_cells", {"address": args["address"]})
+    return _wrap_result(result)
+
+
+@tool("set_cell_style", "设置单元格样式（颜色支持 hex 如 #FF0000 或颜色名 red/blue/green）", {"address": str, "font_name": str, "font_size": float, "bold": bool, "italic": bool, "font_color": str, "bg_color": str, "h_align": str, "v_align": str, "wrap_text": bool})
+async def set_cell_style(args):
+    result = await call_csharp("set_cell_style", {
+        "address": args["address"],
+        "font_name": args.get("font_name", ""),
+        "font_size": args.get("font_size"),
+        "bold": args.get("bold"),
+        "italic": args.get("italic"),
+        "font_color": args.get("font_color", ""),
+        "bg_color": args.get("bg_color", ""),
+        "h_align": args.get("h_align", ""),
+        "v_align": args.get("v_align", ""),
+        "wrap_text": args.get("wrap_text"),
+    })
+    return _wrap_result(result)
+
+
+@tool("copy_range", "复制源区域到目标位置（含格式和公式）", {"source_address": str, "dest_address": str})
+async def copy_range(args):
+    result = await call_csharp("copy_range", {
+        "source_address": args["source_address"],
+        "dest_address": args["dest_address"],
+    })
+    return _wrap_result(result)
+
+
+@tool("clear_range", "清空区域（clear_type: contents=只清内容, formats=只清格式, all=全部）", {"address": str, "clear_type": str})
+async def clear_range(args):
+    result = await call_csharp("clear_range", {
+        "address": args["address"],
+        "clear_type": args.get("clear_type", "all"),
+    })
+    return _wrap_result(result)
+
+
+@tool("insert_rows", "在第 row 行前插入 count 行", {"row": int, "count": int})
+async def insert_rows(args):
+    result = await call_csharp("insert_rows", {
+        "row": args["row"],
+        "count": args.get("count", 1),
+    })
+    return _wrap_result(result)
+
+
+@tool("delete_rows", "从第 row 行开始删除 count 行", {"row": int, "count": int})
+async def delete_rows(args):
+    result = await call_csharp("delete_rows", {
+        "row": args["row"],
+        "count": args.get("count", 1),
+    })
+    return _wrap_result(result)
+
+
+@tool("insert_columns", "在第 column 列前插入 count 列（column 从 1 开始）", {"column": int, "count": int})
+async def insert_columns(args):
+    result = await call_csharp("insert_columns", {
+        "column": args["column"],
+        "count": args.get("count", 1),
+    })
+    return _wrap_result(result)
+
+
+@tool("delete_columns", "从第 column 列开始删除 count 列（column 从 1 开始）", {"column": int, "count": int})
+async def delete_columns(args):
+    result = await call_csharp("delete_columns", {
+        "column": args["column"],
+        "count": args.get("count", 1),
+    })
+    return _wrap_result(result)
+
+
+@tool("freeze_panes", "冻结窗格（在指定单元格左上角冻结，如 'B2' 冻结 A 列和 1 行）", {"address": str})
+async def freeze_panes(args):
+    result = await call_csharp("freeze_panes", {"address": args["address"]})
+    return _wrap_result(result)
+
+
+@tool("apply_conditional_format", "应用条件格式（rule_type: color_scale/data_bar/highlight_rules/cell_value）", {"address": str, "rule_type": str, "rule_args": dict})
+async def apply_conditional_format(args):
+    result = await call_csharp("apply_conditional_format", {
+        "address": args["address"],
+        "rule_type": args["rule_type"],
+        "rule_args": args.get("rule_args", {}),
+    })
+    return _wrap_result(result)
+
+
+@tool("write_table", "将指定区域转换为 Excel 表格（ListObject，自带筛选和样式）", {"address": str, "table_name": str})
+async def write_table(args):
+    result = await call_csharp("write_table", {
+        "address": args["address"],
+        "table_name": args.get("table_name", ""),
+    })
+    return _wrap_result(result)
+
+
 @tool("rollback", "回滚到指定快照", {"snapshot_id": str})
 async def rollback(args):
     result = await call_csharp("rollback", {"snapshot_id": args["snapshot_id"]})
@@ -201,5 +309,10 @@ def register_all_tools() -> list:
         add_sheet, delete_sheet, rename_sheet,
         set_number_format, set_column_width,
         sort_data, filter_data,
+        merge_cells, unmerge_cells,
+        set_cell_style, copy_range, clear_range,
+        insert_rows, delete_rows, insert_columns, delete_columns,
+        freeze_panes,
+        apply_conditional_format, write_table,
         clarify_intent,
     ]

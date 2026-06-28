@@ -31,6 +31,8 @@ $args = @(
     '/unsafe-',
     '/nowin32manifest',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\mscorlib.dll"',
+    '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\netstandard.dll"',
+    '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Runtime.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Core.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Drawing.dll"',
