@@ -41,7 +41,7 @@ copy /Y "%ADDINDIR%\App.config" "%OUTDIR%\DeepExcel.AddIn.dll.config" >nul
 REM Copy sidecar scripts
 echo [2.5/3] Copying sidecar scripts...
 if not exist "%OUTDIR%\sidecar" mkdir "%OUTDIR%\sidecar"
-xcopy /E /I /Q "%BASEDIR%\src\DeepExcel.Sidecar\*.py" "%OUTDIR%\sidecar" >nul
+xcopy /E /I /Q /Y "%BASEDIR%\src\DeepExcel.Sidecar\*.py" "%OUTDIR%\sidecar" >nul
 
 REM Compile
 echo [3/3] Compiling DeepExcel.AddIn.dll...
@@ -84,7 +84,9 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   "%ADDINDIR%\Bridge\IExcelActions.cs" ^
   "%ADDINDIR%\Bridge\MessageBridge.cs" ^
   "%ADDINDIR%\Bridge\Messages.cs" ^
+  "%ADDINDIR%\Bridge\WorkbookSession.cs" ^
   "%ADDINDIR%\Collaboration\OperationHistory.cs" ^
+  "%ADDINDIR%\Collaboration\ConversationHistory.cs" ^
   "%ADDINDIR%\Config\AppConfig.cs" ^
   "%ADDINDIR%\Diagnostics\Logger.cs" ^
   "%ADDINDIR%\Executor\ExecutionResult.cs" ^
@@ -97,6 +99,7 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   "%ADDINDIR%\Perception\WorkbookAnalyzer.cs" ^
   "%ADDINDIR%\Perception\WorkbookStructure.cs" ^
   "%ADDINDIR%\Properties\AssemblyInfo.cs" ^
+  "%ADDINDIR%\Security\CodeSandbox.cs" ^
   "%ADDINDIR%\Security\SecurityGateway.cs" ^
   "%ADDINDIR%\Security\SecurityManager.cs" ^
   "%ADDINDIR%\Sidecar\PythonSidecar.cs" ^

@@ -15,19 +15,13 @@ const isInWebView = typeof (window as any).chrome !== 'undefined' &&
 
 // 消息监听器
 let listeners: ((msg: HostMessage) => void)[] = []
+// ★ 防止重复注册 webview message listener（原 bug：每次调用 onHostMessage 都注册一次，
+//   导致 N 个监听器 × N 次注册 = N² 倍消息分发）
+let webviewListenerInitialized = false
 
-export async function sendToHost(message: HostMessage): Promise<void> {
-  if (isInWebView) {
-    ;(window as any).chrome.webview.postMessage(message)
-  } else {
-    // 开发环境：模拟C#响应
-    console.log('[Bridge→Host]', message)
-    setTimeout(() => mockHostResponse(message), 500)
-  }
-}
-
-export function onHostMessage(callback: (msg: HostMessage) => void): () => void {
-  listeners.push(callback)
+function ensureWebviewListener() {
+  if (webviewListenerInitialized) return
+  webviewListenerInitialized = true
 
   if (isInWebView) {
     // ★ WebView2 中 C# 用 PostWebMessageAsString 发送消息，
@@ -39,19 +33,87 @@ export function onHostMessage(callback: (msg: HostMessage) => void): () => void 
       try {
         const raw = e.data
         const data = typeof raw === 'string' ? JSON.parse(raw) : raw
-        // 分发给所有监听器
-        listeners.forEach(l => l(data))
+        // 分发给所有监听器（复制数组避免遍历中被修改）
+        const snapshot = [...listeners]
+        snapshot.forEach(l => {
+          try { l(data) } catch (err) { console.error('Listener error:', err) }
+        })
       } catch (err) {
         console.error('Parse host message error:', err, 'raw:', e.data)
       }
     })
+  }
+}
+
+export async function sendToHost(message: HostMessage): Promise<void> {
+  ensureWebviewListener()
+  if (isInWebView) {
+    ;(window as any).chrome.webview.postMessage(message)
   } else {
+    // 开发环境：模拟C#响应
+    console.log('[Bridge→Host]', message)
+    setTimeout(() => mockHostResponse(message), 500)
+  }
+}
+
+/**
+ * ★ 请求-响应模式：发送消息并等待指定类型的响应。
+ * C# 端 HandleMessage 是同步返回的（WebMessageReceived 事件中立即 PostWebMessageAsString），
+ * 但前端 postMessage 是异步的，响应通过 onHostMessage 全局监听器接收。
+ * 此函数注册临时监听器匹配 expectedType，匹配后自动移除。
+ */
+export async function sendToHostWithResponse(
+  message: HostMessage,
+  expectedType: string,
+  timeout = 5000
+): Promise<HostMessage | null> {
+  ensureWebviewListener()
+  return new Promise((resolve) => {
+    let resolved = false
+    const handler = (msg: HostMessage) => {
+      if (!resolved && msg.type === expectedType) {
+        resolved = true
+        clearTimeout(timer)
+        removeHandler()
+        resolve(msg)
+      } else if (!resolved && msg.type === 'error') {
+        // 错误响应也算匹配，返回给调用方处理
+        resolved = true
+        clearTimeout(timer)
+        removeHandler()
+        resolve(msg)
+      }
+    }
+    function removeHandler() {
+      const idx = listeners.indexOf(handler)
+      if (idx >= 0) listeners.splice(idx, 1)
+    }
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true
+        removeHandler()
+        console.warn(`[Bridge] sendToHostWithResponse timeout: expectedType=${expectedType}`)
+        resolve(null)
+      }
+    }, timeout)
+
+    listeners.push(handler)
+    sendToHost(message)
+  })
+}
+
+export function onHostMessage(callback: (msg: HostMessage) => void): () => void {
+  ensureWebviewListener()
+  listeners.push(callback)
+
+  if (!isInWebView) {
     // 开发环境：连接ok信号
     setTimeout(() => callback({ type: 'connection_ok', payload: {} }), 100)
   }
 
   return () => {
-    listeners = listeners.filter(l => l !== callback)
+    const idx = listeners.indexOf(callback)
+    if (idx >= 0) listeners.splice(idx, 1)
   }
 }
 

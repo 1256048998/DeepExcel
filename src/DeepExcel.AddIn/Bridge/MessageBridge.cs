@@ -22,16 +22,53 @@ namespace DeepExcel.AddIn.Bridge
     {
         private readonly Microsoft.Office.Interop.Excel.Application _excelApp;
         private readonly IExcelActions _excelActions;
-        private readonly PythonSidecar _sidecar;
+        private readonly SecurityGateway _securityGateway;
+        private readonly Control _uiControl;
+        // 保留 ToolDispatcher（仅用于内部，前端已无直接调用入口）
         private readonly ToolDispatcher _toolDispatcher;
-        private Action<string> _sendToUi;
-        private string _pendingClarifyQuestion;
+
+        // ★ 按工作簿隔离会话：key = workbook FullName
+        // 每个工作簿有独立的 PythonSidecar（AI 对话上下文）+ 附件列表，
+        // 解决"在A工作簿聊的内容出现在B工作簿里"的串扰问题。
+        private readonly Dictionary<string, WorkbookSession> _sessions = new Dictionary<string, WorkbookSession>();
+
+        // ★ C-5 修复：共享 JsonSerializerOptions，注册 2D 数组转换器
+        private static readonly JsonSerializerOptions _jsonOptions = BuildJsonOptions();
+
+        private static JsonSerializerOptions BuildJsonOptions()
+        {
+            var opts = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                // ★ 序列化为 camelCase，与前端 TypeScript 惯例一致。
+                // Conversation 类的 Id/Title/CreatedAt/UpdatedAt/WorkbookName
+                // 会序列化为 id/title/createdAt/updatedAt/workbookName，匹配前端 ConversationSummary 类型。
+                // 有 [JsonPropertyName] 特性的属性不受影响（特性优先）。
+                PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+            };
+            opts.Converters.Add(new DeepExcel.AddIn.Sidecar.Object2DArrayConverter());
+            opts.Converters.Add(new DeepExcel.AddIn.Sidecar.String2DArrayConverter());
+            return opts;
+        }
+
+        /// <summary>
+        /// 当前活动工作簿对应的 key，用于 ThisAddIn 的 IsBusy 判断
+        /// </summary>
+        public bool IsActiveWorkbookBusy
+        {
+            get
+            {
+                var session = GetOrCreateActiveSession();
+                return session != null && session.IsBusy;
+            }
+        }
 
         public MessageBridge(Microsoft.Office.Interop.Excel.Application excelApp, Control uiControl)
         {
             _excelApp = excelApp;
+            _uiControl = uiControl;
 
-            // 初始化各层（保留原 ExcelActionsImpl 创建逻辑）
+            // 初始化各层
             var workbookAnalyzer = new WorkbookAnalyzer(excelApp);
             var rangeAnalyzer = new RangeAnalyzer();
             var snapshotManager = new SnapshotManager(excelApp);
@@ -41,44 +78,129 @@ namespace DeepExcel.AddIn.Bridge
             _excelActions = new ExcelActionsImpl(
                 excelApp, workbookAnalyzer, rangeAnalyzer, vbaExecutor, pythonExecutor, snapshotManager);
 
-            _toolDispatcher = new ToolDispatcher(_excelActions, _excelApp);
-
-            // 创建 Python sidecar（替换 Orchestrator），在 SetSendToUi 中启动
-            _sidecar = new PythonSidecar(_excelActions, _excelApp, uiControl);
-            _sidecar.OnStreamDelta += OnStreamDelta;
-            _sidecar.OnToolCall += OnToolCall;
-            _sidecar.OnToolUse += OnToolUse;
-            _sidecar.OnClarify += OnClarify;
-            _sidecar.OnStreamEnd += OnStreamEndFromSidecar;
-            _sidecar.OnError += OnSidecarError;
+            var securityManager = SecurityManager.Instance;
+            _securityGateway = new SecurityGateway(securityManager);
+            _toolDispatcher = new ToolDispatcher(_excelActions, _excelApp, _securityGateway);
         }
 
         /// <summary>
-        /// 设置UI消息发送回调
+        /// ★ 获取或创建当前活动工作簿的会话。
+        /// 用 workbook FullName 做 key（未保存的"工作簿1"用 Name 兜底）。
+        /// 返回 null 表示没有活动工作簿。
         /// </summary>
+        private WorkbookSession GetOrCreateActiveSession()
+        {
+            try
+            {
+                var wb = _excelApp.ActiveWorkbook;
+                if (wb == null) return null;
+
+                string key = GetWorkbookKey(wb);
+                string name = wb.Name ?? "未知";
+
+                if (_sessions.TryGetValue(key, out var existing) && existing != null)
+                {
+                    existing.Touch(); // 更新 LRU 时间
+                    return existing;
+                }
+
+                // LRU 回收：超过上限时先回收最久未使用的空闲会话
+                EnforceSessionLimit();
+
+                // 新建 session
+                Logger.Instance.Info("MessageBridge", $"Creating new session for workbook: {name}");
+                var session = new WorkbookSession(key, name, _excelActions, _excelApp, _uiControl, _securityGateway);
+                session.Sidecar.OnStreamDelta += OnStreamDelta;
+                session.Sidecar.OnToolCall += OnToolCall;
+                session.Sidecar.OnToolUse += OnToolUse;
+                session.Sidecar.OnClarify += OnClarify;
+                session.Sidecar.OnStreamEnd += OnStreamEndFromSidecar;
+                session.Sidecar.OnError += OnSidecarError;
+
+                _sessions[key] = session;
+
+                // ★ 注入附件映射引用给 ToolDispatcher，read_attachment 工具通过此映射查找附件路径。
+                // 引用 session.Attachments，session 增删附件时自动同步（同一对象引用）。
+                session.Sidecar.Dispatcher.Attachments = session.Attachments;
+
+                // ★ 不自动加载历史对话到当前对话。
+                // 用户打开面板默认是新对话；要看历史需点"历史对话"按钮主动选择"继续"。
+                // 启动 sidecar 并发 config
+                session.Sidecar.Start();
+                SendConfigToSession(session);
+
+                return session;
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "GetOrCreateActiveSession failed", ex);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// ★ 安全获取工作簿唯一 key：优先 FullName（已保存），否则 Name（未保存的工作簿1）。
+        /// </summary>
+        private static string GetWorkbookKey(Workbook wb)
+        {
+            try
+            {
+                string fullName = wb.FullName;
+                if (!string.IsNullOrEmpty(fullName) && (fullName.Contains("\\") || fullName.Contains("/")))
+                    return fullName;
+                return wb.Name ?? "workbook_" + wb.GetHashCode();
+            }
+            catch
+            {
+                return "workbook_" + wb.GetHashCode();
+            }
+        }
+
+        /// <summary>
+        /// ★ 找 sidecar 属于哪个 session（sidecar 回消息时用）。
+        /// 因为 sidecar 是 session 级的，每个 session 有唯一 sidecar 实例。
+        /// </summary>
+        private WorkbookSession FindSessionBySidecar(PythonSidecar sidecar)
+        {
+            if (sidecar == null) return null;
+            foreach (var kvp in _sessions)
+            {
+                if (kvp.Value.Sidecar == sidecar) return kvp.Value;
+            }
+            return null;
+        }
+
+        // ★ 按工作簿路由的 UI 消息事件：(workbookKey, jsonMessage)
+        // ThisAddIn 监听此事件，根据 CTP 所属窗口匹配到对应工作簿再分发给对应 WebView。
+        // 这样 A 工作簿的 AI 回复不会跑到 B 工作簿的面板里。
+        public event Action<string, string> OnSessionUiMessage;
+
+        // 旧的单通道回调（保留兼容，会慢慢去掉）
+        private Action<string> _sendToUi;
+
+        /// <summary>
+        /// 单通道回调（已弃用，用 OnSessionUiMessage 事件替代）
+        /// </summary>
+        [Obsolete("Use OnSessionUiMessage event", false)]
         public void SetSendToUi(Action<string> sendToUi)
         {
             _sendToUi = sendToUi;
-            _sidecar.Start();
-
-            // 启动后立即发送 config（API key + base_url + model）
-            SendConfigToSidecar();
+            Logger.Instance.Warning("MessageBridge", "SetSendToUi called (deprecated)");
         }
 
         /// <summary>
-        /// 从 AppConfig / SecurityManager 读取当前 provider 配置，发给 sidecar
+        /// ★ 从 AppConfig / SecurityManager 读取配置，发给指定 session 的 sidecar
         /// </summary>
-        private void SendConfigToSidecar()
+        private void SendConfigToSession(WorkbookSession session)
         {
-            Logger.Instance.Info("MessageBridge", "SendConfigToSidecar called");
+            Logger.Instance.Info("MessageBridge", $"SendConfigToSession: {session.WorkbookName}");
             try
             {
                 var cfg = ConfigManager.Instance.Current;
                 var providerKey = cfg.CurrentProvider;
-                Logger.Instance.Info("MessageBridge", $"SendConfigToSidecar: providerKey={providerKey}, providers count={cfg.Providers?.Count ?? 0}");
                 if (!cfg.Providers.ContainsKey(providerKey))
                 {
-                    Logger.Instance.Warning("MessageBridge", $"SendConfigToSidecar: provider '{providerKey}' not found in Providers, skipping");
+                    Logger.Instance.Warning("MessageBridge", $"SendConfigToSession: provider '{providerKey}' not found");
                     return;
                 }
 
@@ -86,11 +208,9 @@ namespace DeepExcel.AddIn.Bridge
                 var apiKey = SecurityManager.Instance.GetApiKey(providerKey);
                 if (string.IsNullOrEmpty(apiKey))
                 {
-                    // SecurityManager 没存，尝试用 AppConfig 里的
                     apiKey = provider.ApiKey ?? "";
                 }
 
-                // DeepSeek 需要用 Anthropic 兼容端点
                 var baseUrl = provider.BaseUrl ?? "https://api.anthropic.com";
                 if (providerKey == "deepseek" && !baseUrl.EndsWith("/anthropic"))
                 {
@@ -103,17 +223,79 @@ namespace DeepExcel.AddIn.Bridge
                     model = provider.Models[0];
                 }
 
-                Logger.Instance.Info("MessageBridge", $"Sending config to sidecar: provider={providerKey}, model={model}, baseUrl={baseUrl}, hasKey={!string.IsNullOrEmpty(apiKey)}");
-                _sidecar.UpdateConfig(baseUrl, model, apiKey);
+                Logger.Instance.Info("MessageBridge",
+                    $"SendConfigToSession: wb={session.WorkbookName}, model={model}, baseUrl={baseUrl}, hasKey={!string.IsNullOrEmpty(apiKey)}");
+                session.Sidecar.UpdateConfig(baseUrl, model, apiKey);
             }
             catch (Exception ex)
             {
-                Logger.Instance.Error("MessageBridge", "SendConfigToSidecar failed", ex);
+                Logger.Instance.Error("MessageBridge", "SendConfigToSession failed", ex);
             }
         }
 
         /// <summary>
-        /// 处理来自UI的消息
+        /// ★ 把历史对话发给 sidecar，让 ClaudeSDKClient 恢复上下文。
+        /// 只发 user/assistant 文本对，工具调用不发（避免重新触发执行）。
+        /// 在用户点击"继续"历史对话时调用。
+        /// </summary>
+        private void SendHistoryToSidecar(WorkbookSession session)
+        {
+            try
+            {
+                if (session.ConversationMessages == null || session.ConversationMessages.Count == 0)
+                {
+                    return;
+                }
+
+                // 过滤：只发 user 和 assistant 文本消息（跳过 tool 和 clarify）
+                var filtered = new List<DeepExcel.AddIn.Collaboration.HistoryMessage>();
+                foreach (var m in session.ConversationMessages)
+                {
+                    if (m.role == "user" && !string.IsNullOrEmpty(m.content))
+                    {
+                        filtered.Add(new DeepExcel.AddIn.Collaboration.HistoryMessage
+                        {
+                            role = "user",
+                            content = m.content
+                        });
+                    }
+                    else if (m.role == "assistant" && !string.IsNullOrEmpty(m.content) && m.type != "clarify")
+                    {
+                        filtered.Add(new DeepExcel.AddIn.Collaboration.HistoryMessage
+                        {
+                            role = "assistant",
+                            content = m.content
+                        });
+                    }
+                }
+
+                if (filtered.Count > 0)
+                {
+                    Logger.Instance.Info("MessageBridge",
+                        $"SendHistoryToSidecar: {session.WorkbookName}, sending {filtered.Count} messages");
+                    session.Sidecar.SendRestoreHistory(filtered);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "SendHistoryToSidecar failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// 对所有活动 session 刷新 config（用户改设置时调用）
+        /// </summary>
+        public void RefreshConfigForAllSessions()
+        {
+            foreach (var kvp in _sessions)
+            {
+                try { SendConfigToSession(kvp.Value); }
+                catch { }
+            }
+        }
+
+        /// <summary>
+        /// 处理来自UI的消息。根据当前活动工作簿路由到对应 session。
         /// </summary>
         public string HandleMessage(string json)
         {
@@ -122,18 +304,56 @@ namespace DeepExcel.AddIn.Bridge
                 var msg = JsonSerializer.Deserialize<Message>(json);
                 if (msg == null) return MakeError("Invalid message");
 
-                return msg.Type switch
+                // 这些消息不需要 session 上下文
+                switch (msg.Type)
                 {
-                    "user_message" => HandleUserMessage(msg),
-                    "cancel" => HandleCancel(),
-                    "ping" => MakeResponse("pong", new { }),
-                    "get_selection" => MakeResponse("selection", _excelActions.GetSelection()),
-                    "read_range" => HandleReadRange(msg),
-                    "read_workbook" => MakeResponse("workbook", _excelActions.ReadWorkbook()),
-                    "execute_vba" => HandleExecuteVba(msg),
-                    "execute_tool" => HandleExecuteTool(msg),
-                    _ => MakeError($"Unknown message type: {msg.Type}")
-                };
+                    case "ping":
+                        return MakeResponse("pong", new { });
+                    case "get_selection":
+                        return MakeResponse("selection", _excelActions.GetSelection());
+                    case "read_workbook":
+                        return MakeResponse("workbook", _excelActions.ReadWorkbook());
+                    case "read_range":
+                        return HandleReadRange(msg);
+                    case "list_snapshots":
+                        return HandleListSnapshots();
+                    case "rollback_snapshot":
+                        return HandleRollbackSnapshot(msg);
+                    case "delete_snapshot":
+                        return HandleDeleteSnapshot(msg);
+                }
+
+                // 以下消息需要 session 上下文
+                var session = GetOrCreateActiveSession();
+                if (session == null) return MakeError("没有活动工作簿");
+
+                switch (msg.Type)
+                {
+                    case "user_message":
+                        return HandleUserMessage(session, msg);
+                    case "cancel":
+                        return HandleCancel(session);
+                    // ★ 附件管理
+                    case "list_attachments":
+                        return MakeResponse("attachments", new { list = session.GetAttachmentList() });
+                    case "upload_attachment":
+                        return HandleUploadAttachment(session, msg);
+                    case "delete_attachment":
+                        return HandleDeleteAttachment(session, msg);
+                    // ★ 多对话历史管理
+                    case "get_current_messages":
+                        return MakeResponse("current_messages", new { messages = session.ConversationMessages });
+                    case "new_conversation":
+                        return HandleNewConversation(session);
+                    case "list_conversations":
+                        return MakeResponse("conversations", new { list = session.ListConversations() });
+                    case "continue_conversation":
+                        return HandleContinueConversation(session, msg);
+                    case "delete_conversation":
+                        return HandleDeleteConversation(session, msg);
+                    default:
+                        return MakeError($"Unknown or blocked message type: {msg.Type}");
+                }
             }
             catch (Exception ex)
             {
@@ -142,24 +362,28 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
-        private string HandleUserMessage(Message msg)
+        private string HandleUserMessage(WorkbookSession session, Message msg)
         {
             try
             {
                 var content = msg.Payload?.GetProperty("content").GetString();
 
-                // 如果有待回答的 clarify，把这条消息当 clarify_answer
-                if (_pendingClarifyQuestion != null)
+                // 如果有待回答的 clarify，把这条消息当 clarify_answer（session 级隔离）
+                if (session.PendingClarifyQuestion != null)
                 {
-                    _sidecar.SendClarifyAnswer(content);
-                    _pendingClarifyQuestion = null;
+                    session.Sidecar.SendClarifyAnswer(content);
+                    session.PendingClarifyQuestion = null;
                     return MakeResponse("ack", new { received = true, kind = "clarify_answer" });
                 }
 
-                // 正常用户消息：附带 Excel 上下文
-                var context = BuildContext();
-                var sessionId = Guid.NewGuid().ToString();
-                _sidecar.SendUserMessage(content, sessionId, context);
+                // 正常用户消息：附带 Excel 上下文 + 附件列表
+                var context = session.BuildContext(_excelActions);
+                var sessionId = session.NextSessionId();
+                session.IsBusy = true;
+                session.Sidecar.SendUserMessage(content, sessionId, context);
+
+                // ★ 追加到历史
+                session.AppendUserMessage(content);
 
                 return MakeResponse("ack", new { received = true });
             }
@@ -170,39 +394,155 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
-        private object BuildContext()
+        private string HandleCancel(WorkbookSession session)
         {
             try
             {
-                // 只放元信息，避免二维数组（Object[,]）导致 System.Text.Json 序列化失败
-                // 实际数据由 sidecar 通过 read_selection / read_range 工具按需读取
-                object selectionInfo = null;
-                try
+                // ★ P-2 修复：cancel 清理 session 级 pending clarify
+                if (session.PendingClarifyQuestion != null)
                 {
-                    var sel = _excelApp.Selection;
-                    if (sel is Range range)
-                    {
-                        selectionInfo = new
-                        {
-                            address = range.Address,
-                            worksheet = SafeGetWorksheetName(range),
-                            rowCount = range.Rows.Count,
-                            columnCount = range.Columns.Count,
-                        };
-                    }
+                    Logger.Instance.Info("MessageBridge", $"HandleCancel: clearing pending clarify for {session.WorkbookName}");
+                    session.PendingClarifyQuestion = null;
                 }
-                catch { }
-
-                return new
-                {
-                    workbook = _excelActions.ReadWorkbook(),
-                    selection = selectionInfo ?? new { address = "" },
-                };
+                session.Sidecar.SendCancel();
+                session.IsBusy = false;
+                return MakeResponse("cancelled", new { });
             }
             catch (Exception ex)
             {
-                Logger.Instance.Warning("MessageBridge", "BuildContext failed", ex);
-                return new { };
+                Logger.Instance.Error("MessageBridge", "HandleCancel failed", ex);
+                return MakeError($"Cancel error: {ex.Message}");
+            }
+        }
+
+        // ============= 多对话历史消息处理 =============
+
+        /// <summary>★ 新建对话：存当前对话，清空内存，重启 sidecar 清 AI 上下文</summary>
+        private string HandleNewConversation(WorkbookSession session)
+        {
+            try
+            {
+                session.NewConversation();
+
+                // ★ 重启 sidecar 进程，彻底清除 AI 上下文
+                // 不重启的话 SDK 内部还记着上一轮对话的 messages
+                try
+                {
+                    session.Sidecar.Restart();
+                    SendConfigToSession(session);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Instance.Warning("MessageBridge", $"HandleNewConversation: sidecar restart failed: {ex.Message}");
+                }
+
+                return MakeResponse("new_conversation", new { conversationId = session.CurrentConversationId });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleNewConversation failed", ex);
+                return MakeError($"New conversation error: {ex.Message}");
+            }
+        }
+
+        /// <summary>★ 继续历史对话：加载历史 messages，重启 sidecar 并注入历史上下文</summary>
+        private string HandleContinueConversation(WorkbookSession session, Message msg)
+        {
+            try
+            {
+                var conversationId = msg.Payload?.GetProperty("conversation_id").GetString();
+                if (string.IsNullOrEmpty(conversationId))
+                {
+                    return MakeError("conversation_id is required");
+                }
+
+                var messages = session.ContinueConversation(conversationId);
+                if (messages == null)
+                {
+                    return MakeError($"Conversation not found: {conversationId}");
+                }
+
+                // ★ 重启 sidecar 并注入历史上下文
+                try
+                {
+                    session.Sidecar.Restart();
+                    SendConfigToSession(session);
+                    // 把历史 user/assistant 文本发给新 sidecar，让它"记得"之前的对话
+                    SendHistoryToSidecar(session);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Instance.Warning("MessageBridge", $"HandleContinueConversation: sidecar restart failed: {ex.Message}");
+                }
+
+                return MakeResponse("continue_conversation", new
+                {
+                    conversationId = conversationId,
+                    messages = messages
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleContinueConversation failed", ex);
+                return MakeError($"Continue conversation error: {ex.Message}");
+            }
+        }
+
+        /// <summary>★ 删除指定历史对话</summary>
+        private string HandleDeleteConversation(WorkbookSession session, Message msg)
+        {
+            try
+            {
+                var conversationId = msg.Payload?.GetProperty("conversation_id").GetString();
+                if (string.IsNullOrEmpty(conversationId))
+                {
+                    return MakeError("conversation_id is required");
+                }
+
+                bool ok = session.DeleteConversation(conversationId);
+                return MakeResponse("delete_conversation", new { success = ok, conversationId });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleDeleteConversation failed", ex);
+                return MakeError($"Delete conversation error: {ex.Message}");
+            }
+        }
+
+        /// <summary>★ 上传附件</summary>
+        private string HandleUploadAttachment(WorkbookSession session, Message msg)
+        {
+            try
+            {
+                var fileName = msg.Payload?.GetProperty("file_name").GetString();
+                var fileBase64 = msg.Payload?.GetProperty("file_base64").GetString();
+                if (string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(fileBase64))
+                    return MakeError("缺少 file_name 或 file_base64 参数");
+
+                var info = session.AddAttachment(fileName, fileBase64);
+                return MakeResponse("uploaded", info);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleUploadAttachment failed", ex);
+                return MakeError($"上传失败: {ex.Message}");
+            }
+        }
+
+        /// <summary>★ 删除附件</summary>
+        private string HandleDeleteAttachment(WorkbookSession session, Message msg)
+        {
+            try
+            {
+                var fileName = msg.Payload?.GetProperty("file_name").GetString();
+                if (string.IsNullOrEmpty(fileName)) return MakeError("缺少 file_name 参数");
+                bool ok = session.RemoveAttachment(fileName);
+                return MakeResponse("deleted", new { success = ok, file_name = fileName });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleDeleteAttachment failed", ex);
+                return MakeError($"删除失败: {ex.Message}");
             }
         }
 
@@ -217,6 +557,75 @@ namespace DeepExcel.AddIn.Bridge
             var address = msg.Payload?.GetProperty("address").GetString();
             var result = _excelActions.ReadRange(address);
             return MakeResponse("range_data", result);
+        }
+
+        /// <summary>★ 历史版本：列出所有快照</summary>
+        private string HandleListSnapshots()
+        {
+            try
+            {
+                var snapshots = _excelActions.ListSnapshots();
+                // 转成前端友好的 camelCase 对象数组
+                var list = new List<object>();
+                foreach (var s in snapshots)
+                {
+                    list.Add(new
+                    {
+                        id = s.Id,
+                        workbookName = s.WorkbookName,
+                        createdAt = s.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"),
+                        timestamp = ((DateTimeOffset)DateTime.SpecifyKind(s.CreatedAt, DateTimeKind.Local)).ToUnixTimeSeconds(),
+                        reason = s.Reason,
+                    });
+                }
+                return MakeResponse("snapshots", new { list });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleListSnapshots failed", ex);
+                return MakeError("列出快照失败: " + ex.Message);
+            }
+        }
+
+        /// <summary>★ 历史版本：回滚到指定快照</summary>
+        private string HandleRollbackSnapshot(Message msg)
+        {
+            try
+            {
+                var snapshotId = msg.Payload?.GetProperty("snapshot_id").GetString();
+                if (string.IsNullOrEmpty(snapshotId))
+                {
+                    return MakeError("缺少 snapshot_id 参数");
+                }
+                Logger.Instance.Info("MessageBridge", "HandleRollbackSnapshot: " + snapshotId);
+                bool ok = _excelActions.Rollback(snapshotId);
+                return MakeResponse("rollback_result", new { success = ok, snapshot_id = snapshotId });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleRollbackSnapshot failed", ex);
+                return MakeError("回滚失败: " + ex.Message);
+            }
+        }
+
+        /// <summary>★ 历史版本：删除指定快照</summary>
+        private string HandleDeleteSnapshot(Message msg)
+        {
+            try
+            {
+                var snapshotId = msg.Payload?.GetProperty("snapshot_id").GetString();
+                if (string.IsNullOrEmpty(snapshotId))
+                {
+                    return MakeError("缺少 snapshot_id 参数");
+                }
+                bool ok = _excelActions.DeleteSnapshot(snapshotId);
+                return MakeResponse("delete_snapshot_result", new { success = ok, snapshot_id = snapshotId });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleDeleteSnapshot failed", ex);
+                return MakeError("删除快照失败: " + ex.Message);
+            }
         }
 
         private string HandleExecuteVba(Message msg)
@@ -242,48 +651,114 @@ namespace DeepExcel.AddIn.Bridge
             return MakeResponse("tool_result", result);
         }
 
-        // 回调方法 - 发往UI
-        private void OnStreamDelta(string delta)
+        // 回调方法 - sidecar 发回的消息，通过 sender 精准找到对应 session 再发给 UI
+        private void OnStreamDelta(PythonSidecar sender, string delta)
         {
-            Logger.Instance.Debug("MessageBridge", "OnStreamDelta: " + (delta == null ? "null" : ("len=" + delta.Length)));
-            SendToUi("stream_delta", new { delta });
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                if (!session.IsBusy) session.IsBusy = true;
+                SendToSessionUi(session.WorkbookKey, "stream_delta", new { delta });
+                // ★ 追加到历史（流式增量）
+                session.AppendAssistantDelta(delta);
+            }
+            Logger.Instance.Debug("MessageBridge", "OnStreamDelta: len=" + (delta?.Length ?? 0));
         }
 
-        private void OnToolCall(string callId, string name, Dictionary<string, object> args)
+        private void OnToolCall(PythonSidecar sender, string callId, string name, Dictionary<string, object> args)
         {
-            // 工具实际执行的回调（OnToolUse 已经通知过 UI，这里不再重复发送）
             Logger.Instance.Info("MessageBridge", $"OnToolCall: {name} (call_id={callId})");
         }
 
-        private void OnToolUse(string name, Dictionary<string, object> args)
+        private void OnToolUse(PythonSidecar sender, string name, Dictionary<string, object> args)
         {
-            // SDK 通知即将调用工具，转发给 UI 显示进度（让用户看到 agent 正在做什么）
-            // 去掉 mcp__excel__ 前缀，让显示更美观
-            var displayName = name?.Replace("mcp__excel__", "") ?? name;
-            SendToUi("tool_call", new { call_id = "", name = displayName, arguments = args });
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                var displayName = name?.Replace("mcp__excel__", "") ?? name;
+                SendToSessionUi(session.WorkbookKey, "tool_call",
+                    new { call_id = "", name = displayName, arguments = args });
+                // ★ 追加到历史
+                session.AppendToolCall(displayName);
+            }
         }
 
-        private void OnClarify(string question, List<string> options)
+        private void OnClarify(PythonSidecar sender, string question, List<string> options)
         {
-            _pendingClarifyQuestion = question;
-            SendToUi("clarify", new { question, options });
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                session.PendingClarifyQuestion = question;
+                session.IsBusy = false;
+                SendToSessionUi(session.WorkbookKey, "clarify", new { question, options });
+                // ★ 追加到历史
+                session.AppendClarify(question, options?.ToArray());
+            }
         }
 
-        private void OnStreamEndFromSidecar(int inputTokens, int outputTokens)
+        private void OnStreamEndFromSidecar(PythonSidecar sender, int inputTokens, int outputTokens)
         {
-            SendToUi("stream_end", new { input_tokens = inputTokens, output_tokens = outputTokens });
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                session.IsBusy = false;
+                SendToSessionUi(session.WorkbookKey, "stream_end",
+                    new { input_tokens = inputTokens, output_tokens = outputTokens });
+                // ★ stream_end 时持久化对话历史到磁盘
+                session.OnStreamEnd();
+            }
         }
 
-        private void OnSidecarError(string error)
+        private void OnSidecarError(PythonSidecar sender, string error)
         {
-            SendToUi("error", new { message = "Sidecar: " + error });
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                session.IsBusy = false;
+                SendToSessionUi(session.WorkbookKey, "error", new { message = "Sidecar: " + error });
+            }
+            else
+            {
+                // 找不到 session，用旧通道兜底（至少让用户看到错误）
+                SendToUi("error", new { message = "Sidecar: " + error });
+            }
+        }
+
+        /// <summary>
+        /// 找当前处于 busy 状态的 session（流式响应中）。
+        /// 因为用户在一个时刻只能操作一个活动工作簿，正常只有一个 session 在流式输出。
+        /// </summary>
+        private WorkbookSession FindBusySession()
+        {
+            WorkbookSession firstBusy = null;
+            foreach (var kvp in _sessions)
+            {
+                if (kvp.Value.IsBusy)
+                {
+                    if (firstBusy == null) firstBusy = kvp.Value;
+                    // 优先匹配当前活动工作簿
+                    try
+                    {
+                        var activeWb = _excelApp.ActiveWorkbook;
+                        if (activeWb != null)
+                        {
+                            string activeKey = GetWorkbookKey(activeWb);
+                            if (kvp.Key == activeKey) return kvp.Value;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            return firstBusy;
         }
 
         public void Cancel()
         {
             try
             {
-                _sidecar?.SendCancel();
+                var session = GetOrCreateActiveSession();
+                session?.Sidecar.SendCancel();
+                if (session != null) session.IsBusy = false;
                 Logger.Instance.Info("MessageBridge", "Cancel requested");
             }
             catch (Exception ex)
@@ -292,42 +767,165 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
-        private string HandleCancel()
+        private void SendToSessionUi(string workbookKey, string type, object payload)
         {
-            Cancel();
-            NotifyStreamEnd();
-            return MakeResponse("cancelled", new { });
-        }
-
-        public void NotifyStreamEnd()
-        {
-            SendToUi("stream_end", new { });
+            var json = JsonSerializer.Serialize(new { type, payload }, _jsonOptions);
+            try
+            {
+                OnSessionUiMessage?.Invoke(workbookKey, json);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "SendToSessionUi event handler failed", ex);
+            }
+            // ★ 不再走 _sendToUi 兜底广播：OnSessionUiMessage 已稳定，
+            // 双通道会导致同一 WebView 收到两份消息，前端 React 状态累加后消息会渲染两遍。
+            // _sendToUi 仅保留给 OnSidecarError 找不到 session 时的兜底分支使用。
         }
 
         private void SendToUi(string type, object payload)
         {
-            var json = JsonSerializer.Serialize(new { type, payload });
-            _sendToUi?.Invoke(json);
+            var json = JsonSerializer.Serialize(new { type, payload }, _jsonOptions);
+            try { _sendToUi?.Invoke(json); } catch { }
         }
 
         private string MakeResponse(string type, object payload)
         {
-            return JsonSerializer.Serialize(new { type, payload });
+            // ★ C-5 修复：用 _jsonOptions 序列化
+            return JsonSerializer.Serialize(new { type, payload }, _jsonOptions);
         }
 
         private string MakeError(string message)
         {
+            // ★ C-5 修复：用 _jsonOptions 序列化
             return JsonSerializer.Serialize(new
             {
                 type = "error",
                 payload = new { message }
-            });
+            }, _jsonOptions);
+        }
+
+        // ============= 性能优化：预启动 =============
+
+        /// <summary>
+        /// 预热：预启动当前活动工作簿的 sidecar 进程。
+        /// 在 Excel 启动完成后后台调用，用户打开面板发送消息时 sidecar 已经准备好了。
+        /// 非阻塞：sidecar 启动是异步的，这里只是触发启动。
+        /// </summary>
+        public void PreWarmActiveSession()
+        {
+            try
+            {
+                // 只是创建 session + 启动 sidecar，不等结果
+                var session = GetOrCreateActiveSession();
+                if (session != null)
+                {
+                    Logger.Instance.Info("MessageBridge",
+                        $"Pre-warmed sidecar for workbook: {session.WorkbookName}");
+                }
+            }
+            catch (Exception ex)
+            {
+                // 预热失败不影响主流程，只记日志
+                Logger.Instance.Warning("MessageBridge", "PreWarmActiveSession failed: " + ex.Message);
+            }
+        }
+
+        // ============= 工作簿生命周期管理 =============
+
+        /// <summary>
+        /// 最大会话数上限。每个会话对应一个 Python 子进程，
+        /// 过多会占用大量内存。超过上限时按 LRU 回收最久未使用的会话。
+        /// </summary>
+        private const int MaxSessions = 8;
+
+        /// <summary>
+        /// 工作簿关闭时调用：清理对应会话，释放 sidecar 进程。
+        /// </summary>
+        public void OnWorkbookClose(string workbookKey)
+        {
+            if (string.IsNullOrEmpty(workbookKey)) return;
+            try
+            {
+                if (_sessions.TryGetValue(workbookKey, out var session))
+                {
+                    session.Dispose();
+                    _sessions.Remove(workbookKey);
+                    Logger.Instance.Info("MessageBridge", $"Session closed (workbook closed): {workbookKey}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "OnWorkbookClose failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// 工作簿另存为后调用：更新会话 key（FullName 变了），
+        /// 避免对话历史丢失。
+        /// </summary>
+        public void OnWorkbookAfterSave(string oldKey, string newKey, string newName)
+        {
+            if (string.IsNullOrEmpty(oldKey) || string.IsNullOrEmpty(newKey) || oldKey == newKey) return;
+            try
+            {
+                if (_sessions.TryGetValue(oldKey, out var session))
+                {
+                    _sessions.Remove(oldKey);
+                    session.UpdateKey(newKey, newName);
+                    _sessions[newKey] = session;
+                    Logger.Instance.Info("MessageBridge",
+                        $"Session key updated (after save): {oldKey} -> {newKey}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "OnWorkbookAfterSave failed", ex);
+            }
+        }
+
+        /// <summary>
+        /// LRU 回收：会话数超过上限时，回收最久未使用的空闲会话。
+        /// 在创建新会话前调用。
+        /// </summary>
+        private void EnforceSessionLimit()
+        {
+            if (_sessions.Count < MaxSessions) return;
+
+            // 找最久未使用的非 busy 会话
+            WorkbookSession oldestIdle = null;
+            string oldestKey = null;
+            DateTime oldestTime = DateTime.MaxValue;
+
+            foreach (var kvp in _sessions)
+            {
+                var s = kvp.Value;
+                if (s.IsBusy) continue; // 忙碌中的会话不回收
+                if (s.LastUsedTime < oldestTime)
+                {
+                    oldestTime = s.LastUsedTime;
+                    oldestIdle = s;
+                    oldestKey = kvp.Key;
+                }
+            }
+
+            if (oldestIdle != null && oldestKey != null)
+            {
+                Logger.Instance.Info("MessageBridge",
+                    $"LRU evicting idle session: {oldestKey} (last used {oldestTime})");
+                oldestIdle.Dispose();
+                _sessions.Remove(oldestKey);
+            }
         }
 
         public void Dispose()
         {
-            try { _sidecar?.Stop(); }
-            catch (Exception ex) { Logger.Instance.Error("MessageBridge", "Dispose failed", ex); }
+            foreach (var kvp in _sessions)
+            {
+                try { kvp.Value.Dispose(); }
+                catch (Exception ex) { Logger.Instance.Error("MessageBridge", $"Dispose session {kvp.Value.WorkbookName} failed", ex); }
+            }
+            _sessions.Clear();
         }
     }
 
@@ -359,6 +957,74 @@ namespace DeepExcel.AddIn.Bridge
             _snapshotManager = snapshotManager;
         }
 
+        /// <summary>
+        /// ★ 公共方法：解析可能含 sheet 限定的地址（如 "Sheet3!A1"）为 Range。
+        /// 当 sheet 不存在时返回 null 并设置 error/suggestion，让调用方给用户友好提示。
+        /// 避免 _app.Range[address] 抛晦涩的 COMException 0x800A03EC。
+        /// </summary>
+        /// <param name="address">地址，可能含 sheet 前缀（如 "Sheet3!A1" 或 "A1"）</param>
+        /// <param name="toolName">工具名（用于错误提示）</param>
+        /// <param name="error">错误信息（sheet 不存在时填充）</param>
+        /// <param name="suggestion">建议（如"请先调 add_sheet"）</param>
+        /// <returns>解析成功返回 Range，失败返回 null</returns>
+        private Range TryResolveRange(string address, string toolName, out string error, out string suggestion)
+        {
+            error = null;
+            suggestion = null;
+            if (string.IsNullOrEmpty(address))
+            {
+                error = "address 不能为空";
+                suggestion = "请传入有效的单元格地址（如 A1 或 Sheet3!A1）";
+                return null;
+            }
+
+            // 检测 sheet 前缀
+            string sheetName = null;
+            if (address.Contains("!"))
+            {
+                int bang = address.IndexOf('!');
+                sheetName = address.Substring(0, bang);
+            }
+
+            if (sheetName != null)
+            {
+                var wb = _app.ActiveWorkbook;
+                if (wb == null)
+                {
+                    error = "没有活动工作簿";
+                    return null;
+                }
+                bool sheetExists = false;
+                foreach (Worksheet ws in wb.Worksheets)
+                {
+                    if (string.Equals(ws.Name, sheetName, StringComparison.OrdinalIgnoreCase))
+                    {
+                        sheetExists = true;
+                        break;
+                    }
+                }
+                if (!sheetExists)
+                {
+                    Logger.Instance.Warning("ExcelActions", $"{toolName}: sheet '{sheetName}' not found, address={address}");
+                    error = $"工作表 '{sheetName}' 不存在";
+                    suggestion = $"请先调用 add_sheet(name=\"{sheetName}\") 创建该工作表";
+                    return null;
+                }
+            }
+
+            try
+            {
+                return _app.Range[address];
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ExcelActions", $"{toolName}: Range[{address}] failed: {ex.Message}");
+                error = ex.Message;
+                suggestion = "地址格式可能错误（正确示例：A1 或 Sheet3!A1:G100）";
+                return null;
+            }
+        }
+
         public object GetSelection()
         {
             try
@@ -380,7 +1046,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "read_range", out string error, out string suggestion);
+                if (range == null)
+                {
+                    return new { error, suggestion };
+                }
                 return _rangeAnalyzer.Analyze(range);
             }
             catch (Exception ex)
@@ -431,7 +1101,23 @@ namespace DeepExcel.AddIn.Bridge
 
         public ToolResult ExecutePython(string code)
         {
-            var result = _pythonExecutor.Execute(code);
+            // ★ 注入上下文：工作簿路径、活动 sheet 名等，供 AI 代码使用
+            // 之前不传 context，AI 代码访问 workbook_path 会 KeyError
+            var context = new Dictionary<string, object>();
+            try
+            {
+                var wb = _app?.ActiveWorkbook;
+                if (wb != null)
+                {
+                    context["workbook_path"] = wb.FullName ?? wb.Name ?? "";
+                    context["workbook_name"] = wb.Name ?? "";
+                    var activeSheet = wb.ActiveSheet as Microsoft.Office.Interop.Excel.Worksheet;
+                    context["active_sheet"] = activeSheet?.Name ?? "";
+                }
+            }
+            catch (Exception ex) { Logger.Instance.Warning("MessageBridge", "Build python context failed: " + ex.Message); }
+
+            var result = _pythonExecutor.Execute(code, context);
             return new ToolResult
             {
                 Name = result.Name,
@@ -445,7 +1131,39 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                // ★ H2 修复：公式黑名单，阻止 LLM 通过 WEBSERVICE/SHELL 等函数外泄数据或执行命令
+                if (!string.IsNullOrEmpty(formula))
+                {
+                    string upper = formula.ToUpperInvariant();
+                    string[] blocked = {
+                        "WEBSERVICE", "FILTERXML",  // HTTP 请求外泄数据
+                        "CALL",  // 调用 DLL 函数
+                        "REGISTER.ID", "REGISTER",  // 注册 DLL
+                        "EXEC",  // 执行程序（旧版）
+                        "HYPERLINK",  // 创建可疑链接（虽不直接外泄，但可能钓鱼）
+                    };
+                    foreach (var bad in blocked)
+                    {
+                        // 匹配 =WEBSERVICE( 或 =XXX.WEBSERVICE( 等
+                        if (upper.Contains("=" + bad + "(") || upper.Contains("." + bad + "("))
+                        {
+                            Logger.Instance.Warning("MessageBridge", "WriteFormula blocked by H2 blacklist: " + bad + " in " + formula);
+                            return new ToolResult
+                            {
+                                Name = "write_formula",
+                                Success = false,
+                                Error = "公式包含被禁用的函数: " + bad + "（不允许网络请求/外部调用）",
+                                Suggestion = "请用其他公式实现，或改用 read_range + write_value 手动计算"
+                            };
+                        }
+                    }
+                }
+
+                var range = TryResolveRange(address, "write_formula", out string wfrError, out string wfrSuggestion);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "write_formula", Success = false, Error = wfrError, Suggestion = wfrSuggestion };
+                }
                 range.Formula = formula;
                 return new ToolResult { Name = "write_formula", Success = true };
             }
@@ -459,13 +1177,94 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "write_value", out string wvError, out string wvSuggestion);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "write_value", Success = false, Error = wvError, Suggestion = wvSuggestion };
+                }
+                // ★ 如果 value 是以 = 开头的字符串，Excel 会把它当公式解析（如 "=张三" 或 "=\"张三\""）。
+                // write_value 的语义是写纯文本值，所以先设单元格为文本格式，避免被当公式。
+                if (value is string s && !string.IsNullOrEmpty(s) && s[0] == '=')
+                {
+                    try { range.NumberFormat = "@"; } catch { }
+                }
                 range.Value = value;
                 return new ToolResult { Name = "write_value", Success = true };
             }
             catch (Exception ex)
             {
-                return new ToolResult { Name = "write_value", Success = false, Error = ex.Message };
+                Logger.Instance.Warning("MessageBridge", $"WriteValue failed: address={address}, value={value}, error={ex.Message}");
+                return new ToolResult
+                {
+                    Name = "write_value",
+                    Success = false,
+                    Error = ex.Message,
+                    Suggestion = "地址格式可能错误（正确示例：A1 或 Sheet3!A1），或工作表不存在（先调 add_sheet 创建）",
+                };
+            }
+        }
+
+        /// <summary>
+        /// ★ 批量写入二维数组到指定起始单元格。
+        /// address 是左上角单元格（如 "A1" 或 "Sheet3!A1"），values 是二维数组（values[row][col]）。
+        /// 内部用 Range.Value = 2DArray 一次性写入，比逐个 write_value 快 100 倍。
+        /// </summary>
+        public ToolResult WriteRange(string address, object[][] values)
+        {
+            try
+            {
+                if (values == null || values.Length == 0)
+                {
+                    return new ToolResult { Name = "write_range", Success = false, Error = "values 为空" };
+                }
+
+                int rowCount = values.Length;
+                int colCount = values[0]?.Length ?? 0;
+                if (colCount == 0)
+                {
+                    return new ToolResult { Name = "write_range", Success = false, Error = "values 第一行为空" };
+                }
+
+                Logger.Instance.Info("MessageBridge", $"WriteRange: address={address}, rows={rowCount}, cols={colCount}");
+
+                var range = TryResolveRange(address, "write_range", out string wrErr, out string wrSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "write_range", Success = false, Error = wrErr, Suggestion = wrSug };
+                }
+
+                // 扩展到完整区域
+                var fullRange = range.Resize[rowCount, colCount];
+
+                // 构造 1-based 2D 数组（Excel COM 要求）
+                var arr = new object[rowCount, colCount];
+                for (int r = 0; r < rowCount; r++)
+                {
+                    var row = values[r];
+                    for (int c = 0; c < colCount; c++)
+                    {
+                        arr[r, c] = row != null && c < row.Length ? row[c] : null;
+                    }
+                }
+
+                fullRange.Value = arr;
+                return new ToolResult
+                {
+                    Name = "write_range",
+                    Success = true,
+                    Data = new { address, rows_written = rowCount, cols_written = colCount },
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("MessageBridge", $"WriteRange failed: address={address}, error={ex.Message}");
+                return new ToolResult
+                {
+                    Name = "write_range",
+                    Success = false,
+                    Error = ex.Message,
+                    Suggestion = "地址格式可能错误（正确示例：A1 或 Sheet3!A1），或工作表不存在（先调 add_sheet 创建）",
+                };
             }
         }
 
@@ -477,6 +1276,22 @@ namespace DeepExcel.AddIn.Bridge
         public bool Rollback(string snapshotId)
         {
             return _snapshotManager.Rollback(snapshotId);
+        }
+
+        /// <summary>
+        /// ★ 列出所有历史快照（前端历史版本 UI 调用）
+        /// </summary>
+        public System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots()
+        {
+            return _snapshotManager.ListSnapshots();
+        }
+
+        /// <summary>
+        /// ★ 删除单个快照（前端历史版本 UI 调用）
+        /// </summary>
+        public bool DeleteSnapshot(string snapshotId)
+        {
+            return _snapshotManager.DeleteSnapshot(snapshotId);
         }
 
         // ============= Sheet 管理 =============
@@ -550,7 +1365,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "set_number_format", out string err, out string sug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "set_number_format", Success = false, Error = err, Suggestion = sug };
+                }
                 range.NumberFormat = format;
                 return new ToolResult { Name = "set_number_format", Success = true };
             }
@@ -564,7 +1383,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "set_column_width", out string err, out string sug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "set_column_width", Success = false, Error = err, Suggestion = sug };
+                }
                 var columns = range.Columns;
                 if (autoFit)
                 {
@@ -584,54 +1407,370 @@ namespace DeepExcel.AddIn.Bridge
 
         // ============= 数据操作 =============
 
-        public ToolResult SortData(string rangeAddress, string sortColumn, bool descending)
+        public ToolResult SortData(string rangeAddress, string sortColumn, bool descending, bool hasHeader = false)
         {
             try
             {
-                var range = _app.Range[rangeAddress];
-                // sortColumn 是列字母（如 "A"）或列序号字符串（如 "1"）
-                Range sortKey;
+                Logger.Instance.Info("ExcelActions",
+                    $"SortData: range={rangeAddress}, sortColumn={sortColumn}, descending={descending}, hasHeader={hasHeader}");
+
+                var range = TryResolveRange(rangeAddress, "sort_data", out string sortErr, out string sortSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "sort_data", Success = false, Error = sortErr, Suggestion = sortSug };
+                }
+
+                // ★ 排序前检查合并单元格：有合并单元格的区域无法正确排序，
+                // 会导致数据错位（用户反馈的"B列数据换到A列"可能就是这个原因）。
+                // 检测到合并单元格时直接报错，让用户先取消合并再排序。
+                object merged = null;
+                try { merged = range.MergeCells; } catch { }
+                if (merged is bool bm && bm)
+                {
+                    return new ToolResult
+                    {
+                        Name = "sort_data",
+                        Success = false,
+                        Error = "排序区域包含合并单元格，无法直接排序。请先取消合并单元格（unmerge_cells）后再排序。",
+                        Suggestion = "请先调用 unmerge_cells 工具取消该区域的合并，然后再排序。"
+                    };
+                }
+                if (merged == null)
+                {
+                    // 混合情况（部分合并）：检查是否真的有合并单元格
+                    // 简单检测：检查第一行、最后一行、第一列、最后一列
+                    bool hasMerged = false;
+                    try
+                    {
+                        int rows = range.Rows.Count;
+                        int cols = range.Columns.Count;
+                        // 检查四角
+                        var corners = new Range[]
+                        {
+                            (Range)range.Cells[1, 1],
+                            (Range)range.Cells[1, cols],
+                            (Range)range.Cells[rows, 1],
+                            (Range)range.Cells[rows, cols],
+                        };
+                        foreach (var corner in corners)
+                        {
+                            try
+                            {
+                                if (corner.MergeCells is bool cm && cm)
+                                {
+                                    hasMerged = true;
+                                    break;
+                                }
+                            }
+                            catch { }
+                        }
+                        // 再检查中间一些单元格
+                        if (!hasMerged && rows > 4 && cols > 2)
+                        {
+                            for (int r = 2; r < rows && r < 6; r++)
+                            {
+                                for (int c = 1; c <= cols && c <= 3; c++)
+                                {
+                                    try
+                                    {
+                                        var cell = (Range)range.Cells[r, c];
+                                        if (cell.MergeCells is bool cm2 && cm2)
+                                        {
+                                            hasMerged = true;
+                                            break;
+                                        }
+                                    }
+                                    catch { }
+                                }
+                                if (hasMerged) break;
+                            }
+                        }
+                    }
+                    catch { }
+
+                    if (hasMerged)
+                    {
+                        return new ToolResult
+                        {
+                            Name = "sort_data",
+                            Success = false,
+                            Error = "排序区域包含合并单元格，无法直接排序。请先取消合并单元格（unmerge_cells）后再排序。",
+                            Suggestion = "请先调用 unmerge_cells 工具取消该区域的合并，然后再排序。"
+                        };
+                    }
+                }
+
+                // sortColumn 是列字母（如 "F"）或列序号字符串（如 "1"）或列名（如"销售额"）
+                // ★★★ 必须转成 range 内部的相对列号（1-based），不是工作表绝对列号！
+                // 错误做法：直接用 ColumnLetterToNumber("F")=6 作为 range.Cells[r, 6] 的列索引，
+                // 当 range=E2:F14（2列）时，range.Cells[2, 6] 会跑到 J 列去（绝对位置），
+                // 导致 Sort 报错"排序引用无效，请确保它在所要排序的数据内"。
+                // 正确做法：用绝对列号减去 range 起始列号，得到相对列号。
+                int absoluteColNum;
                 if (int.TryParse(sortColumn, out int colIdx))
                 {
-                    sortKey = (Range)range.Columns[colIdx];
+                    absoluteColNum = colIdx;
                 }
                 else
                 {
-                    // 字母列：在 range 内找对应列
-                    var fullCol = _app.Range[sortColumn + "1"];
-                    sortKey = (Range)_app.Intersect(range, fullCol.EntireColumn);
+                    absoluteColNum = ColumnLetterToNumber(sortColumn);
+                }
+
+                // 计算 range 起始列号，把绝对列号转成 range 内部相对列号（1-based）
+                int rangeStartCol = ((Range)range.Cells[1, 1]).Column;
+                int sortColNum = absoluteColNum - rangeStartCol + 1;
+
+                int totalCols = range.Columns.Count;
+
+                // ★ 校验：sortColNum 必须在 range 范围内
+                if (sortColNum < 1 || sortColNum > totalCols)
+                {
+                    Logger.Instance.Error("ExcelActions",
+                        $"SortData: sort column out of range! absoluteCol={absoluteColNum}, rangeStartCol={rangeStartCol}, relativeCol={sortColNum}, totalCols={totalCols}");
+                    return new ToolResult
+                    {
+                        Name = "sort_data",
+                        Success = false,
+                        Error = $"排序列 {sortColumn}（绝对列号 {absoluteColNum}）不在排序区域 {rangeAddress}（列范围 {rangeStartCol}-{rangeStartCol + totalCols - 1}）内。",
+                        Suggestion = $"请确保 sort_column 在 range_address 范围内。range 起始列是 {ColumnIndexToLetter(rangeStartCol)}，请传该范围内的列字母。"
+                    };
+                }
+
+                // ★ 智能检测：AI 传 has_header=false 时，检查第一行是否疑似表头。
+                // 判定标准：第一行是文本，且第二行及以后至少有一列是数字。
+                // 这是"表头+数据"的典型特征，纯文本表（如姓名/籍贯对照）不会被误判。
+                // 检测到疑似表头时自动纠正为 has_header=true，继续执行（不拒绝，保证可用性）。
+                // ★★★ 必须用 Value2 判断类型，不能用 Text！
+                // Text 返回格式化后的字符串（如"1,234.56"/"¥100"/"####"），double.TryParse 会失败。
+                // Value2 对数字返回 double，对文本返回 string，不经过格式化。
+                bool headerAutoCorrected = false;
+                if (!hasHeader && range.Rows.Count >= 2)
+                {
+                    bool firstRowAllText = true;
+                    bool laterRowsHaveNumber = false;
+                    int checkCols = Math.Min(totalCols, 10);
+                    for (int c = 1; c <= checkCols; c++)
+                    {
+                        try
+                        {
+                            var firstCell = (Range)range.Cells[1, c];
+                            var firstVal = firstCell.Value2;
+                            // 第一行必须是文本（非空、非数字）
+                            if (firstVal == null) { firstRowAllText = false; break; }
+                            if (firstVal is double) { firstRowAllText = false; break; }
+                            string firstText = firstVal.ToString();
+                            if (string.IsNullOrEmpty(firstText)) { firstRowAllText = false; break; }
+                            // 排除数字字符串（如"2024"）
+                            if (double.TryParse(firstText, out _)) { firstRowAllText = false; break; }
+
+                            // 检查后续行该列是否有数字（用 Value2 判断类型）
+                            for (int r = 2; r <= range.Rows.Count; r++)
+                            {
+                                try
+                                {
+                                    var cell = (Range)range.Cells[r, c];
+                                    var val = cell.Value2;
+                                    if (val is double)
+                                    {
+                                        laterRowsHaveNumber = true;
+                                        break;
+                                    }
+                                    if (val is string s && double.TryParse(s, out _))
+                                    {
+                                        laterRowsHaveNumber = true;
+                                        break;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    if (firstRowAllText && laterRowsHaveNumber)
+                    {
+                        Logger.Instance.Warning("ExcelActions",
+                            $"SortData: SUSPECTED HEADER DETECTED! has_header=false but row1 is text and later rows have numbers. Auto-correcting to has_header=true");
+                        hasHeader = true;
+                        headerAutoCorrected = true;
+                    }
+                }
+
+                // Key1 必须指向数据行的单元格（不是表头行）。
+                int keyRow = hasHeader ? 2 : 1;
+                Range sortKey = (Range)range.Cells[keyRow, sortColNum];
+
+                // ★ 防御性检查：排序前记录每列第一行的值，排序后验证列顺序未被破坏。
+                var colHeadersBefore = new string[totalCols + 1];
+                for (int c = 1; c <= totalCols; c++)
+                {
+                    // ★ 用 Value2 而非 Text 做比对。Text 受格式和列宽影响（如"####"），会误报列交换。
+                    try { colHeadersBefore[c] = ((Range)range.Cells[1, c]).Value2?.ToString() ?? ""; }
+                    catch { colHeadersBefore[c] = ""; }
+                }
+
+                Logger.Instance.Info("ExcelActions",
+                    $"SortData: sortKey address={sortKey.Address}, keyRow={keyRow}, sortColNum={sortColNum}, range rows={range.Rows.Count}, cols={totalCols}");
+                for (int c = 1; c <= totalCols; c++)
+                {
+                    Logger.Instance.Info("ExcelActions", $"SortData: col{c} header before = '{colHeadersBefore[c]}'");
                 }
 
                 _app.DisplayAlerts = false;
                 try
                 {
+                    // ★★★ 关键修复：Orientation 必须传 xlSortColumns！
+                    // xlSortColumns=1: 以列为排序依据，重排行（正常排序行为）
+                    // xlSortRows=2: 以行为排序依据，重排列（会导致列交换！）
+                    // 不传 Orientation 时 Excel 会复用上次设置，可能恰好是 xlSortRows 导致列交换。
                     range.Sort(
                         Key1: sortKey,
                         Order1: descending ? XlSortOrder.xlDescending : XlSortOrder.xlAscending,
-                        Header: XlYesNoGuess.xlYes);
+                        Header: hasHeader ? XlYesNoGuess.xlYes : XlYesNoGuess.xlNo,
+                        Orientation: XlSortOrientation.xlSortColumns,
+                        SortMethod: XlSortMethod.xlPinYin,
+                        DataOption1: XlSortDataOption.xlSortNormal);
                 }
                 finally { _app.DisplayAlerts = true; }
 
+                // ★ 排序后验证：检查列顺序是否被破坏（防止列交换）
+                // ★ 用 Value2 而非 Text 做比对。Text 受格式和列宽影响（如"####"），会误报列交换。
+                bool columnsSwapped = false;
+                for (int c = 1; c <= totalCols; c++)
+                {
+                    try
+                    {
+                        string headerAfter = ((Range)range.Cells[1, c]).Value2?.ToString() ?? "";
+                        if (headerAfter != colHeadersBefore[c])
+                        {
+                            columnsSwapped = true;
+                            Logger.Instance.Error("ExcelActions",
+                                $"SortData: COLUMN SWAP DETECTED! col{c} was '{colHeadersBefore[c]}', now '{headerAfter}'");
+                        }
+                    }
+                    catch { }
+                }
+
+                if (columnsSwapped)
+                {
+                    Logger.Instance.Error("ExcelActions", "SortData: columns were swapped, sort orientation was wrong");
+                    return new ToolResult
+                    {
+                        Name = "sort_data",
+                        Success = false,
+                        Error = "排序时检测到列顺序被破坏（列交换），排序未正确执行。请重试。"
+                    };
+                }
+
+                Logger.Instance.Info("ExcelActions", "SortData: sort completed successfully, columns verified");
+                if (headerAutoCorrected)
+                {
+                    return new ToolResult
+                    {
+                        Name = "sort_data",
+                        Success = true,
+                        Warning = "检测到第一行疑似表头（第一行文本+后续行数字），已自动按 has_header=true 排序（表头未参与）。下次请明确传入 has_header=true。"
+                    };
+                }
                 return new ToolResult { Name = "sort_data", Success = true };
             }
             catch (Exception ex)
             {
                 try { _app.DisplayAlerts = true; } catch { }
+                Logger.Instance.Error("ExcelActions", "SortData failed", ex);
                 return new ToolResult { Name = "sort_data", Success = false, Error = ex.Message };
             }
+        }
+
+        /// <summary>
+        /// 列字母转列序号（A=1, B=2, ..., Z=26, AA=27, ...）
+        /// </summary>
+        private static int ColumnLetterToNumber(string columnLetter)
+        {
+            int result = 0;
+            foreach (char c in columnLetter.ToUpper())
+            {
+                if (c >= 'A' && c <= 'Z')
+                {
+                    result = result * 26 + (c - 'A' + 1);
+                }
+            }
+            return result;
         }
 
         public ToolResult FilterData(string rangeAddress, int columnIndex, string criteria)
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = TryResolveRange(rangeAddress, "filter_data", out string fErr, out string fSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "filter_data", Success = false, Error = fErr, Suggestion = fSug };
+                }
+                var ws = range.Worksheet;
                 _app.DisplayAlerts = false;
                 try
                 {
-                    range.AutoFilter(
-                        Field: columnIndex,
-                        Criteria1: criteria);
+                    // ★ 避免 toggle：先检查 AutoFilter 是否已开启
+                    // 如果工作表已开启 AutoFilter 且范围匹配，直接设置条件；
+                    // 如果未开启，则调用 AutoFilter 开启。
+                    // 直接调用 range.AutoFilter() 在已开启时会关闭（toggle），
+                    // 导致"过滤了反而显示全部"的反直觉行为。
+                    bool filterMode = false;
+                    try { filterMode = ws.AutoFilterMode; } catch { }
+
+                    if (filterMode)
+                    {
+                        // 已开启筛选：直接修改指定列的筛选条件
+                        // 通过 AutoFilter.Filters 访问对应字段的筛选
+                        try
+                        {
+                            var af = ws.AutoFilter;
+                            if (af != null && af.Range != null)
+                            {
+                                // 确保筛选范围包含目标范围
+                                string afAddr = af.Range.Address;
+                                string rangeAddr = range.Address;
+                                if (afAddr == rangeAddr || afAddr.Contains(rangeAddr))
+                                {
+                                    // 范围匹配或更大，直接重新应用筛选以确保条件生效
+                                    range.AutoFilter(
+                                        Field: columnIndex,
+                                        Criteria1: criteria,
+                                        Operator: XlAutoFilterOperator.xlAnd,
+                                        VisibleDropDown: true);
+                                }
+                                else
+                                {
+                                    // 范围不同：先关旧的，再开新的
+                                    ws.AutoFilterMode = false;
+                                    range.AutoFilter(
+                                        Field: columnIndex,
+                                        Criteria1: criteria);
+                                }
+                            }
+                            else
+                            {
+                                range.AutoFilter(
+                                    Field: columnIndex,
+                                    Criteria1: criteria);
+                            }
+                        }
+                        catch
+                        {
+                            // 兜底：直接调用
+                            range.AutoFilter(
+                                Field: columnIndex,
+                                Criteria1: criteria);
+                        }
+                    }
+                    else
+                    {
+                        // 未开启筛选：正常开启
+                        range.AutoFilter(
+                            Field: columnIndex,
+                            Criteria1: criteria);
+                    }
                 }
                 finally { _app.DisplayAlerts = true; }
 
@@ -650,7 +1789,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "merge_cells", out string mErr, out string mSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "merge_cells", Success = false, Error = mErr, Suggestion = mSug };
+                }
                 _app.DisplayAlerts = false;
                 try { range.Merge(); }
                 finally { _app.DisplayAlerts = true; }
@@ -667,7 +1810,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "unmerge_cells", out string uErr, out string uSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "unmerge_cells", Success = false, Error = uErr, Suggestion = uSug };
+                }
                 range.UnMerge();
                 return new ToolResult { Name = "unmerge_cells", Success = true };
             }
@@ -681,7 +1828,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "set_cell_style", out string stErr, out string stSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "set_cell_style", Success = false, Error = stErr, Suggestion = stSug };
+                }
                 var font = range.Font;
                 if (!string.IsNullOrEmpty(fontName)) font.Name = fontName;
                 if (fontSize.HasValue) font.Size = fontSize.Value;
@@ -733,8 +1884,16 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var src = _app.Range[sourceAddress];
-                var dst = _app.Range[destAddress];
+                var src = TryResolveRange(sourceAddress, "copy_range[source]", out string srcErr, out string srcSug);
+                if (src == null)
+                {
+                    return new ToolResult { Name = "copy_range", Success = false, Error = srcErr, Suggestion = srcSug };
+                }
+                var dst = TryResolveRange(destAddress, "copy_range[dest]", out string dstErr, out string dstSug);
+                if (dst == null)
+                {
+                    return new ToolResult { Name = "copy_range", Success = false, Error = dstErr, Suggestion = dstSug };
+                }
                 src.Copy(dst);
                 return new ToolResult { Name = "copy_range", Success = true };
             }
@@ -748,7 +1907,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
+                var range = TryResolveRange(address, "clear_range", out string cErr, out string cSug);
+                if (range == null)
+                {
+                    return new ToolResult { Name = "clear_range", Success = false, Error = cErr, Suggestion = cSug };
+                }
                 switch ((clearType ?? "all").ToLower())
                 {
                     case "contents":
@@ -777,15 +1940,21 @@ namespace DeepExcel.AddIn.Bridge
             try
             {
                 var ws = (Worksheet)_app.ActiveSheet;
+                // ★ 必须用 EntireRow.Insert() 插入整行，所有列才会一起下移。
+                // 错误做法：ws.Range["A"+row].Insert(xlShiftDown) 只会下移 A 列，
+                // 其他列（如 B 列）数据保持原位，导致列错位。
                 var range = ws.Range["A" + row];
                 for (int i = 0; i < count; i++)
                 {
-                    range.Insert(XlInsertShiftDirection.xlShiftDown);
+                    range.EntireRow.Insert(XlInsertShiftDirection.xlShiftDown);
                 }
+                Logger.Instance.Info("ExcelActions",
+                    $"InsertRows: inserted {count} row(s) at row {row} (entire row shift)");
                 return new ToolResult { Name = "insert_rows", Success = true };
             }
             catch (Exception ex)
             {
+                Logger.Instance.Error("ExcelActions", "InsertRows failed", ex);
                 return new ToolResult { Name = "insert_rows", Success = false, Error = ex.Message };
             }
         }
@@ -814,14 +1983,20 @@ namespace DeepExcel.AddIn.Bridge
                 var ws = (Worksheet)_app.ActiveSheet;
                 var colLetter = ColumnIndexToLetter(column);
                 var range = ws.Range[colLetter + "1"];
+                // ★ 必须用 EntireColumn.Insert() 插入整列，所有行才会一起右移。
+                // 错误做法：range.Insert(xlShiftToRight) 只会右移第 1 行，
+                // 其他行数据保持原位，导致行错位。
                 for (int i = 0; i < count; i++)
                 {
-                    range.Insert(XlInsertShiftDirection.xlShiftToRight);
+                    range.EntireColumn.Insert(XlInsertShiftDirection.xlShiftToRight);
                 }
+                Logger.Instance.Info("ExcelActions",
+                    $"InsertColumns: inserted {count} column(s) at col {colLetter} (entire column shift)");
                 return new ToolResult { Name = "insert_columns", Success = true };
             }
             catch (Exception ex)
             {
+                Logger.Instance.Error("ExcelActions", "InsertColumns failed", ex);
                 return new ToolResult { Name = "insert_columns", Success = false, Error = ex.Message };
             }
         }
@@ -849,9 +2024,14 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                // freeze_panes 的 address 不含 sheet 前缀（只对当前活动 sheet 操作）
+                // 用 TryResolveRange 检测地址格式有效性
+                var cell = TryResolveRange(address, "freeze_panes", out string fErr, out string fSug);
+                if (cell == null)
+                {
+                    return new ToolResult { Name = "freeze_panes", Success = false, Error = fErr, Suggestion = fSug };
+                }
                 _app.ActiveWindow.Split = false;  // 先解除现有冻结
-                var cell = ws.Range[address];
                 cell.Activate();
                 _app.ActiveWindow.FreezePanes = true;
                 return new ToolResult { Name = "freeze_panes", Success = true };
@@ -878,23 +2058,26 @@ namespace DeepExcel.AddIn.Bridge
 
                 // ★ address 容错：模型可能传列名"销售额"而非 A1 地址
                 Range range = null;
-                try
-                {
-                    range = _app.Range[address];
-                }
-                catch (System.Runtime.InteropServices.COMException ce) when (ce.ErrorCode == unchecked((int)0x800A03EC))
+                range = TryResolveRange(address, "apply_conditional_format", out string acfErr, out string acfSug);
+                if (range == null)
                 {
                     // 尝试作为列名解析：扫描表头行找到匹配列，转为列字母地址
                     string resolved = TryResolveColumnNameToRange(address);
                     if (resolved != null)
                     {
                         Diagnostics.Logger.Instance.Info("ExcelActionsImpl", $"ApplyConditionalFormat: 列名解析 [{address}] -> [{resolved}]");
-                        range = _app.Range[resolved];
+                        range = TryResolveRange(resolved, "apply_conditional_format", out acfErr, out acfSug);
                     }
-                    else
+                }
+                if (range == null)
+                {
+                    return new ToolResult
                     {
-                        throw new System.Runtime.InteropServices.COMException($"address '{address}' 不是有效的 A1 地址，且未在表头中找到匹配列名。原始错误: {ce.Message}", ce.ErrorCode);
-                    }
+                        Name = "apply_conditional_format",
+                        Success = false,
+                        Error = acfErr ?? $"address '{address}' 不是有效的 A1 地址，且未在表头中找到匹配列名",
+                        Suggestion = acfSug ?? "请传入 A1 格式地址（如 A1:A100）或表头列名（如\"销售额\"）",
+                    };
                 }
 
                 // 解析 ruleArgs（Dictionary<string, object>）
@@ -1015,12 +2198,9 @@ namespace DeepExcel.AddIn.Bridge
                 for (int c = 1; c <= colCount; c++)
                 {
                     Range cellVal = (Range)headerRow[1, c];
+                    // ★ 用 Value2 获取原始文本做列名匹配。Text 受格式影响（如"####"）会匹配失败。
                     string text = "";
-                    try { text = cellVal?.Text?.ToString() ?? ""; } catch { }
-                    if (string.IsNullOrEmpty(text))
-                    {
-                        try { text = cellVal?.Value2?.ToString() ?? ""; } catch { }
-                    }
+                    try { text = cellVal?.Value2?.ToString() ?? ""; } catch { }
                     if (!string.IsNullOrEmpty(text) &&
                         (text.Trim() == name.Trim() ||
                          text.Trim().IndexOf(name.Trim(), StringComparison.OrdinalIgnoreCase) >= 0))

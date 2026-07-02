@@ -83,10 +83,32 @@ namespace DeepExcel.AddIn.Perception
                 if (range.Cells.Count == 1)
                 {
                     var single = new string[1, 1];
-                    single[0, 0] = range.NumberFormat.ToString();
+                    single[0, 0] = range.NumberFormat?.ToString() ?? "";
                     return single;
                 }
-                return range.NumberFormat as string[,];
+
+                // NumberFormat 返回的是 object[,]（和 Value2 一样），
+                // 不是 string[,]，直接 as string[,] 会返回 null。
+                // 需要手动转换。
+                var formats = range.NumberFormat as object[,];
+                if (formats == null)
+                {
+                    // 多区域（Areas.Count > 1）或其他情况，返回空数组
+                    return new string[0, 0];
+                }
+
+                int rows = formats.GetLength(0);
+                int cols = formats.GetLength(1);
+                var result = new string[rows, cols];
+                for (int i = 0; i < rows; i++)
+                {
+                    for (int j = 0; j < cols; j++)
+                    {
+                        // Excel COM 数组是 1-based
+                        result[i, j] = formats[i + 1, j + 1]?.ToString() ?? "";
+                    }
+                }
+                return result;
             }
             catch
             {
@@ -126,23 +148,133 @@ namespace DeepExcel.AddIn.Perception
 
             try
             {
-                var mergeAreas = range.Areas;
-                foreach (Range area in mergeAreas)
+                object merged = range.MergeCells;
+
+                // 快速路径：没有任何合并单元格
+                if (merged is bool b && !b)
+                {
+                    return result.ToArray();
+                }
+
+                // 整个区域是一个合并单元格
+                if (merged is bool b2 && b2)
                 {
                     result.Add(new MergeCellInfo
                     {
-                        Address = area.Address,
-                        RowCount = area.Rows.Count,
-                        ColumnCount = area.Columns.Count
+                        Address = range.Address,
+                        RowCount = range.Rows.Count,
+                        ColumnCount = range.Columns.Count
                     });
+                    return result.ToArray();
+                }
+
+                // 混合情况：智能扫描
+                // 策略：
+                // 1. 小区域（<= 500 单元格）：全量扫描
+                // 2. 大区域（> 500 单元格）：扫描第一行 + 最后一行 + 第一列 + 最后一列 + 每隔 N 行抽一行
+                //    这样能覆盖标题、表尾、左侧表头的合并单元格，避免漏报
+                int totalCells = range.Rows.Count * range.Columns.Count;
+                var seen = new HashSet<string>();
+
+                if (totalCells <= 500)
+                {
+                    // 小区域：全量扫描
+                    foreach (Range cell in range.Cells)
+                    {
+                        ScanCellForMerge(cell, seen, result);
+                    }
+                }
+                else
+                {
+                    // 大区域：智能采样扫描
+                    int rows = range.Rows.Count;
+                    int cols = range.Columns.Count;
+
+                    // 1. 扫描第一行（标题行通常有合并）
+                    for (int c = 1; c <= cols; c++)
+                    {
+                        Range cell = null;
+                        try { cell = (Range)range.Cells[1, c]; } catch { }
+                        if (cell != null) ScanCellForMerge(cell, seen, result);
+                    }
+
+                    // 2. 扫描最后一行
+                    if (rows > 1)
+                    {
+                        for (int c = 1; c <= cols; c++)
+                        {
+                            Range cell = null;
+                            try { cell = (Range)range.Cells[rows, c]; } catch { }
+                            if (cell != null) ScanCellForMerge(cell, seen, result);
+                        }
+                    }
+
+                    // 3. 扫描第一列
+                    if (cols > 1)
+                    {
+                        for (int r = 2; r < rows; r++)
+                        {
+                            Range cell = null;
+                            try { cell = (Range)range.Cells[r, 1]; } catch { }
+                            if (cell != null) ScanCellForMerge(cell, seen, result);
+                        }
+                    }
+
+                    // 4. 扫描最后一列
+                    if (cols > 1 && rows > 2)
+                    {
+                        for (int r = 2; r < rows; r++)
+                        {
+                            Range cell = null;
+                            try { cell = (Range)range.Cells[r, cols]; } catch { }
+                            if (cell != null) ScanCellForMerge(cell, seen, result);
+                        }
+                    }
+
+                    // 5. 每隔 20 行抽一行扫描（中间区域采样）
+                    if (rows > 10)
+                    {
+                        int step = rows > 100 ? 20 : 10;
+                        for (int r = 5; r < rows - 1; r += step)
+                        {
+                            for (int c = 1; c <= cols; c++)
+                            {
+                                Range cell = null;
+                                try { cell = (Range)range.Cells[r, c]; } catch { }
+                                if (cell != null) ScanCellForMerge(cell, seen, result);
+                            }
+                        }
+                    }
                 }
             }
             catch
             {
-                // 某些区域没有合并单元格
+                // 某些区域无法访问 MergeCells 属性
             }
 
             return result.ToArray();
+        }
+
+        private void ScanCellForMerge(Range cell, HashSet<string> seen, List<MergeCellInfo> result)
+        {
+            try
+            {
+                if (cell == null) return;
+                if (cell.MergeCells is bool mc && mc)
+                {
+                    string addr = cell.MergeArea.Address;
+                    if (seen.Add(addr))
+                    {
+                        result.Add(new MergeCellInfo
+                        {
+                            Address = addr,
+                            RowCount = cell.MergeArea.Rows.Count,
+                            ColumnCount = cell.MergeArea.Columns.Count
+                        });
+                    }
+                }
+            }
+            catch { }
         }
 
         private string SafeGet(Func<string> getter, string defaultValue = "")

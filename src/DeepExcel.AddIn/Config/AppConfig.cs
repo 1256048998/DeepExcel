@@ -188,6 +188,9 @@ namespace DeepExcel.AddIn.Config
 
         /// <summary>
         /// 更新API Key
+        /// ★ P0-4 修复：API Key 不再明文存到 config.json，改用 SecurityManager 通过 DPAPI 加密存到
+        /// %APPDATA%/DeepExcel/credentials/key_{provider}.crypt 文件，避免密钥被窃取。
+        /// config.json 中 ApiKey 字段保留空字符串占位（不存真实 key）。
         /// </summary>
         public void UpdateApiKey(string providerKey, string apiKey)
         {
@@ -195,7 +198,17 @@ namespace DeepExcel.AddIn.Config
             {
                 _config.Providers[providerKey] = new ProviderConfig();
             }
-            _config.Providers[providerKey].ApiKey = apiKey;
+            // ★ 通过 SecurityManager 加密存储，config.json 不保留明文
+            try
+            {
+                DeepExcel.AddIn.Security.SecurityManager.Instance.SaveApiKey(providerKey, apiKey);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine("UpdateApiKey: SecurityManager.Save failed: " + ex.Message);
+            }
+            // config.json 中保留空占位（向后兼容旧读取逻辑）
+            _config.Providers[providerKey].ApiKey = "";
             Save();
         }
 

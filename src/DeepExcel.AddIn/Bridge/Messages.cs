@@ -51,6 +51,9 @@ namespace DeepExcel.AddIn.Bridge
         [JsonPropertyName("suggestion")]
         public string Suggestion { get; set; }   // 失败再问提示；非空时触发模型反问
 
+        [JsonPropertyName("warning")]
+        public string Warning { get; set; }      // 成功但有警告（如参数自动纠正）
+
         [JsonPropertyName("context")]
         public object Context { get; set; }      // Excel 上下文快照
     }

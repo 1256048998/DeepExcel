@@ -10,6 +10,7 @@ namespace DeepExcel.AddIn.Perception
         public WorksheetInfo[] Worksheets { get; set; }
         public NamedRangeInfo[] NamedRanges { get; set; }
         public bool HasVBAProject { get; set; }
+        public string ActiveSheet { get; set; }
     }
 
     public class WorksheetInfo

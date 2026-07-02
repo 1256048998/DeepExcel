@@ -49,6 +49,8 @@ namespace DeepExcel.AddIn.Security
 
         /// <summary>
         /// 解密字符串
+        /// ★ H4 修复：解密失败时 fail-closed 返回空字符串，而非 fail-open 返回原文。
+        /// 否则攻击者替换 .crypt 文件为明文 key 即可绕过 DPAPI。
         /// </summary>
         public string Decrypt(string encryptedText)
         {
@@ -61,7 +63,8 @@ namespace DeepExcel.AddIn.Security
             }
             catch
             {
-                return encryptedText;
+                // fail-closed：解密失败说明数据无效或被篡改，返回空
+                return "";
             }
         }
 
@@ -136,15 +139,20 @@ namespace DeepExcel.AddIn.Security
 
         /// <summary>
         /// 生成随机验证码（用于二次验证）
+        /// ★ H5 修复：用 RandomNumberGenerator 替代非加密 Random，避免验证码可预测。
         /// </summary>
         public string GenerateVerificationCode()
         {
-            var chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            var random = new Random();
+            const string chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
             var code = new char[6];
+            byte[] buffer = new byte[6];
+            using (var rng = RandomNumberGenerator.Create())
+            {
+                rng.GetBytes(buffer);
+            }
             for (int i = 0; i < 6; i++)
             {
-                code[i] = chars[random.Next(chars.Length)];
+                code[i] = chars[buffer[i] % chars.Length];
             }
             return new string(code);
         }

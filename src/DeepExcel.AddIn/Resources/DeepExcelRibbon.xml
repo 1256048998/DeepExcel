@@ -5,11 +5,11 @@
       <tab id="tabDeepExcel" label="DeepExcel" insertAfterMso="TabHome">
         <group id="grpTools" label="AI Agent">
           <button id="btnTogglePanel" label="打开面板" size="large"
-                  imageMso="SmartArtGraphicChangeColors"
+                  imageMso="InsertFunction"
                   onAction="OnTogglePanel"
                   screentip="打开 DeepExcel AI 面板"
                   supertip="在面板中输入你的需求，AI 会自动帮你处理 Excel。"/>
-          <button id="btnHelp" label="帮助" size="normal"
+          <button id="btnHelp" label="帮助" size="large"
                   imageMso="Info"
                   onAction="OnShowHelp"
                   screentip="使用帮助"

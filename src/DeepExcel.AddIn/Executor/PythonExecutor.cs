@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using Microsoft.Office.Interop.Excel;
 using DeepExcel.AddIn.Bridge;
+using DeepExcel.AddIn.Diagnostics;
 
 namespace DeepExcel.AddIn.Executor
 {
@@ -54,6 +55,19 @@ namespace DeepExcel.AddIn.Executor
                 };
             }
 
+            // ★ P0-3 沙箱校验：阻止 LLM 执行任意系统命令/外泄数据
+            var sandboxError = DeepExcel.AddIn.Security.CodeSandbox.ValidatePython(pythonCode);
+            if (sandboxError != null)
+            {
+                Logger.Instance.Warning("PythonExecutor", "Code blocked by sandbox: " + sandboxError);
+                return new ToolResult
+                {
+                    Name = "execute_python",
+                    Success = false,
+                    Error = sandboxError
+                };
+            }
+
             // 执行前快照
             var snapshotId = _snapshots.CreateSnapshot();
             var tempScript = Path.GetTempFileName() + ".py";
@@ -73,7 +87,7 @@ namespace DeepExcel.AddIn.Executor
                     File.WriteAllText(tempInput, inputJson);
                 }
 
-                // 执行脚本
+                // 执行脚本（带超时，防止子进程死循环阻塞 Excel 主线程）
                 var psi = new ProcessStartInfo
                 {
                     FileName = _pythonPath,
@@ -85,9 +99,37 @@ namespace DeepExcel.AddIn.Executor
                 };
 
                 using var process = Process.Start(psi);
-                var output = process.StandardOutput.ReadToEnd();
-                var error = process.StandardError.ReadToEnd();
-                process.WaitForExit();
+                // ★ 异步读取 stdout/stderr，避免管道满导致子进程阻塞
+                var outputTask = process.StandardOutput.ReadToEndAsync();
+                var errorTask = process.StandardError.ReadToEndAsync();
+
+                // ★ 30 秒超时：子进程死循环时强制 kill，防止 Excel 主线程被冻结
+                const int timeoutMs = 30000;
+                if (!process.WaitForExit(timeoutMs))
+                {
+                    try
+                    {
+                        Logger.Instance.Error("PythonExecutor",
+                            $"Python script timed out after {timeoutMs / 1000}s, killing process (pid={process.Id})");
+                        process.Kill();
+                        process.WaitForExit(2000);
+                    }
+                    catch (Exception killEx)
+                    {
+                        Logger.Instance.Error("PythonExecutor", "Kill failed: " + killEx.Message);
+                    }
+                    _snapshots.Rollback(snapshotId);
+                    return new ToolResult
+                    {
+                        Name = "execute_python",
+                        Success = false,
+                        Error = $"Python 脚本执行超时（{timeoutMs / 1000} 秒）。请简化代码或减少数据处理量。",
+                        Data = new { snapshotId }
+                    };
+                }
+
+                var output = outputTask.Result;
+                var error = errorTask.Result;
 
                 if (process.ExitCode == 0)
                 {
@@ -244,6 +286,20 @@ namespace DeepExcel.AddIn.Executor
             sb.AppendLine($"        ctx = json.load(f)");
             sb.AppendLine("except: pass");
             sb.AppendLine();
+
+            // ★ 把 context 注入为顶层 Python 变量，AI 代码可直接用 workbook_path / active_sheet 等
+            // 之前只放进 ctx dict，AI 代码用 workbook_path 会 KeyError
+            if (context != null)
+            {
+                sb.AppendLine("# 上下文变量（可直接使用）");
+                foreach (var kvp in context)
+                {
+                    var pyVal = ToPythonLiteral(kvp.Value);
+                    sb.AppendLine($"{kvp.Key} = {pyVal}");
+                }
+                sb.AppendLine();
+            }
+
             sb.AppendLine("result = {}");
             sb.AppendLine();
 
@@ -320,6 +376,21 @@ namespace DeepExcel.AddIn.Executor
                 if (File.Exists(path)) File.Delete(path);
             }
             catch { }
+        }
+
+        /// <summary>
+        /// 把 C# 值转为 Python 字面量字符串（用于代码注入）
+        /// </summary>
+        private string ToPythonLiteral(object value)
+        {
+            if (value == null) return "None";
+            if (value is bool b) return b ? "True" : "False";
+            if (value is int || value is long || value is double || value is float)
+                return value.ToString().Replace(",", "."); // 防本地化
+            // 字符串：用双引号，转义反斜杠和引号
+            var s = value.ToString() ?? "";
+            s = s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n");
+            return $"\"{s}\"";
         }
     }
 }

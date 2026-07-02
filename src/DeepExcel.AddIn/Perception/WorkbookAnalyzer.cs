@@ -28,7 +28,8 @@ namespace DeepExcel.AddIn.Perception
                 FilePath = SafeGet(() => wb.FullName),
                 Worksheets = AnalyzeWorksheets(wb),
                 NamedRanges = AnalyzeNamedRanges(wb),
-                HasVBAProject = SafeGet(() => wb.HasVBProject, false)
+                HasVBAProject = SafeGet(() => wb.HasVBProject, false),
+                ActiveSheet = SafeGet(() => (_app.ActiveSheet as Worksheet)?.Name, "")
             };
         }
 

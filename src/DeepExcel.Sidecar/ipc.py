@@ -23,6 +23,7 @@ _message_buffer: Dict[str, Any] = {
     "user_message": None,     # asyncio.Queue，在 _init_buffer() 中创建
     "cancel": None,           # asyncio.Event，在 _init_buffer() 中创建
     "config": None,           # asyncio.Queue，在 _init_buffer() 中创建
+    "restore_history": None,  # ★ 历史对话恢复（list of {role, content}），None 表示无历史
 }
 
 
@@ -85,6 +86,10 @@ def route_message(msg: dict) -> None:
     elif t == "config":
         _message_buffer["config"].put_nowait(msg)
         _log("route_message: config enqueued")
+    elif t == "restore_history":
+        # ★ 历史对话恢复：存到全局变量，sidecar 主循环会在首条 user_message 时注入
+        _message_buffer["restore_history"] = msg.get("messages", [])
+        _log(f"route_message: restore_history stored, count={len(_message_buffer['restore_history'] or [])}")
     else:
         _log(f"route_message: UNKNOWN type={t}, ignored")
     # 未知 type 静默丢弃，避免 sidecar 崩溃
@@ -92,8 +97,10 @@ def route_message(msg: dict) -> None:
 
 # 追加到 src/DeepExcel.Sidecar/ipc.py
 
-async def call_csharp(tool_name: str, args: dict) -> dict:
-    """向 C# 发送工具调用请求，阻塞等待结果（按 call_id 匹配）"""
+async def call_csharp(tool_name: str, args: dict, timeout: float = 60.0) -> dict:
+    """向 C# 发送工具调用请求，阻塞等待结果（按 call_id 匹配）。
+    ★ 默认 60 秒超时，避免 C# 卡死时 sidecar 永久 hang。
+    超时返回 success=False 的错误结果，让 LLM 能继续推理。"""
     _init_buffer()
     call_id = generate_call_id()
     _log(f"call_csharp: sending tool_call, tool={tool_name}, call_id={call_id}")
@@ -105,6 +112,7 @@ async def call_csharp(tool_name: str, args: dict) -> dict:
     })
     # 只检查 buffer，不直接读 stdin（stdin 由 stdin_reader_loop 统一读取）
     poll_count = 0
+    deadline = asyncio.get_event_loop().time() + timeout
     while True:
         if call_id in _message_buffer["tool_result"]:
             result = _message_buffer["tool_result"].pop(call_id)
@@ -113,6 +121,13 @@ async def call_csharp(tool_name: str, args: dict) -> dict:
         poll_count += 1
         if poll_count % 20 == 0:  # 每 1 秒打印一次等待日志
             _log(f"call_csharp: waiting... tool={tool_name}, call_id={call_id}, poll_count={poll_count}, buffer_keys={list(_message_buffer['tool_result'].keys())}")
+        # ★ 超时检查：C# 卡死时返回明确错误，避免 sidecar 永久阻塞
+        if asyncio.get_event_loop().time() > deadline:
+            _log(f"call_csharp: TIMEOUT after {timeout}s, tool={tool_name}, call_id={call_id}")
+            return {
+                "success": False,
+                "error": f"工具 {tool_name} 调用超时（{timeout}s），C# 端可能已卡死",
+            }
         await asyncio.sleep(0.05)
 
 

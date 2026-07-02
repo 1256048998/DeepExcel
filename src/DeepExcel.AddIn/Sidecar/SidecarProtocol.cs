@@ -12,6 +12,7 @@ namespace DeepExcel.AddIn.Sidecar
         public const string TypeToolResult = "tool_result";
         public const string TypeConfig = "config";
         public const string TypeClarifyAnswer = "clarify_answer";
+        public const string TypeRestoreHistory = "restore_history";
 
         // Python → C#
         public const string TypeStreamDelta = "stream_delta";

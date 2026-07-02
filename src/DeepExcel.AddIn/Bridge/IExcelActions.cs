@@ -22,6 +22,8 @@ namespace DeepExcel.AddIn.Bridge
         ToolResult ExecutePython(string code);
         ToolResult WriteFormula(string address, string formula);
         ToolResult WriteValue(string address, object value);
+        /// <summary>★ 批量写入二维数组到指定起始单元格（比逐个 write_value 快 100 倍）</summary>
+        ToolResult WriteRange(string address, object[][] values);
 
         // Sheet 管理
         ToolResult AddSheet(string name);
@@ -33,7 +35,7 @@ namespace DeepExcel.AddIn.Bridge
         ToolResult SetColumnWidth(string address, double width, bool autoFit);
 
         // 数据操作
-        ToolResult SortData(string rangeAddress, string sortColumn, bool descending);
+        ToolResult SortData(string rangeAddress, string sortColumn, bool descending, bool hasHeader = false);
         ToolResult FilterData(string rangeAddress, int columnIndex, string criteria);
 
         // 单元格操作
@@ -59,5 +61,9 @@ namespace DeepExcel.AddIn.Bridge
         // 安全类
         string CreateSnapshot();
         bool Rollback(string snapshotId);
+
+        // ★ 新增：历史版本管理（供前端 UI 调用）
+        System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();
+        bool DeleteSnapshot(string snapshotId);
     }
 }
