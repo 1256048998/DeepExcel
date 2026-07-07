@@ -203,8 +203,28 @@ namespace DeepExcel.AddIn
                 // ★ 工具执行保护：执行期间不清理，避免 VBA 宏失败导致的误触发
                 if (Sidecar.ToolDispatcher.ExecutionGuardActive)
                 {
-                    Log("WorkbookBeforeClose SKIPPED (tool execution guard active): " + wbKey);
-                    return;
+                    // ★ 防御性检查：guard active 时，验证工作簿是否真的还在 Workbooks 集合中。
+                    // VBA 错误弹框阻塞 UI 线程期间，用户可能关闭工作簿，此时 guard 仍为 true
+                    // 但工作簿已真的关闭。如果跳过清理，CTP 会绑在已关闭的工作簿上导致状态错乱
+                    // （Visible=true 但 UI 不可见，force-toggle 也无法恢复）。
+                    bool workbookStillOpen = false;
+                    try
+                    {
+                        foreach (Workbook wb in _excelApp.Workbooks)
+                        {
+                            try { if (GetWorkbookKey(wb) == wbKey) { workbookStillOpen = true; break; } }
+                            catch { }
+                        }
+                    }
+                    catch { }
+
+                    if (workbookStillOpen)
+                    {
+                        Log("WorkbookBeforeClose SKIPPED (tool execution guard active, workbook still open): " + wbKey);
+                        return;
+                    }
+                    // 工作簿已不在 Workbooks 集合中，说明是真的关闭（不是 VBA 误触发），继续清理
+                    Log("WorkbookBeforeClose: workbook not in Workbooks collection, proceeding with cleanup despite guard: " + wbKey);
                 }
 
                 // 通知 bridge 清理会话
@@ -601,6 +621,35 @@ namespace DeepExcel.AddIn
                         InitializeWebViewForPane(newPane);
                     }
                 }
+                // ★ 防御性检查：CTP 已存在但对应的工作簿可能已关闭（VBA 崩溃/ guard 跳过清理等场景）。
+                // 此时 CTP 绑定的是已关闭工作簿的窗口，force-toggle 无效，面板无法显示。
+                // 检测到这种情况时，清理旧 CTP 并递归重建。
+                if (ctp != null && _workbookKeyByCtp.TryGetValue(ctp, out var ctpWbKey))
+                {
+                    bool ctpWorkbookExists = false;
+                    try
+                    {
+                        foreach (Workbook wb in _excelApp.Workbooks)
+                        {
+                            try { if (GetWorkbookKey(wb) == ctpWbKey) { ctpWorkbookExists = true; break; } }
+                            catch { }
+                        }
+                    }
+                    catch { }
+
+                    if (!ctpWorkbookExists)
+                    {
+                        Log("CTP's workbook no longer exists, cleaning up and recreating: " + windowKey +
+                            " (oldWbKey=" + ctpWbKey + ")");
+                        try { _workbookKeyByCtp.Remove(ctp); } catch { }
+                        try { ctp.Delete(); } catch { }
+                        _ctpsByWindow.Remove(windowKey);
+                        // 递归重建（会走到上面的 CreateCTP 分支）
+                        ((IRibbonCallbacks)this).OnTogglePanel(control);
+                        return;
+                    }
+                }
+
                 try
                 {
                     if (!ctp.Visible)
@@ -610,7 +659,33 @@ namespace DeepExcel.AddIn
                     }
                     else
                     {
-                        Log("CustomTaskPane already visible for window: " + windowKey);
+                        // ★ 面板 Visible=true 但用户点击按钮，说明面板在 UI 上不可见
+                        // （CTP 状态错乱：VBA 执行失败/窗口切换/WorkbookBeforeClose guard 跳过清理等导致
+                        // Visible 属性与实际 UI 显示状态不同步）。
+                        // 旧方案：toggle 多次刷新 —— 实测无效（用户反馈点了 5 次都看不到面板）。
+                        // 新方案：直接销毁旧 CTP 并重建，强制 Excel 重新创建面板窗口。
+                        // 这是最可靠的恢复手段，避免用户被卡死在"面板打不开"状态。
+                        Log("CustomTaskPane state mismatch (visible but not shown in UI), recreating CTP: " + windowKey);
+                        try
+                        {
+                            _workbookKeyByCtp.Remove(ctp);
+                            _ctpsByWindow.Remove(windowKey);
+                            try { ctp.Delete(); } catch { }
+                            // 递归重建（会走到上面的 CreateCTP 分支，创建全新的 CTP）
+                            ((IRibbonCallbacks)this).OnTogglePanel(control);
+                            return;
+                        }
+                        catch (Exception recreateEx)
+                        {
+                            Log("CTP recreate failed, falling back to toggle: " + recreateEx.Message);
+                            // 兜底：如果删除失败，至少尝试 toggle
+                            ctp.Visible = false;
+                            System.Windows.Forms.Application.DoEvents();
+                            System.Threading.Thread.Sleep(50);
+                            ctp.Visible = true;
+                            System.Windows.Forms.Application.DoEvents();
+                            Log("CustomTaskPane force-shown via fallback toggle for window: " + windowKey);
+                        }
                     }
 
                     // ★ 性能优化：面板打开时预启动 sidecar
@@ -659,6 +734,118 @@ namespace DeepExcel.AddIn
                 "支持的功能：公式生成、VBA/Python 执行、数据清洗、图表创建",
                 "DeepExcel 帮助",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        void IRibbonCallbacks.OnShowModelConfig(object control)
+        {
+            Log("OnShowModelConfig called");
+            try
+            {
+                // 获取当前活动窗口
+                Microsoft.Office.Interop.Excel.Window activeWindow = null;
+                try { activeWindow = _excelApp.ActiveWindow; }
+                catch (Exception wex) { Log("Get ActiveWindow failed: " + wex.Message); }
+                if (activeWindow == null)
+                {
+                    MessageBox.Show("请先打开一个工作簿再点击「模型配置」。",
+                        "DeepExcel", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                string windowKey = activeWindow.Caption as string ?? "";
+
+                // 如果该窗口没有 CTP 或 CTP 不可见，先创建/显示面板
+                Microsoft.Office.Core.CustomTaskPane ctp = null;
+                bool needDelay = false;
+                if (!_ctpsByWindow.TryGetValue(windowKey, out ctp) || ctp == null)
+                {
+                    // 面板未创建，先调 OnTogglePanel 创建
+                    Log("OnShowModelConfig: panel not created, creating first");
+                    ((IRibbonCallbacks)this).OnTogglePanel(control);
+                    needDelay = true;
+                }
+                else
+                {
+                    try
+                    {
+                        if (!ctp.Visible)
+                        {
+                            ctp.Visible = true;
+                            needDelay = true;
+                        }
+                    }
+                    catch { needDelay = true; }
+                }
+
+                // 发送 open_model_config 消息（如果面板刚创建/显示，延迟 600ms 等 WebView 初始化）
+                if (needDelay)
+                {
+                    System.Threading.Timer timer = null;
+                    timer = new System.Threading.Timer(_ =>
+                    {
+                        try { SendOpenModelConfigToActivePane(windowKey); }
+                        catch (Exception ex) { Log("OnShowModelConfig delayed send failed: " + ex.Message); }
+                        finally { timer?.Dispose(); }
+                    }, null, 600, System.Threading.Timeout.Infinite);
+                }
+                else
+                {
+                    SendOpenModelConfigToActivePane(windowKey);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("OnShowModelConfig error: " + ex.Message);
+                MessageBox.Show("打开模型配置失败: " + ex.Message, "DeepExcel",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        /// <summary>
+        /// 向活动窗口的 WebView 发送 open_model_config 消息
+        /// </summary>
+        private void SendOpenModelConfigToActivePane(string windowKey)
+        {
+            if (!_ctpsByWindow.TryGetValue(windowKey, out var ctp) || ctp == null)
+            {
+                Log("SendOpenModelConfigToActivePane: no CTP for window=" + windowKey);
+                return;
+            }
+            TaskPaneControl pane = null;
+            try { pane = (TaskPaneControl)ctp.ContentControl; }
+            catch { }
+            if (pane == null || pane.IsDisposed || pane.WebView == null)
+            {
+                Log("SendOpenModelConfigToActivePane: pane/webview invalid");
+                return;
+            }
+
+            var webView = pane.WebView;
+            var msg = "{\"type\":\"open_model_config\"}";
+            try
+            {
+                if (webView.InvokeRequired)
+                {
+                    webView.BeginInvoke(new Action<string>(m =>
+                    {
+                        try
+                        {
+                            if (webView.CoreWebView2 != null && !webView.IsDisposed)
+                                webView.CoreWebView2.PostWebMessageAsString(m);
+                        }
+                        catch (Exception ex) { Log("SendOpenModelConfig (UI thread) error: " + ex.Message); }
+                    }), msg);
+                }
+                else
+                {
+                    if (webView.CoreWebView2 != null)
+                        webView.CoreWebView2.PostWebMessageAsString(msg);
+                }
+                Log("SendOpenModelConfigToActivePane: sent open_model_config to window=" + windowKey);
+            }
+            catch (Exception ex)
+            {
+                Log("SendOpenModelConfigToActivePane error: " + ex.Message);
+            }
         }
 
         #endregion

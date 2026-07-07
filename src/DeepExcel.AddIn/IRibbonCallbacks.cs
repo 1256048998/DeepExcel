@@ -22,5 +22,8 @@ namespace DeepExcel.AddIn
 
         [DispId(3)]
         void OnShowHelp(object control);
+
+        [DispId(4)]
+        void OnShowModelConfig(object control);
     }
 }
