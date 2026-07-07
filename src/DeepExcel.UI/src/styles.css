@@ -1198,7 +1198,7 @@ body {
   justify-content: center;
   background: transparent;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: 6px;
   color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
@@ -1228,7 +1228,7 @@ body {
   background: var(--color-primary);
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
 }
@@ -1363,7 +1363,7 @@ body {
   padding: 1px 6px;
   background: #ecfdf5;
   color: #047857;
-  border-radius: 4px;
+  border-radius: 6px;
   font-size: 11px;
 }
 

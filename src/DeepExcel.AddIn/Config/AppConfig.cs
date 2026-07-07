@@ -396,10 +396,26 @@ namespace DeepExcel.AddIn.Config
                 config.Providers["anthropic"].SupportsVision = true;
                 changed = true;
             }
-            if (config.Providers.ContainsKey("stepfun"))
+            if (config.Providers.ContainsKey("stepfun") && !config.Providers["stepfun"].SupportsVision)
             {
                 config.Providers["stepfun"].SupportsVision = true;
+                changed = true;
             }
+            if (config.Providers.ContainsKey("openai") && !config.Providers["openai"].SupportsVision)
+            {
+                config.Providers["openai"].SupportsVision = true;
+                changed = true;
+            }
+
+            // 4. 为旧 provider 补充 DefaultModel 字段（旧 config 没有此字段）
+            if (config.Providers.ContainsKey("anthropic") && string.IsNullOrEmpty(config.Providers["anthropic"].DefaultModel))
+            { config.Providers["anthropic"].DefaultModel = "claude-3-5-sonnet-20241022"; changed = true; }
+            if (config.Providers.ContainsKey("deepseek") && string.IsNullOrEmpty(config.Providers["deepseek"].DefaultModel))
+            { config.Providers["deepseek"].DefaultModel = "deepseek-chat"; changed = true; }
+            if (config.Providers.ContainsKey("openai") && string.IsNullOrEmpty(config.Providers["openai"].DefaultModel))
+            { config.Providers["openai"].DefaultModel = "gpt-4o"; changed = true; }
+            if (config.Providers.ContainsKey("custom") && string.IsNullOrEmpty(config.Providers["custom"].DefaultModel))
+            { config.Providers["custom"].DefaultModel = "custom-model"; changed = true; }
 
             // 4. 补充 GeneralSettings.MaxTurns（旧 config 没有此字段）
             if (config.General == null)

@@ -30,7 +30,7 @@ export const providerIcons: Record<string, (props: IconProps) => JSX.Element> = 
   deepseek: (props) => <CircleIcon color="#4D6BFE" letter="D" {...props} />,
   stepfun: (props) => <CircleIcon color="#7B61FF" letter="S" {...props} />,
   openai: (props) => <CircleIcon color="#000000" letter="O" {...props} />,
-  kimi: (props) => <CircleIcon color="#1A1A1A" letter="K" {...props} />,
+  kimi: (props) => <CircleIcon color="#000000" letter="K" {...props} />,
   qwen: (props) => <CircleIcon color="#615CED" letter="Q" {...props} />,
   zhipu: (props) => <CircleIcon color="#3B82F6" letter="Z" {...props} />,
   minimax: (props) => <CircleIcon color="#2563EB" letter="M" {...props} />,

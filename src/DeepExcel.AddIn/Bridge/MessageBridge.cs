@@ -498,7 +498,7 @@ namespace DeepExcel.AddIn.Bridge
                     request.Headers.Add("x-api-key", apiKey);
                     request.Headers.Add("anthropic-version", "2023-06-01");
 
-                    var response = client.SendAsync(request).Result;
+                    var response = System.Threading.Tasks.Task.Run(async () => await client.SendAsync(request)).Result;
                     sw.Stop();
 
                     if (response.IsSuccessStatusCode)
@@ -508,7 +508,7 @@ namespace DeepExcel.AddIn.Bridge
                     }
                     else
                     {
-                        var errBody = response.Content.ReadAsStringAsync().Result;
+                        var errBody = System.Threading.Tasks.Task.Run(async () => await response.Content.ReadAsStringAsync()).Result;
                         Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: HTTP {response.StatusCode}, body={errBody}");
                         return MakeResponse("api_test_result", new
                         {
