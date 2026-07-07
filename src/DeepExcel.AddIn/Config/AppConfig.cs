@@ -27,7 +27,9 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "Claude (Anthropic)",
                 ApiKey = "",
                 BaseUrl = "https://api.anthropic.com",
-                Models = new[] { "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229" }
+                Models = new[] { "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229" },
+                DefaultModel = "claude-3-5-sonnet-20241022",
+                SupportsVision = true
             };
             cfg.Providers["deepseek"] = new ProviderConfig
             {
@@ -35,7 +37,19 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "DeepSeek",
                 ApiKey = "",
                 BaseUrl = "https://api.deepseek.com/anthropic",
-                Models = new[] { "deepseek-chat", "deepseek-coder", "deepseek-reasoner" }
+                Models = new[] { "deepseek-chat", "deepseek-coder", "deepseek-reasoner" },
+                DefaultModel = "deepseek-chat",
+                SupportsVision = false
+            };
+            cfg.Providers["stepfun"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "阶跃星辰 (Step)",
+                ApiKey = "",
+                BaseUrl = "https://api.stepfun.com/step_plan",
+                Models = new[] { "step-3.7-flash", "step-3.5-flash" },
+                DefaultModel = "step-3.7-flash",
+                SupportsVision = true
             };
             cfg.Providers["openai"] = new ProviderConfig
             {
@@ -43,7 +57,59 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "OpenAI",
                 ApiKey = "",
                 BaseUrl = "https://api.openai.com/v1",
-                Models = new[] { "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo" }
+                Models = new[] { "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo" },
+                DefaultModel = "gpt-4o",
+                SupportsVision = true
+            };
+            cfg.Providers["kimi"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "Kimi (月之暗面)",
+                ApiKey = "",
+                BaseUrl = "https://api.moonshot.cn/anthropic",
+                Models = new[] { "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking" },
+                DefaultModel = "kimi-k2.7-code",
+                SupportsVision = true
+            };
+            cfg.Providers["qwen"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "通义千问 (阿里)",
+                ApiKey = "",
+                BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/anthropic",
+                Models = new[] { "qwen3-max", "qwen3-coder-plus", "qwen-plus", "qwen-turbo", "qwen-long" },
+                DefaultModel = "qwen3-max",
+                SupportsVision = true
+            };
+            cfg.Providers["zhipu"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "智谱 (GLM)",
+                ApiKey = "",
+                BaseUrl = "https://api.z.ai/api/anthropic",
+                Models = new[] { "glm-4.6", "glm-4.6-air", "glm-4.5" },
+                DefaultModel = "glm-4.6",
+                SupportsVision = true
+            };
+            cfg.Providers["minimax"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "Minimax",
+                ApiKey = "",
+                BaseUrl = "https://api.minimax.io/anthropic",
+                Models = new[] { "MiniMax-M2.1", "MiniMax-M2" },
+                DefaultModel = "MiniMax-M2.1",
+                SupportsVision = false
+            };
+            cfg.Providers["doubao"] = new ProviderConfig
+            {
+                Type = "anthropic",
+                DisplayName = "豆包 (火山引擎)",
+                ApiKey = "",
+                BaseUrl = "https://ark.cn-beijing.volces.com/api/compatible",
+                Models = new[] { "doubao-seed-code", "doubao-seed-1.6", "doubao-seed-1.6-flash" },
+                DefaultModel = "doubao-seed-code",
+                SupportsVision = true
             };
             cfg.Providers["custom"] = new ProviderConfig
             {
@@ -51,7 +117,9 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "自定义 (OpenAI兼容)",
                 ApiKey = "",
                 BaseUrl = "",
-                Models = new[] { "custom-model" }
+                Models = new[] { "custom-model" },
+                DefaultModel = "custom-model",
+                SupportsVision = false
             };
             return cfg;
         }
@@ -66,6 +134,9 @@ namespace DeepExcel.AddIn.Config
         public string[] Models { get; set; }
         public string DefaultModel { get; set; }
         public Dictionary<string, string> Headers { get; set; } = new();
+        /// <summary>★ 该 provider 是否支持 vision（图片识别）。用于附件含图片时自动切换。
+        /// anthropic/stepfun=true, deepseek=false。旧 config.json 无此字段时默认 false。</summary>
+        public bool SupportsVision { get; set; } = false;
     }
 
     public class GeneralSettings
@@ -75,6 +146,9 @@ namespace DeepExcel.AddIn.Config
         public bool AutoCreateSnapshot { get; set; } = true;
         public bool RequireConfirmation { get; set; } = true;
         public int MaxConversationHistory { get; set; } = 10;
+        /// <summary>★ Claude Agent SDK 控制循环最大轮次（工具调用往返次数）。
+        /// 达到限制后 SDK 返回 error_max_turns。默认 20，防止 AI 无限循环调用工具。</summary>
+        public int MaxTurns { get; set; } = 20;
     }
 
     public class UISettings
@@ -126,6 +200,8 @@ namespace DeepExcel.AddIn.Config
                         PropertyNameCaseInsensitive = true
                     };
                     _config = JsonSerializer.Deserialize<AppConfig>(json, options) ?? AppConfig.CreateDefault();
+                    // ★ 迁移：补全新 provider 和字段（旧 config.json 没有 stepfun/supportsVision/maxTurns）
+                    MigrateConfig(_config);
                 }
                 else
                 {
@@ -210,6 +286,136 @@ namespace DeepExcel.AddIn.Config
             // config.json 中保留空占位（向后兼容旧读取逻辑）
             _config.Providers[providerKey].ApiKey = "";
             Save();
+        }
+
+        /// <summary>
+        /// ★ 迁移：补全新 provider 和字段。旧 config.json 可能缺少 stepfun provider、
+        /// supportsVision 字段、general.maxTurns 字段。此方法确保旧配置升级后包含所有新字段。
+        /// </summary>
+        private void MigrateConfig(AppConfig config)
+        {
+            bool changed = false;
+
+            // 1. 补充 stepfun provider
+            if (!config.Providers.ContainsKey("stepfun"))
+            {
+                config.Providers["stepfun"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "阶跃星辰 (Step)",
+                    ApiKey = "",
+                    BaseUrl = "https://api.stepfun.com/step_plan",
+                    Models = new[] { "step-3.7-flash", "step-3.5-flash" },
+                    SupportsVision = true
+                };
+                changed = true;
+            }
+
+            // 1b. 补充 5 个国产厂商 provider
+            var newProviders = new Dictionary<string, ProviderConfig>
+            {
+                ["kimi"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "Kimi (月之暗面)",
+                    ApiKey = "",
+                    BaseUrl = "https://api.moonshot.cn/anthropic",
+                    Models = new[] { "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking" },
+                    DefaultModel = "kimi-k2.7-code",
+                    SupportsVision = true
+                },
+                ["qwen"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "通义千问 (阿里)",
+                    ApiKey = "",
+                    BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/anthropic",
+                    Models = new[] { "qwen3-max", "qwen3-coder-plus", "qwen-plus", "qwen-turbo", "qwen-long" },
+                    DefaultModel = "qwen3-max",
+                    SupportsVision = true
+                },
+                ["zhipu"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "智谱 (GLM)",
+                    ApiKey = "",
+                    BaseUrl = "https://api.z.ai/api/anthropic",
+                    Models = new[] { "glm-4.6", "glm-4.6-air", "glm-4.5" },
+                    DefaultModel = "glm-4.6",
+                    SupportsVision = true
+                },
+                ["minimax"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "Minimax",
+                    ApiKey = "",
+                    BaseUrl = "https://api.minimax.io/anthropic",
+                    Models = new[] { "MiniMax-M2.1", "MiniMax-M2" },
+                    DefaultModel = "MiniMax-M2.1",
+                    SupportsVision = false
+                },
+                ["doubao"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "豆包 (火山引擎)",
+                    ApiKey = "",
+                    BaseUrl = "https://ark.cn-beijing.volces.com/api/compatible",
+                    Models = new[] { "doubao-seed-code", "doubao-seed-1.6", "doubao-seed-1.6-flash" },
+                    DefaultModel = "doubao-seed-code",
+                    SupportsVision = true
+                }
+            };
+            foreach (var kvp in newProviders)
+            {
+                if (!config.Providers.ContainsKey(kvp.Key))
+                {
+                    config.Providers[kvp.Key] = kvp.Value;
+                    changed = true;
+                }
+            }
+
+            // 2. 补充 anthropic provider（如果旧 config 删了）
+            if (!config.Providers.ContainsKey("anthropic"))
+            {
+                config.Providers["anthropic"] = new ProviderConfig
+                {
+                    Type = "anthropic",
+                    DisplayName = "Claude (Anthropic)",
+                    ApiKey = "",
+                    BaseUrl = "https://api.anthropic.com",
+                    Models = new[] { "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229" },
+                    SupportsVision = true
+                };
+                changed = true;
+            }
+
+            // 3. 为已知 provider 补充 SupportsVision 字段（旧 config 没有此字段时默认 false，需要修正）
+            if (config.Providers.ContainsKey("anthropic") && !config.Providers["anthropic"].SupportsVision)
+            {
+                config.Providers["anthropic"].SupportsVision = true;
+                changed = true;
+            }
+            if (config.Providers.ContainsKey("stepfun"))
+            {
+                config.Providers["stepfun"].SupportsVision = true;
+            }
+
+            // 4. 补充 GeneralSettings.MaxTurns（旧 config 没有此字段）
+            if (config.General == null)
+            {
+                config.General = new GeneralSettings();
+                changed = true;
+            }
+            if (config.General.MaxTurns <= 0)
+            {
+                config.General.MaxTurns = 20;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                try { Save(); } catch { }
+            }
         }
 
         /// <summary>
