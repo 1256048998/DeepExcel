@@ -23,3 +23,36 @@ export type ConversationSummary = {
   updatedAt?: string
   workbookName?: string
 }
+
+// ★ 模型配置弹窗用类型（对应 C# SafeConfig/SafeProvider 结构）
+
+export type ProviderInfo = {
+  displayName: string
+  type: string
+  baseUrl: string
+  defaultModel: string
+  supportsVision: boolean
+  models: string[]
+  hasApiKey: boolean
+  apiKeyPreview: string
+}
+
+export type ModelConfig = {
+  currentProvider: string
+  currentModel: string
+  providers: Record<string, ProviderInfo>
+  general: {
+    maxRetries: number
+    requestTimeoutSeconds: number
+    autoCreateSnapshot: boolean
+    requireConfirmation: boolean
+    maxConversationHistory: number
+    maxTurns: number
+  }
+  ui: {
+    theme: string
+    language: string
+    showTokenUsage: boolean
+    streamOutput: boolean
+  }
+}
