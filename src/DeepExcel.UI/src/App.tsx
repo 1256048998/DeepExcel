@@ -6,6 +6,7 @@ import { StatusBar } from './components/StatusBar'
 import { HistoryPanel } from './components/HistoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
+import { ModelConfigPanel } from './components/ModelConfigPanel'
 import type { Message, ConnectionStatus } from './types'
 
 export interface AttachmentInfo {
@@ -30,6 +31,8 @@ export default function App() {
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([])
   // ★ 历史对话弹窗
   const [conversationsOpen, setConversationsOpen] = useState(false)
+  // ★ 模型配置弹窗（Ribbon 按钮触发）
+  const [modelConfigOpen, setModelConfigOpen] = useState(false)
 
   // ★ Loading 超时兜底：如果 5 分钟内没收到 stream_end（消息丢失/前端卡死等），
   // 自动停止 loading，避免输入框永久禁用、停止按钮永久转圈
@@ -120,6 +123,9 @@ export default function App() {
           { role: 'assistant', content: `❌ ${data.payload.message}` }
         ])
         setLoading(false)
+      } else if (data.type === 'open_model_config') {
+        // ★ Ribbon 按钮触发的打开模型配置弹窗
+        setModelConfigOpen(true)
       } else if (data.type === 'connection_ok') {
         setStatus('connected')
       }
@@ -286,6 +292,14 @@ export default function App() {
             版本
           </button>
           <button
+            className="history-toggle-btn"
+            onClick={() => setModelConfigOpen(true)}
+            title="模型配置"
+            type="button"
+          >
+            模型
+          </button>
+          <button
             className="attach-toggle-btn"
             onClick={openAttachments}
             title="附件管理"
@@ -338,6 +352,10 @@ export default function App() {
         open={conversationsOpen}
         onClose={() => setConversationsOpen(false)}
         onContinue={handleContinueConversation}
+      />
+      <ModelConfigPanel
+        open={modelConfigOpen}
+        onClose={() => setModelConfigOpen(false)}
       />
     </div>
   )

@@ -1149,3 +1149,313 @@ body {
 .message.user code.md-inline-code {
   background: rgba(0, 0, 0, 0.2);
 }
+
+/* === 模型配置弹窗（左右分栏） === */
+.config-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.25);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.config-panel {
+  width: 95%;
+  max-width: 560px;
+  max-height: 80%;
+  background: var(--color-bg);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  animation: convPanelIn 0.18s ease-out;
+}
+
+.config-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.config-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.config-close-btn {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.config-close-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.config-loading,
+.config-empty,
+.config-error {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.config-error {
+  color: #b91c1c;
+}
+
+.config-retry-btn {
+  margin-top: 8px;
+  padding: 4px 12px;
+  background: var(--color-primary);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.config-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 左侧厂商列表 */
+.config-provider-list {
+  width: 160px;
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+  padding: 4px 0;
+}
+
+.config-provider-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+  position: relative;
+  border-left: 2px solid transparent;
+}
+
+.config-provider-item:hover {
+  background: var(--color-bg-secondary);
+}
+
+.config-provider-item.active {
+  background: var(--color-bg-secondary);
+  border-left-color: var(--color-primary);
+}
+
+.config-provider-name {
+  flex: 1;
+  font-size: 12px;
+  color: var(--color-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-provider-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  flex-shrink: 0;
+}
+
+.config-provider-current {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  flex-shrink: 0;
+}
+
+/* 右侧配置区 */
+.config-provider-config {
+  flex: 1;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+
+.config-section {
+  margin-bottom: 12px;
+}
+
+.config-label {
+  display: block;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin-bottom: 4px;
+}
+
+.config-input,
+.config-select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  box-sizing: border-box;
+}
+
+.config-input:focus,
+.config-select:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+.config-input-narrow {
+  width: 100px;
+}
+
+.config-apikey-row {
+  display: flex;
+  gap: 6px;
+}
+
+.config-apikey-row .config-input {
+  flex: 1;
+}
+
+.config-toggle-btn {
+  padding: 6px 10px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.config-toggle-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.config-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: #ecfdf5;
+  color: #047857;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.config-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  user-select: none;
+}
+
+.config-advanced-toggle:hover {
+  color: var(--color-primary);
+}
+
+.config-advanced {
+  padding: 8px 0 4px 14px;
+  border-left: 2px solid var(--color-border);
+  margin-left: 4px;
+}
+
+.config-test-result,
+.config-save-msg {
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.config-test-result.success,
+.config-save-msg.success {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.config-test-result.error,
+.config-save-msg.error {
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+}
+
+.config-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--color-border);
+}
+
+.config-test-btn {
+  padding: 6px 14px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.config-test-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.config-test-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.config-save-btn {
+  padding: 6px 14px;
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
+  border-radius: 6px;
+  font-size: 12px;
+  color: white;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.config-save-btn:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.config-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
