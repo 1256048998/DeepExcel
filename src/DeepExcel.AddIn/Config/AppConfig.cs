@@ -173,8 +173,9 @@ namespace DeepExcel.AddIn.Config
         public AppConfig Current => _config;
         public event Action<AppConfig> OnConfigChanged;
 
-        private static ConfigManager _instance;
-        public static ConfigManager Instance => _instance ??= new ConfigManager();
+        // ★ M-7 修复：使用 Lazy<T> 实现线程安全单例，避免多线程下创建多个实例
+        private static readonly Lazy<ConfigManager> _instance = new Lazy<ConfigManager>(() => new ConfigManager());
+        public static ConfigManager Instance => _instance.Value;
 
         private ConfigManager()
         {
@@ -268,8 +269,9 @@ namespace DeepExcel.AddIn.Config
         /// ★ P0-4 修复：API Key 不再明文存到 config.json，改用 SecurityManager 通过 DPAPI 加密存到
         /// %APPDATA%/DeepExcel/credentials/key_{provider}.crypt 文件，避免密钥被窃取。
         /// config.json 中 ApiKey 字段保留空字符串占位（不存真实 key）。
+        /// ★ C-1 修复：DPAPI 加密失败时拒绝保存并返回 false，避免明文 key 残留或被无加密使用。
         /// </summary>
-        public void UpdateApiKey(string providerKey, string apiKey)
+        public bool UpdateApiKey(string providerKey, string apiKey)
         {
             if (!_config.Providers.ContainsKey(providerKey))
             {
@@ -283,10 +285,14 @@ namespace DeepExcel.AddIn.Config
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine("UpdateApiKey: SecurityManager.Save failed: " + ex.Message);
+                // ★ C-1 修复：DPAPI 失败则拒绝保存，不更新内存中 ApiKey，不调用 Save()
+                // 这样 config.json 永不存明文，且不会出现"内存中持有 key 但磁盘没存"的不一致状态
+                return false;
             }
             // config.json 中保留空占位（向后兼容旧读取逻辑）
             _config.Providers[providerKey].ApiKey = "";
             Save();
+            return true;
         }
 
         /// <summary>
@@ -321,7 +327,30 @@ namespace DeepExcel.AddIn.Config
         {
             bool changed = false;
 
+            // ★ C-1 修复：扫描所有 provider，将旧版本 config.json 中残留的明文 ApiKey 迁移到
+            // SecurityManager（DPAPI 加密存储），并强制清空 config.json 中的 ApiKey 字段。
+            // 这样升级用户即使旧版本在 config.json 存过明文 key，升级后也会被加密保护。
+            foreach (var kvp in config.Providers)
+            {
+                if (!string.IsNullOrEmpty(kvp.Value.ApiKey))
+                {
+                    try
+                    {
+                        DeepExcel.AddIn.Security.SecurityManager.Instance.SaveApiKey(kvp.Key, kvp.Value.ApiKey);
+                        System.Diagnostics.Debug.WriteLine("MigrateConfig: migrated ApiKey for " + kvp.Key + " to SecurityManager");
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine("MigrateConfig: SaveApiKey failed for " + kvp.Key + ": " + ex.Message);
+                    }
+                    kvp.Value.ApiKey = "";
+                    changed = true;
+                }
+            }
+
             // 1. 补充 stepfun provider
+            // ★ M-4 修复：Models 和 DefaultModel 直接从 LatestModelCatalog 读取，保证与 CreateDefault 一致
+            var stepCatalog = LatestModelCatalog["stepfun"];
             if (!config.Providers.ContainsKey("stepfun"))
             {
                 config.Providers["stepfun"] = new ProviderConfig
@@ -330,14 +359,16 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "阶跃星辰 (Step)",
                     ApiKey = "",
                     BaseUrl = "https://api.stepfun.com/step_plan",
-                    Models = new[] { "step-3.7-flash", "step-3.5-flash" },
-                    DefaultModel = "step-3.7-flash",
+                    Models = stepCatalog.Models,
+                    DefaultModel = stepCatalog.DefaultModel,
                     SupportsVision = true
                 };
                 changed = true;
             }
 
             // 1b. 补充 5 个国产厂商 provider
+            // ★ M-4 修复：Models 和 DefaultModel 从 LatestModelCatalog 读取
+            var catalog = LatestModelCatalog;
             var newProviders = new Dictionary<string, ProviderConfig>
             {
                 ["kimi"] = new ProviderConfig
@@ -346,8 +377,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "Kimi (月之暗面)",
                     ApiKey = "",
                     BaseUrl = "https://api.moonshot.cn/anthropic",
-                    Models = new[] { "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking" },
-                    DefaultModel = "kimi-k2.7-code",
+                    Models = catalog["kimi"].Models,
+                    DefaultModel = catalog["kimi"].DefaultModel,
                     SupportsVision = true
                 },
                 ["qwen"] = new ProviderConfig
@@ -356,8 +387,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "通义千问 (阿里)",
                     ApiKey = "",
                     BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/anthropic",
-                    Models = new[] { "qwen3-max", "qwen3-coder-plus", "qwen-plus", "qwen-turbo", "qwen-long" },
-                    DefaultModel = "qwen3-max",
+                    Models = catalog["qwen"].Models,
+                    DefaultModel = catalog["qwen"].DefaultModel,
                     SupportsVision = true
                 },
                 ["zhipu"] = new ProviderConfig
@@ -366,8 +397,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "智谱 (GLM)",
                     ApiKey = "",
                     BaseUrl = "https://api.z.ai/api/anthropic",
-                    Models = new[] { "glm-4.6", "glm-4.6-air", "glm-4.5" },
-                    DefaultModel = "glm-4.6",
+                    Models = catalog["zhipu"].Models,
+                    DefaultModel = catalog["zhipu"].DefaultModel,
                     SupportsVision = true
                 },
                 ["minimax"] = new ProviderConfig
@@ -376,8 +407,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "Minimax",
                     ApiKey = "",
                     BaseUrl = "https://api.minimax.io/anthropic",
-                    Models = new[] { "MiniMax-M2.1", "MiniMax-M2" },
-                    DefaultModel = "MiniMax-M2.1",
+                    Models = catalog["minimax"].Models,
+                    DefaultModel = catalog["minimax"].DefaultModel,
                     SupportsVision = false
                 },
                 ["doubao"] = new ProviderConfig
@@ -386,8 +417,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "豆包 (火山引擎)",
                     ApiKey = "",
                     BaseUrl = "https://ark.cn-beijing.volces.com/api/compatible",
-                    Models = new[] { "doubao-seed-code", "doubao-seed-1.6", "doubao-seed-1.6-flash" },
-                    DefaultModel = "doubao-seed-code",
+                    Models = catalog["doubao"].Models,
+                    DefaultModel = catalog["doubao"].DefaultModel,
                     SupportsVision = true
                 }
             };
@@ -401,6 +432,7 @@ namespace DeepExcel.AddIn.Config
             }
 
             // 2. 补充 anthropic provider（如果旧 config 删了）
+            var anthropicCatalog = LatestModelCatalog["anthropic"];
             if (!config.Providers.ContainsKey("anthropic"))
             {
                 config.Providers["anthropic"] = new ProviderConfig
@@ -409,7 +441,8 @@ namespace DeepExcel.AddIn.Config
                     DisplayName = "Claude (Anthropic)",
                     ApiKey = "",
                     BaseUrl = "https://api.anthropic.com",
-                    Models = new[] { "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229" },
+                    Models = anthropicCatalog.Models,
+                    DefaultModel = anthropicCatalog.DefaultModel,
                     SupportsVision = true
                 };
                 changed = true;
@@ -433,12 +466,16 @@ namespace DeepExcel.AddIn.Config
             }
 
             // 4. 为旧 provider 补充 DefaultModel 字段（旧 config 没有此字段）
-            if (config.Providers.ContainsKey("anthropic") && string.IsNullOrEmpty(config.Providers["anthropic"].DefaultModel))
-            { config.Providers["anthropic"].DefaultModel = "claude-3-5-sonnet-20241022"; changed = true; }
-            if (config.Providers.ContainsKey("deepseek") && string.IsNullOrEmpty(config.Providers["deepseek"].DefaultModel))
-            { config.Providers["deepseek"].DefaultModel = "deepseek-chat"; changed = true; }
-            if (config.Providers.ContainsKey("openai") && string.IsNullOrEmpty(config.Providers["openai"].DefaultModel))
-            { config.Providers["openai"].DefaultModel = "gpt-4o"; changed = true; }
+            // ★ M-4 修复：从 LatestModelCatalog 读取，保证与 CreateDefault 一致
+            foreach (var cat in LatestModelCatalog)
+            {
+                if (config.Providers.ContainsKey(cat.Key) &&
+                    string.IsNullOrEmpty(config.Providers[cat.Key].DefaultModel))
+                {
+                    config.Providers[cat.Key].DefaultModel = cat.Value.DefaultModel;
+                    changed = true;
+                }
+            }
             if (config.Providers.ContainsKey("custom") && string.IsNullOrEmpty(config.Providers["custom"].DefaultModel))
             { config.Providers["custom"].DefaultModel = "custom-model"; changed = true; }
 

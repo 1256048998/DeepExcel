@@ -103,6 +103,10 @@ export function ModelConfigPanel({ open, onClose }: Props) {
         setSaveMsg('✓ 已保存并应用')
         // 重新加载配置以更新 hasApiKey 状态
         await loadConfig()
+        // ★ 延迟 800ms 关闭弹窗，让用户看到成功提示
+        setTimeout(() => {
+          onClose()
+        }, 800)
       } else if (resp?.type === 'error') {
         setSaveMsg('✗ ' + (resp.payload?.message || '保存失败'))
       } else {
@@ -239,14 +243,18 @@ export function ModelConfigPanel({ open, onClose }: Props) {
                         placeholder={currentProviderInfo.hasApiKey ? `已配置（${currentProviderInfo.apiKeyPreview}）` : '输入 API Key'}
                         onChange={e => setApiKey(e.target.value)}
                       />
-                      <button
-                        className="config-toggle-btn"
-                        onClick={() => setShowApiKey(!showApiKey)}
-                        title={showApiKey ? '隐藏' : '显示'}
-                        type="button"
-                      >
-                        {showApiKey ? '隐藏' : '显示'}
-                      </button>
+                      {/* ★ 只在用户输入了新 key 时才显示"显示/隐藏"按钮，
+                          否则 input 为空，切换 password/text 看不出差异，按钮显得无效 */}
+                      {apiKey !== KEEP_PLACEHOLDER && apiKey && (
+                        <button
+                          className="config-toggle-btn"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          title={showApiKey ? '隐藏' : '显示'}
+                          type="button"
+                        >
+                          {showApiKey ? '隐藏' : '显示'}
+                        </button>
+                      )}
                     </div>
                   </div>
 

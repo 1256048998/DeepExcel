@@ -41,6 +41,9 @@ namespace DeepExcel.AddIn
         private Microsoft.Web.WebView2.Core.CoreWebView2Environment _webViewEnv;
         // ★ 标记 bridge 是否已设置 SetSendToUi（只设置一次，避免 sidecar 多次启动）
         private bool _bridgeWired;
+        // ★ C-2 修复：记录 AccessVBOM 原始值，加载项关闭时恢复，避免全局降级 Office 安全策略
+        private int? _originalAccessVbom;
+        private bool _vbaSecurityModified;
 
         public ThisAddIn()
         {
@@ -86,10 +89,33 @@ namespace DeepExcel.AddIn
         {
             try
             {
-                string logPath = Path.Combine(
-                    Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location),
-                    "DeepExcel_Load.log");
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] " + message + Environment.NewLine);
+                // ★ H-2 修复：日志改用 %APPDATA%\DeepExcel\logs\，避免写入 DLL 所在目录（可能受 UAC 限制）
+                // 并添加日志轮转：超过 5MB 时重命名为 .bak 并新建日志文件
+                string logDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "DeepExcel", "logs");
+                if (!Directory.Exists(logDir))
+                {
+                    Directory.CreateDirectory(logDir);
+                }
+                string logPath = Path.Combine(logDir, "DeepExcel_Load.log");
+
+                // ★ L-4 修复：日志轮转，避免无限增长
+                try
+                {
+                    var fi = new FileInfo(logPath);
+                    if (fi.Exists && fi.Length > 5 * 1024 * 1024)
+                    {
+                        string bakPath = logPath + ".bak";
+                        try { if (File.Exists(bakPath)) File.Delete(bakPath); } catch { }
+                        File.Move(logPath, bakPath);
+                    }
+                }
+                catch { }
+
+                // ★ H-2 修复：对日志内容做基本转义，防止日志注入（移除换行符）
+                string safeMessage = (message ?? "").Replace("\r", " ").Replace("\n", " ");
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] " + safeMessage + Environment.NewLine);
             }
             catch { }
         }
@@ -133,7 +159,8 @@ namespace DeepExcel.AddIn
         /// <summary>
         /// ★ 检查并设置 VBA 安全注册表项：
         /// - AccessVBOM=1：信任对 VBA 工程对象模型的访问（必须，否则 wb.VBProject 不可访问）
-        /// - VBAWarnings=1：启用所有宏（避免动态注入的宏被禁用）
+        /// ★ C-2 修复：不再写 VBAWarnings=1（保留用户原有宏警告设置），避免全局降级 Office 安全策略。
+        /// 仅临时启用 AccessVBOM，加载项关闭时通过 RestoreVbaSecurity 恢复原始值。
         /// 注册表路径：HKCU\Software\Microsoft\Office\{version}\Excel\Security
         /// HKCU 不需要管理员权限，用户级即可。
         /// </summary>
@@ -150,41 +177,68 @@ namespace DeepExcel.AddIn
                         using (var createKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                             @"Software\Microsoft\Office\" + _excelApp.Version + @"\Excel\Security"))
                         {
+                            // ★ C-2 修复：不写 VBAWarnings，保留用户原有宏警告设置
                             createKey.SetValue("AccessVBOM", 1, Microsoft.Win32.RegistryValueKind.DWord);
-                            createKey.SetValue("VBAWarnings", 1, Microsoft.Win32.RegistryValueKind.DWord);
+                            _originalAccessVbom = 0; // 原值不存在视为 0
+                            _vbaSecurityModified = true;
                         }
-                        Log("VBA Security: registry key created, AccessVBOM=1, VBAWarnings=1");
+                        Log("VBA Security: registry key created, AccessVBOM=1 (VBAWarnings not modified)");
                     }
                     else
                     {
                         var accessVbom = key.GetValue("AccessVBOM");
-                        var vbaWarnings = key.GetValue("VBAWarnings");
 
                         if (accessVbom == null || (int)accessVbom != 1)
                         {
+                            // ★ C-2 修复：记录原始值用于关闭时恢复
+                            _originalAccessVbom = accessVbom == null ? (int?)null : (int)accessVbom;
                             key.SetValue("AccessVBOM", 1, Microsoft.Win32.RegistryValueKind.DWord);
-                            Log("VBA Security: AccessVBOM set to 1 (was " + (accessVbom?.ToString() ?? "null") + ")");
+                            _vbaSecurityModified = true;
+                            Log("VBA Security: AccessVBOM set to 1 (was " + (accessVbom?.ToString() ?? "null") + "), will restore on shutdown");
                         }
                         else
                         {
-                            Log("VBA Security: AccessVBOM already = 1");
+                            Log("VBA Security: AccessVBOM already = 1 (no change needed)");
                         }
-
-                        if (vbaWarnings == null || (int)vbaWarnings != 1)
-                        {
-                            key.SetValue("VBAWarnings", 1, Microsoft.Win32.RegistryValueKind.DWord);
-                            Log("VBA Security: VBAWarnings set to 1 (was " + (vbaWarnings?.ToString() ?? "null") + ")");
-                        }
-                        else
-                        {
-                            Log("VBA Security: VBAWarnings already = 1");
-                        }
+                        // ★ C-2 修复：不再修改 VBAWarnings，保留用户原有设置
                     }
                 }
             }
             catch (Exception ex)
             {
                 Log("EnsureVbaSecuritySettings error: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// ★ C-2 修复：恢复 AccessVBOM 原始值。在 OnBeginShutdown 中调用，
+        /// 避免加载项卸载后用户的安全设置仍被降级。
+        /// </summary>
+        private void RestoreVbaSecurity()
+        {
+            if (!_vbaSecurityModified || _excelApp == null) return;
+            try
+            {
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Office\" + _excelApp.Version + @"\Excel\Security", true))
+                {
+                    if (key == null) return;
+                    if (_originalAccessVbom.HasValue)
+                    {
+                        key.SetValue("AccessVBOM", _originalAccessVbom.Value, Microsoft.Win32.RegistryValueKind.DWord);
+                        Log("VBA Security: AccessVBOM restored to " + _originalAccessVbom.Value);
+                    }
+                    else
+                    {
+                        key.DeleteValue("AccessVBOM", false);
+                        Log("VBA Security: AccessVBOM value deleted (was not present originally)");
+                    }
+                }
+                _vbaSecurityModified = false;
+            }
+            catch (Exception ex)
+            {
+                Log("RestoreVbaSecurity error: " + ex.Message);
             }
         }
 
@@ -449,6 +503,8 @@ namespace DeepExcel.AddIn
         public void OnBeginShutdown(ref Array custom)
         {
             Log("OnBeginShutdown called");
+            // ★ C-2 修复：关闭时恢复 AccessVBOM 原始值，避免全局降级 Office 安全策略
+            try { RestoreVbaSecurity(); } catch (Exception ex) { Log("RestoreVbaSecurity in OnBeginShutdown failed: " + ex.Message); }
         }
 
         #region IRibbonExtensibility

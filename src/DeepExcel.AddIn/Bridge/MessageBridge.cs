@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text.Json;
 using System.Windows.Forms;
 using Microsoft.Office.Interop.Excel;
@@ -30,6 +31,8 @@ namespace DeepExcel.AddIn.Bridge
         // ★ 按工作簿隔离会话：key = workbook FullName
         // 每个工作簿有独立的 PythonSidecar（AI 对话上下文）+ 附件列表，
         // 解决"在A工作簿聊的内容出现在B工作簿里"的串扰问题。
+        // 注意：_sessions 只在 UI 线程访问（sidecar 回调都通过 SafeBeginInvoke 封送到 UI 线程），
+        // 所以 Dictionary<K,V> 是线程安全的，不需要加锁。
         private readonly Dictionary<string, WorkbookSession> _sessions = new Dictionary<string, WorkbookSession>();
 
         // ★ C-5 修复：共享 JsonSerializerOptions，注册 2D 数组转换器
@@ -364,7 +367,8 @@ namespace DeepExcel.AddIn.Bridge
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleMessage error", ex);
-                return MakeError($"Handle error: {ex.Message}");
+                // ★ H-1 修复：返回模糊错误消息，详细信息只写日志
+                return MakeError("内部处理错误，请重试");
             }
         }
 
@@ -382,13 +386,17 @@ namespace DeepExcel.AddIn.Bridge
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleGetModelConfig failed", ex);
-                return MakeError("加载配置失败: " + ex.Message);
+                // ★ H-1 修复：返回模糊错误，详情只写日志
+                return MakeError("加载配置失败，请稍后重试");
             }
         }
 
         /// <summary>
         /// ★ 保存模型配置（provider/model/apiKey/baseUrl/maxTurns），立即对所有 session 生效
         /// 占位符 "***keep***" 表示用户未修改 API Key，跳过保存
+        /// ★ M-1 修复：BaseUrl 添加 URL 格式校验
+        /// ★ M-8 修复：maxTurns 上限从 200 收紧至 50
+        /// ★ C-1 配套：检查 UpdateApiKey 返回值，DPAPI 失败时告知用户
         /// </summary>
         private string HandleSaveModelConfig(Message msg)
         {
@@ -413,23 +421,35 @@ namespace DeepExcel.AddIn.Bridge
                 }
 
                 // 1. 更新 BaseUrl（如果非空且与默认不同）
+                // ★ M-1 修复：校验 BaseUrl 是合法的 http(s) URL
                 if (!string.IsNullOrEmpty(baseUrl))
                 {
+                    if (!Uri.TryCreate(baseUrl, UriKind.Absolute, out var uri) ||
+                        (uri.Scheme != "http" && uri.Scheme != "https"))
+                    {
+                        return MakeError("Base URL 格式无效，必须是 http:// 或 https:// 开头的完整 URL");
+                    }
                     cfg.Providers[provider].BaseUrl = baseUrl;
                 }
 
                 // 2. 保存 API Key（跳过占位符和空值）
                 if (!string.IsNullOrEmpty(apiKey) && apiKey != "***keep***")
                 {
-                    ConfigManager.Instance.UpdateApiKey(provider, apiKey);
+                    // ★ C-1 配套：UpdateApiKey 返回 false 表示 DPAPI 加密失败
+                    bool saved = ConfigManager.Instance.UpdateApiKey(provider, apiKey);
+                    if (!saved)
+                    {
+                        return MakeError("API Key 加密保存失败（DPAPI 错误），请重试或联系支持");
+                    }
                 }
 
                 // 3. 切换 provider + model
                 ConfigManager.Instance.SwitchProvider(provider, model);
 
                 // 4. 更新 MaxTurns
+                // ★ M-8 修复：上限从 200 收紧至 50，防止 AI 无限循环消耗 API 费用
                 if (cfg.General == null) cfg.General = new Config.GeneralSettings();
-                if (maxTurns > 0 && maxTurns <= 200)
+                if (maxTurns > 0 && maxTurns <= 50)
                 {
                     cfg.General.MaxTurns = maxTurns;
                 }
@@ -448,13 +468,91 @@ namespace DeepExcel.AddIn.Bridge
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleSaveModelConfig failed", ex);
-                return MakeError("保存配置失败: " + ex.Message);
+                // ★ H-1 修复：返回模糊错误，详情只写日志
+                return MakeError("保存配置失败，请稍后重试");
             }
+        }
+
+        /// <summary>
+        /// ★ C-3 修复：判断 IP 是否为内网/回环地址，防止 SSRF 探测内网服务。
+        /// 包括：127.x (loopback)、10.x (A类私有)、172.16-31.x (B类私有)、
+        /// 192.168.x (C类私有)、169.254.x (link-local，AWS metadata service)。
+        /// </summary>
+        private static bool IsPrivateOrLoopbackIP(System.Net.IPAddress ip)
+        {
+            if (ip == null) return false;
+            var bytes = ip.GetAddressBytes();
+            if (bytes.Length != 4) return true; // IPv6 视为不安全，禁止
+            if (bytes[0] == 127) return true;                          // loopback
+            if (bytes[0] == 10) return true;                           // 10.0.0.0/8
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) return true; // 172.16.0.0/12
+            if (bytes[0] == 192 && bytes[1] == 168) return true;       // 192.168.0.0/16
+            if (bytes[0] == 169 && bytes[1] == 254) return true;       // 169.254.0.0/16 (AWS metadata)
+            if (bytes[0] == 0) return true;                            // 0.0.0.0/8
+            return false;
+        }
+
+        /// <summary>
+        /// ★ C-3 修复：校验测试 URL 是否安全。
+        /// - 必须是 http/https scheme
+        /// - localhost/127.0.0.1 允许（开发测试）
+        /// - 域名解析后的 IP 不能是内网/回环地址
+        /// </summary>
+        private static bool IsValidTestUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+            if (uri.Scheme != "http" && uri.Scheme != "https") return false;
+
+            string host = uri.Host ?? "";
+            if (string.IsNullOrEmpty(host)) return false;
+
+            // localhost 显式允许（开发测试用）
+            if (host == "localhost" || host == "127.0.0.1" || host == "::1") return true;
+
+            // 如果 host 本身就是 IP，直接检查
+            if (System.Net.IPAddress.TryParse(host, out var directIp))
+            {
+                return !IsPrivateOrLoopbackIP(directIp);
+            }
+
+            // DNS 解析，检查所有解析结果
+            try
+            {
+                var addrs = System.Net.Dns.GetHostAddresses(host);
+                if (addrs == null || addrs.Length == 0) return false;
+                foreach (var addr in addrs)
+                {
+                    if (IsPrivateOrLoopbackIP(addr)) return false;
+                }
+                return true;
+            }
+            catch
+            {
+                return false; // DNS 解析失败，拒绝
+            }
+        }
+
+        /// <summary>
+        /// ★ H-1 修复：对错误响应体做脱敏和长度限制，避免泄露内部信息或回显的 key。
+        /// 截断到 500 字符，移除可能的 key 模式（sk-ant-*, sk-*, Bearer 等）。
+        /// </summary>
+        private static string SanitizeErrBody(string body)
+        {
+            if (string.IsNullOrEmpty(body)) return "";
+            string s = body;
+            // 脱敏常见 API key 模式
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"sk-[A-Za-z0-9_\-]{8,}", "sk-***");
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"Bearer\s+[A-Za-z0-9_\-\.]{8,}", "Bearer ***");
+            // 截断
+            if (s.Length > 500) s = s.Substring(0, 500) + "...(truncated)";
+            return s;
         }
 
         /// <summary>
         /// ★ 测试 API Key 连接（不保存任何数据）
         /// 向 baseUrl 发一个 Anthropic Messages API 的 1-token 请求
+        /// ★ C-3 修复：添加 URL 安全校验，防止 SSRF 探测内网服务
         /// </summary>
         private string HandleTestApiKey(Message msg)
         {
@@ -497,6 +595,13 @@ namespace DeepExcel.AddIn.Bridge
                     baseUrl = "https://api.deepseek.com/anthropic";
                 }
 
+                // ★ C-3 修复：SSRF 防护，校验 baseUrl 不指向内网/回环地址
+                if (!IsValidTestUrl(baseUrl))
+                {
+                    Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: blocked unsafe baseUrl={baseUrl}");
+                    return MakeResponse("api_test_result", new { success = false, error = "Base URL 不安全：禁止指向内网或非 HTTP(S) 地址" });
+                }
+
                 // ★ 启用 TLS 1.2（.NET Framework 4.8 默认不启用，现代 API 都要求 TLS 1.2+）
                 System.Net.ServicePointManager.SecurityProtocol =
                     System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls13;
@@ -535,33 +640,38 @@ namespace DeepExcel.AddIn.Bridge
                     else
                     {
                         var errBody = System.Threading.Tasks.Task.Run(async () => await response.Content.ReadAsStringAsync()).Result;
-                        Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: HTTP {response.StatusCode}, body={errBody}");
+                        // ★ H-1 修复：对 errBody 脱敏后再记录日志和返回前端
+                        var safeBody = SanitizeErrBody(errBody);
+                        Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: HTTP {response.StatusCode}, body={safeBody}");
                         return MakeResponse("api_test_result", new
                         {
                             success = false,
                             latencyMs = sw.ElapsedMilliseconds,
-                            error = $"HTTP {response.StatusCode}: {errBody}"
+                            error = $"HTTP {response.StatusCode}: {safeBody}"
                         });
                     }
                 }
                 catch (System.Net.Http.HttpRequestException hex)
                 {
                     sw.Stop();
+                    // ★ H-1 修复：网络错误不直接暴露 hex.Message，返回模糊消息
                     Logger.Instance.Warning("MessageBridge", "HandleTestApiKey network error: " + hex.Message);
-                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "网络错误: " + hex.Message });
+                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "网络错误，请检查网络连接和代理设置" });
                 }
                 catch (AggregateException aex)
                 {
                     sw.Stop();
                     var inner = aex.InnerException?.Message ?? aex.Message;
+                    // ★ H-1 修复：不直接暴露 inner，返回模糊消息
                     Logger.Instance.Warning("MessageBridge", "HandleTestApiKey error: " + inner);
-                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = inner });
+                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "请求失败，请稍后重试" });
                 }
             }
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleTestApiKey failed", ex);
-                return MakeError("测试连接失败: " + ex.Message);
+                // ★ H-1 修复：返回模糊错误，详情只写日志
+                return MakeError("测试连接失败，请稍后重试");
             }
         }
 
@@ -712,7 +822,11 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
-        /// <summary>★ 上传附件</summary>
+        /// <summary>
+        /// ★ 上传附件
+        /// ★ H-3 修复：添加大小限制（10MB，base64 后约 13.3MB）
+        /// ★ M-5 修复：添加文件类型白名单，禁止可执行文件
+        /// </summary>
         private string HandleUploadAttachment(WorkbookSession session, Message msg)
         {
             try
@@ -722,13 +836,36 @@ namespace DeepExcel.AddIn.Bridge
                 if (string.IsNullOrEmpty(fileName) || string.IsNullOrEmpty(fileBase64))
                     return MakeError("缺少 file_name 或 file_base64 参数");
 
+                // ★ H-3 修复：大小限制（base64 字符串长度，10MB 原始文件约 13.4MB base64）
+                const int MaxBase64Length = 14 * 1024 * 1024;
+                if (fileBase64.Length > MaxBase64Length)
+                {
+                    return MakeError("附件大小超过限制（10MB），请压缩或选择更小的文件");
+                }
+
+                // ★ M-5 修复：文件类型白名单
+                var allowedExts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ".xlsx", ".xls", ".csv", ".txt", ".md", ".json", ".xml",
+                    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg", ".webp", ".tiff",
+                    ".pdf", ".doc", ".docx", ".ppt", ".pptx",
+                    ".py", ".js", ".ts", ".sql", ".html", ".css"
+                };
+                string ext = Path.GetExtension(fileName)?.ToLowerInvariant() ?? "";
+                if (!allowedExts.Contains(ext))
+                {
+                    Logger.Instance.Warning("MessageBridge", $"HandleUploadAttachment: blocked file type {ext}, name={fileName}");
+                    return MakeError($"不支持的文件类型: {ext}（仅允许文档、图片、表格、代码等常用格式）");
+                }
+
                 var info = session.AddAttachment(fileName, fileBase64);
                 return MakeResponse("uploaded", info);
             }
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleUploadAttachment failed", ex);
-                return MakeError($"上传失败: {ex.Message}");
+                // ★ H-1 修复：返回模糊错误
+                return MakeError("上传失败，请稍后重试");
             }
         }
 
@@ -1335,6 +1472,7 @@ namespace DeepExcel.AddIn.Bridge
             try
             {
                 // ★ H2 修复：公式黑名单，阻止 LLM 通过 WEBSERVICE/SHELL 等函数外泄数据或执行命令
+                // ★ H-5 修复：补充 INDIRECT/INFO/OBJECT/RUN/EXEC.WORK/REGISTER.ID/GETPIVOTDATA 等危险函数
                 if (!string.IsNullOrEmpty(formula))
                 {
                     string upper = formula.ToUpperInvariant();
@@ -1342,8 +1480,16 @@ namespace DeepExcel.AddIn.Bridge
                         "WEBSERVICE", "FILTERXML",  // HTTP 请求外泄数据
                         "CALL",  // 调用 DLL 函数
                         "REGISTER.ID", "REGISTER",  // 注册 DLL
-                        "EXEC",  // 执行程序（旧版）
+                        "EXEC", "EXEC.WORK",  // 执行程序
                         "HYPERLINK",  // 创建可疑链接（虽不直接外泄，但可能钓鱼）
+                        // ★ H-5 补充：
+                        "INDIRECT",  // 动态引用任意单元格，可绕过地址校验
+                        "INFO",  // 泄露系统信息（操作系统版本、Excel 版本等）
+                        "GETPIVOTDATA",  // 可读取透视表数据
+                        "OBJECT",  // 创建 OLE 对象
+                        "RUN",  // 执行宏
+                        "SHELL",  // 执行 shell 命令（VBA 中）
+                        "TASK",  // 任务相关
                     };
                     foreach (var bad in blocked)
                     {
@@ -1355,7 +1501,7 @@ namespace DeepExcel.AddIn.Bridge
                             {
                                 Name = "write_formula",
                                 Success = false,
-                                Error = "公式包含被禁用的函数: " + bad + "（不允许网络请求/外部调用）",
+                                Error = "公式包含被禁用的函数: " + bad + "（不允许网络请求/外部调用/动态引用）",
                                 Suggestion = "请用其他公式实现，或改用 read_range + write_value 手动计算"
                             };
                         }
