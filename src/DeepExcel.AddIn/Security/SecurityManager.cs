@@ -182,7 +182,7 @@ namespace DeepExcel.AddIn.Security
         /// </summary>
         public SafeConfig GetSafeConfig(Config.AppConfig config)
         {
-            return new SafeConfig
+            var safe = new SafeConfig
             {
                 CurrentProvider = config.CurrentProvider,
                 CurrentModel = config.CurrentModel,
@@ -190,6 +190,34 @@ namespace DeepExcel.AddIn.Security
                 General = config.General,
                 UI = config.UI
             };
+            foreach (var kvp in config.Providers)
+            {
+                var p = kvp.Value;
+                var key = GetApiKey(kvp.Key);
+                safe.Providers[kvp.Key] = new SafeProvider
+                {
+                    DisplayName = p.DisplayName,
+                    Type = p.Type,
+                    BaseUrl = p.BaseUrl,
+                    DefaultModel = p.DefaultModel,
+                    SupportsVision = p.SupportsVision,
+                    Models = p.Models,
+                    HasApiKey = !string.IsNullOrEmpty(key),
+                    ApiKeyPreview = MaskApiKey(key)
+                };
+            }
+            return safe;
+        }
+
+        /// <summary>
+        /// ★ 脱敏 API Key 用于前端显示预览。
+        /// 规则：长度 >= 8 时显示前 4 + *** + 后 3；长度 < 8 时全 ***；空时返回空字符串。
+        /// </summary>
+        public static string MaskApiKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "";
+            if (key.Length < 8) return "***";
+            return key.Substring(0, 4) + "***..." + key.Substring(key.Length - 3);
         }
 
         private string GetCredentialPath(string providerKey)
@@ -210,7 +238,12 @@ namespace DeepExcel.AddIn.Security
     public class SafeProvider
     {
         public string DisplayName { get; set; }
+        public string Type { get; set; }
+        public string BaseUrl { get; set; }
+        public string DefaultModel { get; set; }
+        public bool SupportsVision { get; set; }
         public string[] Models { get; set; }
         public bool HasApiKey { get; set; }
+        public string ApiKeyPreview { get; set; }
     }
 }
