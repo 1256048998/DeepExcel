@@ -306,6 +306,7 @@ namespace DeepExcel.AddIn.Config
                     ApiKey = "",
                     BaseUrl = "https://api.stepfun.com/step_plan",
                     Models = new[] { "step-3.7-flash", "step-3.5-flash" },
+                    DefaultModel = "step-3.7-flash",
                     SupportsVision = true
                 };
                 changed = true;
