@@ -6,15 +6,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$rootDir = Split-Path -Parent $PSScriptRoot
-$addInDir = Join-Path $rootDir "src\DeepExcel.AddIn"
+$scriptDir = $PSScriptRoot
 
+# ★ 优先查找脚本同目录下的 DLL（发布包场景：脚本和 DLL 在同一目录）
+#   回退到开发场景的目录结构
 $possiblePaths = @(
-    (Join-Path $rootDir "dist\publish\DeepExcel.AddIn.dll"),
-    (Join-Path $addInDir "bin\Release\net48\DeepExcel.AddIn.dll"),
-    (Join-Path $addInDir "bin\Debug\net48\DeepExcel.AddIn.dll"),
-    (Join-Path $addInDir "bin\Release\DeepExcel.AddIn.dll"),
-    (Join-Path $addInDir "bin\Debug\DeepExcel.AddIn.dll")
+    (Join-Path $scriptDir "DeepExcel.AddIn.dll"),
+    (Join-Path $scriptDir "bin\Release\DeepExcel.AddIn.dll"),
+    (Join-Path $scriptDir "bin\Debug\DeepExcel.AddIn.dll"),
+    (Join-Path (Split-Path -Parent $scriptDir) "src\DeepExcel.AddIn\bin\Release\DeepExcel.AddIn.dll"),
+    (Join-Path (Split-Path -Parent $scriptDir) "src\DeepExcel.AddIn\bin\Debug\DeepExcel.AddIn.dll")
 )
 
 $dllPath = $null
@@ -53,7 +54,7 @@ function Register-ComClass {
         New-Item -Path $inproc32 -Force | Out-Null
     }
     Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
-    Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.1.0.0, Culture=neutral, PublicKeyToken=null" -Force
+    Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.0.0, Culture=neutral, PublicKeyToken=null" -Force
     Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
     Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
     Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force

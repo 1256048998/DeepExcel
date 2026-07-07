@@ -120,9 +120,14 @@ export function ModelConfigPanel({ open, onClose }: Props) {
       setTestResult({ success: false, error: '请先选择厂商和模型' })
       return
     }
+    // ★ 当 apiKey 是 KEEP_PLACEHOLDER 时，检查是否已配置 key
+    // 已配置 key（hasApiKey=true）允许直接测试，传 ***keep*** 给后端，后端读取已存储的 key
     if (!apiKey || apiKey === KEEP_PLACEHOLDER) {
-      setTestResult({ success: false, error: '请先输入 API Key（保存后才能测试已存的 key，或直接在输入框填入新 key 测试）' })
-      return
+      if (!currentProviderInfo?.hasApiKey) {
+        setTestResult({ success: false, error: '请先输入 API Key' })
+        return
+      }
+      // 已配置 key，用 ***keep*** 标志让后端读取已存储的 key
     }
     setTesting(true)
     setTestResult(null)
@@ -132,7 +137,7 @@ export function ModelConfigPanel({ open, onClose }: Props) {
           type: 'test_api_key',
           payload: {
             provider: selectedProvider,
-            apiKey,
+            apiKey: apiKey || KEEP_PLACEHOLDER,
             baseUrl,
             model
           }

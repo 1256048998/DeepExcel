@@ -661,118 +661,6 @@ namespace DeepExcel.AddIn
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        void IRibbonCallbacks.OnShowModelConfig(object control)
-        {
-            Log("OnShowModelConfig called");
-            try
-            {
-                // 获取当前活动窗口
-                Microsoft.Office.Interop.Excel.Window activeWindow = null;
-                try { activeWindow = _excelApp.ActiveWindow; }
-                catch (Exception wex) { Log("Get ActiveWindow failed: " + wex.Message); }
-                if (activeWindow == null)
-                {
-                    MessageBox.Show("请先打开一个工作簿再点击「模型配置」。",
-                        "DeepExcel", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-                string windowKey = activeWindow.Caption as string ?? "";
-
-                // 如果该窗口没有 CTP 或 CTP 不可见，先创建/显示面板
-                Microsoft.Office.Core.CustomTaskPane ctp = null;
-                bool needDelay = false;
-                if (!_ctpsByWindow.TryGetValue(windowKey, out ctp) || ctp == null)
-                {
-                    // 面板未创建，先调 OnTogglePanel 创建
-                    Log("OnShowModelConfig: panel not created, creating first");
-                    ((IRibbonCallbacks)this).OnTogglePanel(control);
-                    needDelay = true;
-                }
-                else
-                {
-                    try
-                    {
-                        if (!ctp.Visible)
-                        {
-                            ctp.Visible = true;
-                            needDelay = true;
-                        }
-                    }
-                    catch { needDelay = true; }
-                }
-
-                // 发送 open_model_config 消息（如果面板刚创建/显示，延迟 600ms 等 WebView 初始化）
-                if (needDelay)
-                {
-                    System.Threading.Timer timer = null;
-                    timer = new System.Threading.Timer(_ =>
-                    {
-                        try { SendOpenModelConfigToActivePane(windowKey); }
-                        catch (Exception ex) { Log("OnShowModelConfig delayed send failed: " + ex.Message); }
-                        finally { timer?.Dispose(); }
-                    }, null, 600, System.Threading.Timeout.Infinite);
-                }
-                else
-                {
-                    SendOpenModelConfigToActivePane(windowKey);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("OnShowModelConfig error: " + ex.Message);
-                MessageBox.Show("打开模型配置失败: " + ex.Message, "DeepExcel",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
-
-        /// <summary>
-        /// 向活动窗口的 WebView 发送 open_model_config 消息
-        /// </summary>
-        private void SendOpenModelConfigToActivePane(string windowKey)
-        {
-            if (!_ctpsByWindow.TryGetValue(windowKey, out var ctp) || ctp == null)
-            {
-                Log("SendOpenModelConfigToActivePane: no CTP for window=" + windowKey);
-                return;
-            }
-            TaskPaneControl pane = null;
-            try { pane = (TaskPaneControl)ctp.ContentControl; }
-            catch { }
-            if (pane == null || pane.IsDisposed || pane.WebView == null)
-            {
-                Log("SendOpenModelConfigToActivePane: pane/webview invalid");
-                return;
-            }
-
-            var webView = pane.WebView;
-            var msg = "{\"type\":\"open_model_config\"}";
-            try
-            {
-                if (webView.InvokeRequired)
-                {
-                    webView.BeginInvoke(new Action<string>(m =>
-                    {
-                        try
-                        {
-                            if (webView.CoreWebView2 != null && !webView.IsDisposed)
-                                webView.CoreWebView2.PostWebMessageAsString(m);
-                        }
-                        catch (Exception ex) { Log("SendOpenModelConfig (UI thread) error: " + ex.Message); }
-                    }), msg);
-                }
-                else
-                {
-                    if (webView.CoreWebView2 != null)
-                        webView.CoreWebView2.PostWebMessageAsString(msg);
-                }
-                Log("SendOpenModelConfigToActivePane: sent open_model_config to window=" + windowKey);
-            }
-            catch (Exception ex)
-            {
-                Log("SendOpenModelConfigToActivePane error: " + ex.Message);
-            }
-        }
-
         #endregion
 
         private async void InitializeWebView()
@@ -869,8 +757,11 @@ namespace DeepExcel.AddIn
                 Path.GetDirectoryName(assetsPath),
                 Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
 
-            pane.WebView.CoreWebView2.Navigate("https://deepexcel.local/index.html");
-            Log("WebView navigated for pane");
+            // ★ 加时间戳查询参数绕过缓存：每次 Excel 启动都加载最新页面
+            // 否则 WebView2 会缓存 index.html 和 JS/CSS，导致前端更新不生效
+            string cacheBuster = DateTime.Now.ToString("yyyyMMddHHmmss");
+            pane.WebView.CoreWebView2.Navigate($"https://deepexcel.local/index.html?v={cacheBuster}");
+            Log("WebView navigated for pane (cache-buster=" + cacheBuster + ")");
 
             // ★ 每个窗口的 WebView 都要监听前端消息，路由到 bridge
             // 用局部变量捕获 pane，避免闭包引用被修改的字段

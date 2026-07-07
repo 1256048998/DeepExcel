@@ -33,7 +33,7 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     create_sdk_mcp_server,
 )
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk.types import AssistantMessage, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
 
 from excel_tools import register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
@@ -358,12 +358,32 @@ async def stdin_reader_loop():
         route_message(msg)
 
 
+# ★ 流式标志：本轮是否已通过 StreamEvent 发送过 token 级 delta。
+# 每次新 user message 开始时重置为 False。
+_had_partial_text = False
+
+
 async def handle_sdk_message(response):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
-    if isinstance(response, AssistantMessage):
+    global _had_partial_text
+    if isinstance(response, StreamEvent):
+        # ★ token 级流式：解析 Anthropic 原生 content_block_delta 事件
+        # event 格式: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
+        evt = response.event if isinstance(response.event, dict) else {}
+        if evt.get("type") == "content_block_delta":
+            delta = evt.get("delta", {})
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                text = delta.get("text", "")
+                if text:
+                    _had_partial_text = True
+                    await write_message({"type": "stream_delta", "text": text})
+    elif isinstance(response, AssistantMessage):
         for block in response.content:
             if isinstance(block, TextBlock):
-                await write_message({"type": "stream_delta", "text": block.text})
+                # ★ 如果已通过 StreamEvent 发送过 token delta，这里不再发完整文本（避免重复）
+                # 如果没有（某些 provider 不支持流式 / include_partial_messages 无效），发完整文本兜底
+                if not _had_partial_text:
+                    await write_message({"type": "stream_delta", "text": block.text})
             elif isinstance(block, ToolUseBlock):
                 # SDK 内部已调度 @tool 函数，工具函数会通过 call_csharp() 发 tool_call 给 C#
                 # 这里只发一个轻量通知给 C# 用于 UI 显示
@@ -372,6 +392,8 @@ async def handle_sdk_message(response):
                     "tool": block.name,
                     "args": block.input if isinstance(block.input, dict) else {},
                 })
+        # ★ 一条 AssistantMessage 处理完后重置标志，为下一条消息（工具调用后的最终回复）做准备
+        _had_partial_text = False
     elif isinstance(response, ResultMessage):
         usage = getattr(response, "usage", None)
         if isinstance(usage, dict):
@@ -400,6 +422,10 @@ async def run_agent_loop(client, supports_vision: bool = True):
         # 重置 cancel 标志（每次新对话开始前）
         if _message_buffer["cancel"].is_set():
             _message_buffer["cancel"].clear()
+
+        # ★ 重置流式标志：每轮新对话开始时，尚未收到任何 token delta
+        global _had_partial_text
+        _had_partial_text = False
 
         user_text = msg.get("text", "")
         context = msg.get("context") or {}
@@ -571,6 +597,9 @@ async def main():
             # 导致 tool_use 后第二轮 API 响应解析崩溃，最终文本永不返回。
             # 参考：https://github.com/anthropics/claude-agent-sdk-python/issues/949
             thinking={"type": "disabled"},
+            # ★ 启用 token 级流式：receive_response() 会产出 StreamEvent（含 content_block_delta），
+            # 让 UI 逐 token 显示文本，而不是整段一次性出现
+            include_partial_messages=True,
         )
 
         # ★ 检测模型是否支持 vision（image/document block）

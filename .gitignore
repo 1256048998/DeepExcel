@@ -47,6 +47,9 @@ src/DeepExcel.UI/node_modules/
 src/DeepExcel.UI/dist/
 src/DeepExcel.AddIn/WebViewAssets/assets/
 
+# ===== 发布产物 =====
+dist/
+
 # ===== Python =====
 __pycache__/
 *.pyc

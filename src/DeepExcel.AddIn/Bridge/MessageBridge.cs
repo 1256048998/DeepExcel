@@ -466,14 +466,40 @@ namespace DeepExcel.AddIn.Bridge
                 var baseUrl = payload.GetProperty("baseUrl").GetString();
                 var model = payload.GetProperty("model").GetString();
 
+                // ★ 当 apiKey 是 ***keep*** 时，从 SecurityManager 读取已存储的 key
+                // 这样用户已配置过 key 就可以直接测试，无需重新输入
                 if (string.IsNullOrEmpty(apiKey) || apiKey == "***keep***")
                 {
-                    return MakeResponse("api_test_result", new { success = false, error = "请先输入 API Key" });
+                    apiKey = SecurityManager.Instance.GetApiKey(provider);
+                    if (string.IsNullOrEmpty(apiKey))
+                    {
+                        return MakeResponse("api_test_result", new { success = false, error = "请先输入 API Key" });
+                    }
+                }
+
+                // ★ baseUrl 为空时，从配置中读取默认值
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    var cfg = ConfigManager.Instance.Current;
+                    if (cfg.Providers.ContainsKey(provider))
+                    {
+                        baseUrl = cfg.Providers[provider].BaseUrl ?? "";
+                    }
                 }
                 if (string.IsNullOrEmpty(baseUrl))
                 {
                     return MakeResponse("api_test_result", new { success = false, error = "Base URL 为空" });
                 }
+
+                // ★ deepseek 特殊处理：必须加 /anthropic 后缀才能走 Anthropic 兼容协议
+                if (provider == "deepseek" && !baseUrl.EndsWith("/anthropic"))
+                {
+                    baseUrl = "https://api.deepseek.com/anthropic";
+                }
+
+                // ★ 启用 TLS 1.2（.NET Framework 4.8 默认不启用，现代 API 都要求 TLS 1.2+）
+                System.Net.ServicePointManager.SecurityProtocol =
+                    System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls13;
 
                 // 用 Task.Run 在后台线程执行，避免阻塞 UI 线程
                 var sw = System.Diagnostics.Stopwatch.StartNew();

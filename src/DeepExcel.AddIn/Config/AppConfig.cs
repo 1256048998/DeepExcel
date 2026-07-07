@@ -12,7 +12,7 @@ namespace DeepExcel.AddIn.Config
     public class AppConfig
     {
         public string CurrentProvider { get; set; } = "anthropic";
-        public string CurrentModel { get; set; } = "claude-3-5-sonnet-20241022";
+        public string CurrentModel { get; set; } = "claude-sonnet-5";
 
         public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
         public GeneralSettings General { get; set; } = new();
@@ -27,8 +27,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "Claude (Anthropic)",
                 ApiKey = "",
                 BaseUrl = "https://api.anthropic.com",
-                Models = new[] { "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229" },
-                DefaultModel = "claude-3-5-sonnet-20241022",
+                Models = new[] { "claude-sonnet-5", "claude-opus-4.8", "claude-haiku-5" },
+                DefaultModel = "claude-sonnet-5",
                 SupportsVision = true
             };
             cfg.Providers["deepseek"] = new ProviderConfig
@@ -37,8 +37,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "DeepSeek",
                 ApiKey = "",
                 BaseUrl = "https://api.deepseek.com/anthropic",
-                Models = new[] { "deepseek-chat", "deepseek-coder", "deepseek-reasoner" },
-                DefaultModel = "deepseek-chat",
+                Models = new[] { "deepseek-v4-pro", "deepseek-v4-flash" },
+                DefaultModel = "deepseek-v4-pro",
                 SupportsVision = false
             };
             cfg.Providers["stepfun"] = new ProviderConfig
@@ -57,8 +57,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "OpenAI",
                 ApiKey = "",
                 BaseUrl = "https://api.openai.com/v1",
-                Models = new[] { "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo" },
-                DefaultModel = "gpt-4o",
+                Models = new[] { "gpt-5.5", "gpt-5.5-pro", "gpt-5" },
+                DefaultModel = "gpt-5.5",
                 SupportsVision = true
             };
             cfg.Providers["kimi"] = new ProviderConfig
@@ -77,8 +77,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "通义千问 (阿里)",
                 ApiKey = "",
                 BaseUrl = "https://dashscope.aliyuncs.com/compatible-mode/anthropic",
-                Models = new[] { "qwen3-max", "qwen3-coder-plus", "qwen-plus", "qwen-turbo", "qwen-long" },
-                DefaultModel = "qwen3-max",
+                Models = new[] { "qwen3.7-max", "qwen3-max", "qwen3-coder-plus" },
+                DefaultModel = "qwen3.7-max",
                 SupportsVision = true
             };
             cfg.Providers["zhipu"] = new ProviderConfig
@@ -87,8 +87,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "智谱 (GLM)",
                 ApiKey = "",
                 BaseUrl = "https://api.z.ai/api/anthropic",
-                Models = new[] { "glm-4.6", "glm-4.6-air", "glm-4.5" },
-                DefaultModel = "glm-4.6",
+                Models = new[] { "glm-5.2", "glm-5.1", "glm-4.7-flash" },
+                DefaultModel = "glm-5.2",
                 SupportsVision = true
             };
             cfg.Providers["minimax"] = new ProviderConfig
@@ -97,8 +97,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "Minimax",
                 ApiKey = "",
                 BaseUrl = "https://api.minimax.io/anthropic",
-                Models = new[] { "MiniMax-M2.1", "MiniMax-M2" },
-                DefaultModel = "MiniMax-M2.1",
+                Models = new[] { "MiniMax-M2.5", "MiniMax-M2" },
+                DefaultModel = "MiniMax-M2.5",
                 SupportsVision = false
             };
             cfg.Providers["doubao"] = new ProviderConfig
@@ -107,8 +107,8 @@ namespace DeepExcel.AddIn.Config
                 DisplayName = "豆包 (火山引擎)",
                 ApiKey = "",
                 BaseUrl = "https://ark.cn-beijing.volces.com/api/compatible",
-                Models = new[] { "doubao-seed-code", "doubao-seed-1.6", "doubao-seed-1.6-flash" },
-                DefaultModel = "doubao-seed-code",
+                Models = new[] { "doubao-seed-2.1-pro", "doubao-seed-2.1", "doubao-seed-1.6" },
+                DefaultModel = "doubao-seed-2.1-pro",
                 SupportsVision = true
             };
             cfg.Providers["custom"] = new ProviderConfig
@@ -121,6 +121,7 @@ namespace DeepExcel.AddIn.Config
                 DefaultModel = "custom-model",
                 SupportsVision = false
             };
+            cfg.CurrentModel = "claude-sonnet-5";
             return cfg;
         }
     }
@@ -289,6 +290,30 @@ namespace DeepExcel.AddIn.Config
         }
 
         /// <summary>
+        /// ★ 最新模型目录（2026-07 更新）。
+        /// 用于 MigrateConfig 强制更新各 provider 的 Models 列表，保证用户看到最新模型名称。
+        /// 添加新模型或淘汰旧模型时只需修改此处。
+        /// </summary>
+        private static readonly Dictionary<string, (string[] Models, string DefaultModel)> LatestModelCatalog =
+            new Dictionary<string, (string[], string)>
+        {
+            ["anthropic"] = (new[] { "claude-sonnet-5", "claude-opus-4.8", "claude-haiku-5" }, "claude-sonnet-5"),
+            ["deepseek"] = (new[] { "deepseek-v4-pro", "deepseek-v4-flash" }, "deepseek-v4-pro"),
+            ["stepfun"] = (new[] { "step-3.7-flash", "step-3.5-flash" }, "step-3.7-flash"),
+            ["openai"] = (new[] { "gpt-5.5", "gpt-5.5-pro", "gpt-5" }, "gpt-5.5"),
+            ["kimi"] = (new[] { "kimi-k2.7-code", "kimi-k2.6", "kimi-k2-thinking" }, "kimi-k2.7-code"),
+            ["qwen"] = (new[] { "qwen3.7-max", "qwen3-max", "qwen3-coder-plus" }, "qwen3.7-max"),
+            ["zhipu"] = (new[] { "glm-5.2", "glm-5.1", "glm-4.7-flash" }, "glm-5.2"),
+            ["minimax"] = (new[] { "MiniMax-M2.5", "MiniMax-M2" }, "MiniMax-M2.5"),
+            ["doubao"] = (new[] { "doubao-seed-2.1-pro", "doubao-seed-2.1", "doubao-seed-1.6" }, "doubao-seed-2.1-pro"),
+        };
+
+        private static Dictionary<string, (string[] Models, string DefaultModel)> GetLatestModelCatalog()
+        {
+            return LatestModelCatalog;
+        }
+
+        /// <summary>
         /// ★ 迁移：补全新 provider 和字段。旧 config.json 可能缺少 stepfun provider、
         /// supportsVision 字段、general.maxTurns 字段。此方法确保旧配置升级后包含所有新字段。
         /// </summary>
@@ -427,6 +452,44 @@ namespace DeepExcel.AddIn.Config
             {
                 config.General.MaxTurns = 20;
                 changed = true;
+            }
+
+            // 5. ★ 模型目录升级：强制更新各 provider 的 Models 和 DefaultModel 到最新列表
+            //    保留用户的 ApiKey/BaseUrl/SupportsVision 等配置，只更新模型名称
+            //    如果当前选中的模型不在新列表中，迁移到对应 provider 的 DefaultModel
+            var catalogUpdates = GetLatestModelCatalog();
+            foreach (var kvp in catalogUpdates)
+            {
+                if (!config.Providers.ContainsKey(kvp.Key)) continue;
+                var p = config.Providers[kvp.Key];
+                var newModels = kvp.Value.Models;
+                var newDefault = kvp.Value.DefaultModel;
+
+                // 检查是否需要更新（模型列表不同）
+                bool needsUpdate = p.Models == null || p.Models.Length != newModels.Length;
+                if (!needsUpdate)
+                {
+                    for (int i = 0; i < newModels.Length; i++)
+                    {
+                        if (p.Models[i] != newModels[i]) { needsUpdate = true; break; }
+                    }
+                }
+
+                if (needsUpdate)
+                {
+                    // 记录旧模型用于日志
+                    var oldModels = p.Models == null ? "" : string.Join(",", p.Models);
+                    p.Models = newModels;
+                    p.DefaultModel = newDefault;
+                    // 如果当前正在用这个 provider 且 currentModel 不在新列表中，迁移到新默认模型
+                    if (config.CurrentProvider == kvp.Key &&
+                        !string.IsNullOrEmpty(config.CurrentModel) &&
+                        Array.IndexOf(newModels, config.CurrentModel) < 0)
+                    {
+                        config.CurrentModel = newDefault;
+                    }
+                    changed = true;
+                }
             }
 
             if (changed)

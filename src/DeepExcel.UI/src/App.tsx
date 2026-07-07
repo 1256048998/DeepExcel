@@ -123,9 +123,6 @@ export default function App() {
           { role: 'assistant', content: `❌ ${data.payload.message}` }
         ])
         setLoading(false)
-      } else if (data.type === 'open_model_config') {
-        // ★ Ribbon 按钮触发的打开模型配置弹窗
-        setModelConfigOpen(true)
       } else if (data.type === 'connection_ok') {
         setStatus('connected')
       }

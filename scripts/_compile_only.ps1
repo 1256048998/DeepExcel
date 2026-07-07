@@ -85,3 +85,15 @@ Copy-Item (Join-Path $srcSidecar 'ipc.py') (Join-Path $outDir 'sidecar') -Force
 Copy-Item (Join-Path $srcSidecar 'excel_tools.py') (Join-Path $outDir 'sidecar') -Force
 Copy-Item (Join-Path $srcSidecar 'system_prompt.py') (Join-Path $outDir 'sidecar') -Force
 Write-Host "Sidecar files copied"
+
+# ★ 复制 WebViewAssets 前端构建产物到 bin\Release
+# csc.exe 直接编译不执行 msbuild AfterBuild target，必须手动复制
+$srcAssets = Join-Path $addinDir 'WebViewAssets'
+$dstAssets = Join-Path $outDir 'WebViewAssets'
+if (Test-Path $srcAssets) {
+    if (-not (Test-Path $dstAssets)) { New-Item -ItemType Directory -Path $dstAssets -Force | Out-Null }
+    Copy-Item (Join-Path $srcAssets '*') $dstAssets -Recurse -Force
+    Write-Host "WebViewAssets copied to bin\Release"
+} else {
+    Write-Host "WARNING: WebViewAssets source not found at $srcAssets"
+}

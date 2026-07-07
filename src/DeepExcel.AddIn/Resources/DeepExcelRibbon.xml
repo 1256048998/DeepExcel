@@ -9,11 +9,6 @@
                   onAction="OnTogglePanel"
                   screentip="打开 DeepExcel AI 面板"
                   supertip="在面板中输入你的需求，AI 会自动帮你处理 Excel。"/>
-          <button id="btnModelConfig" label="模型配置" size="large"
-                  imageMso="DataSources"
-                  onAction="OnShowModelConfig"
-                  screentip="模型配置"
-                  supertip="配置 AI 模型厂商、API Key 和高级参数。"/>
           <button id="btnHelp" label="帮助" size="large"
                   imageMso="Info"
                   onAction="OnShowHelp"
