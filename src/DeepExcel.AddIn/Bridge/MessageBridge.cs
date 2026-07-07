@@ -321,6 +321,12 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleRollbackSnapshot(msg);
                     case "delete_snapshot":
                         return HandleDeleteSnapshot(msg);
+                    case "get_model_config":
+                        return HandleGetModelConfig();
+                    case "save_model_config":
+                        return HandleSaveModelConfig(msg);
+                    case "test_api_key":
+                        return HandleTestApiKey(msg);
                 }
 
                 // 以下消息需要 session 上下文
@@ -359,6 +365,177 @@ namespace DeepExcel.AddIn.Bridge
             {
                 Logger.Instance.Error("MessageBridge", "HandleMessage error", ex);
                 return MakeError($"Handle error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// ★ 返回当前配置（API Key 脱敏）给前端模型配置弹窗
+        /// </summary>
+        private string HandleGetModelConfig()
+        {
+            try
+            {
+                var cfg = ConfigManager.Instance.Current;
+                var safe = SecurityManager.Instance.GetSafeConfig(cfg);
+                return MakeResponse("model_config", safe);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleGetModelConfig failed", ex);
+                return MakeError("加载配置失败: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// ★ 保存模型配置（provider/model/apiKey/baseUrl/maxTurns），立即对所有 session 生效
+        /// 占位符 "***keep***" 表示用户未修改 API Key，跳过保存
+        /// </summary>
+        private string HandleSaveModelConfig(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var model = payload.GetProperty("model").GetString();
+                var apiKey = payload.GetProperty("apiKey").GetString();
+                var baseUrl = payload.GetProperty("baseUrl").GetString();
+                int maxTurns = payload.GetProperty("maxTurns").GetInt32();
+
+                if (string.IsNullOrEmpty(provider))
+                {
+                    return MakeError("provider 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                // 1. 更新 BaseUrl（如果非空且与默认不同）
+                if (!string.IsNullOrEmpty(baseUrl))
+                {
+                    cfg.Providers[provider].BaseUrl = baseUrl;
+                }
+
+                // 2. 保存 API Key（跳过占位符和空值）
+                if (!string.IsNullOrEmpty(apiKey) && apiKey != "***keep***")
+                {
+                    ConfigManager.Instance.UpdateApiKey(provider, apiKey);
+                }
+
+                // 3. 切换 provider + model
+                ConfigManager.Instance.SwitchProvider(provider, model);
+
+                // 4. 更新 MaxTurns
+                if (cfg.General == null) cfg.General = new Config.GeneralSettings();
+                if (maxTurns > 0 && maxTurns <= 200)
+                {
+                    cfg.General.MaxTurns = maxTurns;
+                }
+
+                // 5. 持久化
+                ConfigManager.Instance.Save();
+
+                // 6. 立即对所有 session 生效
+                RefreshConfigForAllSessions();
+
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleSaveModelConfig: provider={provider}, model={model}, maxTurns={maxTurns}, apiKeyChanged={apiKey != "***keep***" && !string.IsNullOrEmpty(apiKey)}");
+
+                return MakeResponse("config_saved", new { success = true });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleSaveModelConfig failed", ex);
+                return MakeError("保存配置失败: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// ★ 测试 API Key 连接（不保存任何数据）
+        /// 向 baseUrl 发一个 Anthropic Messages API 的 1-token 请求
+        /// </summary>
+        private string HandleTestApiKey(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var apiKey = payload.GetProperty("apiKey").GetString();
+                var baseUrl = payload.GetProperty("baseUrl").GetString();
+                var model = payload.GetProperty("model").GetString();
+
+                if (string.IsNullOrEmpty(apiKey) || apiKey == "***keep***")
+                {
+                    return MakeResponse("api_test_result", new { success = false, error = "请先输入 API Key" });
+                }
+                if (string.IsNullOrEmpty(baseUrl))
+                {
+                    return MakeResponse("api_test_result", new { success = false, error = "Base URL 为空" });
+                }
+
+                // 用 Task.Run 在后台线程执行，避免阻塞 UI 线程
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    using var client = new System.Net.Http.HttpClient();
+                    client.Timeout = TimeSpan.FromSeconds(15);
+
+                    // 构造 Anthropic Messages API 最小请求
+                    var testUrl = baseUrl.TrimEnd('/') + "/v1/messages";
+                    var body = new
+                    {
+                        model = model,
+                        max_tokens = 1,
+                        messages = new[] { new { role = "user", content = "hi" } }
+                    };
+                    var json = System.Text.Json.JsonSerializer.Serialize(body);
+                    var content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+                    var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, testUrl);
+                    request.Content = content;
+                    request.Headers.Add("x-api-key", apiKey);
+                    request.Headers.Add("anthropic-version", "2023-06-01");
+
+                    var response = client.SendAsync(request).Result;
+                    sw.Stop();
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Logger.Instance.Info("MessageBridge", $"HandleTestApiKey: success, latency={sw.ElapsedMilliseconds}ms");
+                        return MakeResponse("api_test_result", new { success = true, latencyMs = sw.ElapsedMilliseconds, error = (string)null });
+                    }
+                    else
+                    {
+                        var errBody = response.Content.ReadAsStringAsync().Result;
+                        Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: HTTP {response.StatusCode}, body={errBody}");
+                        return MakeResponse("api_test_result", new
+                        {
+                            success = false,
+                            latencyMs = sw.ElapsedMilliseconds,
+                            error = $"HTTP {response.StatusCode}: {errBody}"
+                        });
+                    }
+                }
+                catch (System.Net.Http.HttpRequestException hex)
+                {
+                    sw.Stop();
+                    Logger.Instance.Warning("MessageBridge", "HandleTestApiKey network error: " + hex.Message);
+                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "网络错误: " + hex.Message });
+                }
+                catch (AggregateException aex)
+                {
+                    sw.Stop();
+                    var inner = aex.InnerException?.Message ?? aex.Message;
+                    Logger.Instance.Warning("MessageBridge", "HandleTestApiKey error: " + inner);
+                    return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = inner });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleTestApiKey failed", ex);
+                return MakeError("测试连接失败: " + ex.Message);
             }
         }
 
