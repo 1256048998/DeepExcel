@@ -92,45 +92,17 @@ export function InputArea({
         <div className="upload-error">{uploadError}</div>
       )}
       <div className="input-row">
-        {/* ★ 附件上传按钮（上传图标 + 数量徽章） */}
+        {/* ★ 附件上传按钮（隐藏 file input） */}
         {onUploadAttachment && (
-          <>
-            <input
-              ref={fileInputRef}
-              type="file"
-              multiple
-              style={{ display: 'none' }}
-              onChange={handleFileChange}
-            />
-            <button
-              className="attach-btn"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading || disabled}
-              title={uploading ? '上传中...' : '上传附件'}
-              type="button"
-            >
-              {/* 上传图标（向上箭头 + 底线） */}
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-              {attachmentCount > 0 && (
-                <span
-                  className="attach-badge"
-                  title={`${attachmentCount} 个附件，点击查看`}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onViewAttachments?.()
-                  }}
-                >
-                  {attachmentCount}
-                </span>
-              )}
-              {uploading && <span className="attach-loading" />}
-            </button>
-          </>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+          />
         )}
+        {/* ★ textarea 占据完整宽度，图标按钮在底部工具栏 */}
         <textarea
           value={value}
           onChange={e => onChange(e.target.value)}
@@ -144,28 +116,58 @@ export function InputArea({
           rows={2}
           disabled={disabled}
         />
+      </div>
+      {/* ★ 底部工具栏：左上传 + 右发送/停止，无额外边框 */}
+      <div className="input-toolbar">
+        {onUploadAttachment && (
+          <button
+            className="toolbar-btn"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || disabled}
+            title={uploading ? '上传中...' : '上传附件'}
+            type="button"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="17 8 12 3 7 8" />
+              <line x1="12" y1="3" x2="12" y2="15" />
+            </svg>
+            {attachmentCount > 0 && (
+              <span
+                className="attach-badge"
+                title={`${attachmentCount} 个附件，点击查看`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onViewAttachments?.()
+                }}
+              >
+                {attachmentCount}
+              </span>
+            )}
+            {uploading && <span className="attach-loading" />}
+          </button>
+        )}
         {disabled && onStop ? (
           <button
             onClick={onStop}
-            className="stop-button"
+            className="toolbar-btn stop"
             title="停止生成"
             type="button"
           >
-            {/* 停止图标（方形停止符） */}
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
               <rect x="6" y="6" width="12" height="12" rx="2" />
             </svg>
+            <span>停止</span>
           </button>
         ) : (
           <button
             onClick={onSend}
             disabled={disabled || !value.trim()}
-            className="send-button"
+            className="toolbar-btn send"
             title="发送（Enter）"
             type="button"
           >
-            {/* 发送图标（纸飞机） */}
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
             </svg>

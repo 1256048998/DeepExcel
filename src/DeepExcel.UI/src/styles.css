@@ -317,8 +317,7 @@ body {
 .input-area textarea {
   flex: 1;
   resize: none;
-  /* ★ 左右留出嵌入图标的空间：左 38px (上传图标)、右 42px (发送按钮) */
-  padding: 10px 42px 10px 38px;
+  padding: 10px 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   font-family: var(--font);
@@ -336,98 +335,79 @@ body {
   cursor: not-allowed;
 }
 
-.send-button {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  display: inline-flex;
+/* === 底部工具栏：左上传 + 右发送/停止 === */
+.input-toolbar {
+  display: flex;
   align-items: center;
-  justify-content: center;
-  background: var(--color-primary);
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.send-button:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-}
-
-.send-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.stop-button {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: #e74c3c;
-  color: white;
-  border: none;
-  border-radius: var(--radius);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
-  white-space: nowrap;
-}
-
-.stop-button:hover {
-  background: #c0392b;
-}
-
-/* === 输入框内嵌附件按钮（左下角，无边框无背景） === */
-.input-area .attach-btn {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
+  justify-content: space-between;
+  padding: 0 2px;
   flex-shrink: 0;
-  padding: 0;
+  height: 28px;
+}
+
+/* 工具栏按钮基础样式：无边框无背景，仅图标 */
+.toolbar-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 8px;
   background: transparent;
   border: none;
   border-radius: var(--radius);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: color 0.15s;
-  z-index: 1;
+  transition: color 0.15s, background 0.15s;
+  font-size: 13px;
+  font-family: var(--font);
 }
 
-.input-area .attach-btn:hover:not(:disabled) {
+.toolbar-btn:hover:not(:disabled) {
   color: var(--color-primary);
+  background: var(--color-bg-secondary);
 }
 
-.input-area .attach-btn:disabled {
+.toolbar-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-/* 附件数量徽章 */
+/* 发送按钮：primary 高亮圆形 */
+.toolbar-btn.send {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: var(--color-primary);
+  color: white;
+  border-radius: 50%;
+}
+
+.toolbar-btn.send:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  color: white;
+}
+
+/* 停止按钮：红色高亮 */
+.toolbar-btn.stop {
+  background: #e74c3c;
+  color: white;
+  padding: 4px 10px;
+}
+
+.toolbar-btn.stop:hover {
+  background: #c0392b;
+  color: white;
+}
+
+/* 附件数量徽章（toolbar-btn 右上角） */
 .attach-badge {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
+  top: 0;
+  right: 0;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -436,7 +416,7 @@ body {
   font-size: 10px;
   font-weight: 600;
   line-height: 1;
-  border-radius: 8px;
+  border-radius: 7px;
   cursor: pointer;
   border: 1.5px solid var(--color-bg);
 }
