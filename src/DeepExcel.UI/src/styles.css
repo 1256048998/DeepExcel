@@ -261,7 +261,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 0 16px 12px;
+  /* ★ 减小外边距，让 input-box 占据更大宽度 */
+  padding: 0 6px 6px;
   border-top: 1px solid var(--color-border);
   background: var(--color-bg);
   /* ★ 固定高度（由 resize handle 控制），子元素 flex 填充 */
@@ -272,7 +273,7 @@ body {
 /* ★ 输入区顶部拖拽手柄：上下调整输入区高度 */
 .input-resize-handle {
   height: 6px;
-  margin: 0 -16px 4px;
+  margin: 0 -6px 4px;
   padding: 0;
   cursor: ns-resize;
   position: relative;
@@ -305,6 +306,17 @@ body {
   color: #9a3412;
 }
 
+/* ★ input-box：包裹 textarea + 工具栏，统一浅灰色边框矩形 */
+.input-box {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
 .input-row {
   position: relative;
   display: flex;
@@ -317,17 +329,18 @@ body {
 .input-area textarea {
   flex: 1;
   resize: none;
-  padding: 10px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  /* ★ 小内边距，无边框（外层 input-box 统一边框） */
+  padding: 4px 6px;
+  border: none;
+  border-radius: 0;
   font-family: var(--font);
   font-size: 14px;
   outline: none;
-  transition: border-color 0.15s;
+  background: transparent;
 }
 
 .input-area textarea:focus {
-  border-color: var(--color-primary);
+  background: transparent;
 }
 
 .input-area textarea:disabled {
@@ -340,9 +353,62 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* ★ 与上方 textarea 间留小边距 */
+  margin-top: 4px;
   padding: 0 2px;
   flex-shrink: 0;
   height: 28px;
+}
+
+/* === 附件 chip 列表（input-box 上方） === */
+.attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-bottom: 4px;
+}
+
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 180px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 11px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1;
+}
+
+.attach-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-chip-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.attach-chip-x:hover {
+  color: #e74c3c;
+  background: rgba(231, 76, 60, 0.1);
 }
 
 /* 工具栏按钮基础样式：无边框无背景，仅图标 */

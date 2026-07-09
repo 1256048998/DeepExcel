@@ -477,6 +477,8 @@ export default function App() {
         onUploadAttachment={uploadAttachment}
         attachmentCount={attachments.length}
         onViewAttachments={openAttachments}
+        attachments={attachments}
+        onDeleteAttachment={deleteAttachment}
       />
 
       <HistoryPanel

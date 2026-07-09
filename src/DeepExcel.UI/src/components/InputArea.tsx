@@ -1,5 +1,10 @@
 import { useRef, useState, ChangeEvent, useEffect } from 'react'
 
+export interface AttachmentItem {
+  fileName: string
+  size: number
+}
+
 interface Props {
   value: string
   onChange: (val: string) => void
@@ -13,11 +18,16 @@ interface Props {
   attachmentCount?: number
   // ★ 查看附件列表（点击徽章时打开）
   onViewAttachments?: () => void
+  // ★ 附件列表（在 input-box 上方显示 chip，支持逐个删除）
+  attachments?: AttachmentItem[]
+  // ★ 删除附件
+  onDeleteAttachment?: (fileName: string) => void
 }
 
 export function InputArea({
   value, onChange, onSend, onStop, disabled, isClarifying,
   onUploadAttachment, attachmentCount = 0, onViewAttachments,
+  attachments = [], onDeleteAttachment,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
@@ -91,6 +101,29 @@ export function InputArea({
       {uploadError && (
         <div className="upload-error">{uploadError}</div>
       )}
+      {/* ★ 附件 chip 列表：显示在 input-box 上方，支持点击 x 删除 */}
+      {attachments.length > 0 && onDeleteAttachment && (
+        <div className="attach-chips">
+          {attachments.map(att => (
+            <span key={att.fileName} className="attach-chip" title={att.fileName}>
+              <span className="attach-chip-name">{att.fileName}</span>
+              <button
+                className="attach-chip-x"
+                onClick={() => onDeleteAttachment(att.fileName)}
+                title="移除"
+                type="button"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      {/* ★ input-box：包裹输入框 + 工具栏，外层浅灰色边框 */}
+      <div className="input-box">
       <div className="input-row">
         {/* ★ 附件上传按钮（隐藏 file input） */}
         {onUploadAttachment && (
@@ -173,6 +206,7 @@ export function InputArea({
             </svg>
           </button>
         )}
+      </div>
       </div>
     </div>
   )
