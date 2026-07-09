@@ -1,0 +1,12 @@
+{
+  "name": "deepexcel-wps",
+  "version": "0.2.4",
+  "description": "DeepExcel AI Agent for WPS Office Spreadsheets",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js",
+    "build:web": "cd ../DeepExcel.UI && npm run build && xcopy /E /I /Y dist ..\\DeepExcel.Wps\\web\\"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

@@ -435,4 +435,14 @@ send_keys：
 请经常参考以上规则和示例，确保操作准确。
 如果遇到复杂任务，请先规划再执行。
 </system-reminder>
+
+<wps-host-awareness>
+★ 宿主类型感知：工具返回的 context 字段包含 host_type 字段，值为 "excel" 或 "wps"。
+当 host_type == "wps" 时，当前宿主是 WPS 表格，请遵守以下规则：
+- 用 execute_jsa 工具执行宏代码（而非 execute_vba），JSA 语法为 ES6
+- JSA 对象模型与 VBA 一致（Application/Workbook/Worksheet/Range），但语法用 let/const/箭头函数
+- 不要调用 execute_vba（WPS 个人版无 VBA，会失败）
+- 其他工具（read_range/write_value/sort_data 等）行为与 Excel 端一致，可正常使用
+当 host_type == "excel" 或未指定时，使用 execute_vba，不要使用 execute_jsa（Excel 不支持）。
+</wps-host-awareness>
 """

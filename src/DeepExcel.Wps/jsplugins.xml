@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jsplugin>
+  <name>DeepExcel</name>
+  <version>0.2.4.0</version>
+  <description>DeepExcel AI Agent for WPS Spreadsheets</description>
+  <url>taskpane.html</url>
+  <showTaskPaneOnLoad>false</showTaskPaneOnLoad>
+  <button>
+    <id>btnTogglePanel</id>
+    <label>打开面板</label>
+    <onAction>OnAction</onAction>
+  </button>
+</jsplugin>

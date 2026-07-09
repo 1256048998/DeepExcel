@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnRibbonLoad">
+  <ribbon>
+    <tabs>
+      <tab id="tabDeepExcel" label="DeepExcel" insertAfterMso="TabHome">
+        <group id="grpTools" label="AI Agent">
+          <button id="btnTogglePanel" label="打开面板" size="large"
+                  onAction="OnAction"
+                  screentip="打开 DeepExcel AI 面板"
+                  supertip="在面板中输入你的需求，AI 会自动帮你处理 WPS 表格。"/>
+          <button id="btnHelp" label="帮助" size="large"
+                  onAction="OnShowHelp"
+                  screentip="使用帮助"
+                  supertip="查看 DeepExcel 的使用说明。"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

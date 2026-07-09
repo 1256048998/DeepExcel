@@ -141,6 +141,15 @@ async def execute_vba(args):
     return _wrap_result(result)
 
 
+@tool("execute_jsa", "执行 WPS JSA 代码（ES6 语法，对象模型与 VBA 一致：Application/Workbook/Worksheet/Range）", {"code": str})
+async def execute_jsa(args):
+    """★ WPS 端专用：当宿主是 WPS 表格时，用此工具替代 execute_vba。
+    JSA 语法为 ES6（let/const/箭头函数），对象模型与 VBA 完全一致。
+    Excel 端不支持此工具，会返回错误。"""
+    result = await call_csharp("execute_jsa", {"code": args["code"]})
+    return _wrap_result(result)
+
+
 @tool("execute_python", "执行 Python 代码（操作 Excel）", {"code": str})
 async def execute_python(args):
     result = await call_csharp("execute_python", {"code": args["code"]})
@@ -617,7 +626,7 @@ def register_all_tools() -> list:
         create_pivot_table,
         refresh_pivot, group_pivot_date,
         set_pivot_value_display, set_pivot_totals, add_pivot_slicer,
-        execute_vba, execute_python,
+        execute_vba, execute_jsa, execute_python,
         create_snapshot, rollback,
         add_sheet, delete_sheet, rename_sheet,
         set_number_format, set_column_width,
