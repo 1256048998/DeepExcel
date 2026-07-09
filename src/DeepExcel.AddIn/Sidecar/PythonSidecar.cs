@@ -58,12 +58,15 @@ namespace DeepExcel.AddIn.Sidecar
         public event Action<PythonSidecar, string, List<string>> OnClarify;
         public event Action<PythonSidecar, int, int> OnStreamEnd;
         public event Action<PythonSidecar, string> OnError;
+        // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
+        public event Action<PythonSidecar, string, string, Dictionary<string, object>> OnPermissionRequest;
 
         public PythonSidecar(IExcelActions excel, Microsoft.Office.Interop.Excel.Application excelApp, Control uiControl, DeepExcel.AddIn.Security.SecurityGateway securityGateway = null)
         {
             _excel = excel;
             _uiControl = uiControl;
-            _dispatcher = new ToolDispatcher(excel, excelApp, securityGateway);
+            // ★ AI Native 改造后：ToolDispatcher 不再需要 SecurityGateway（权限确认由 PreToolUse hook 处理）
+            _dispatcher = new ToolDispatcher(excel, excelApp);
         }
 
         /// <summary>
@@ -103,6 +106,11 @@ namespace DeepExcel.AddIn.Sidecar
 
             // 透传环境变量（ANTHROPIC_API_KEY 等）
             // psi.EnvironmentVariables 已自动继承当前进程
+
+            // ★ 强制 Python 全局 UTF-8 模式：系统语言为英文时 ANSI 代码页 cp1252 不支持中文，
+            // 导致 Python 子进程的 stdin/stdout/管道默认用 cp1252，中文变 "?"
+            // PYTHONUTF8=1 让 Python 所有 IO 默认 UTF-8，配合 sidecar.py 的 reconfigure 双保险
+            psi.EnvironmentVariables["PYTHONUTF8"] = "1";
 
             _process = Process.Start(psi);
             _process.OutputDataReceived += OnStdoutLine;
@@ -216,6 +224,21 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         public void SendCancel() => WriteLine(@"{""type"":""cancel""}");
+
+        /// <summary>
+        /// ★ AI Native 权限确认：将用户的允许/拒绝决定发回 sidecar，PreToolUse hook 据此放行或阻止工具执行。
+        /// </summary>
+        public void SendPermissionResponse(string requestId, string decision)
+        {
+            var msg = new
+            {
+                type = SidecarProtocol.TypePermissionResponse,
+                request_id = requestId,
+                decision = decision
+            };
+            WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
+            Logger.Instance.Info("PythonSidecar", $"SendPermissionResponse: req_id={requestId}, decision={decision}");
+        }
 
         public void UpdateConfig(string baseUrl, string model, string apiKey)
         {
@@ -341,6 +364,29 @@ namespace DeepExcel.AddIn.Sidecar
                         var outTok = root.GetProperty("output_tokens").GetInt32();
                         Logger.Instance.Info("PythonSidecar", $"OnStreamEnd: in={inTok}, out={outTok}");
                         SafeBeginInvoke(() => OnStreamEnd?.Invoke(this, inTok, outTok));
+                        break;
+
+                    case SidecarProtocol.TypePermissionRequest:
+                        // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
+                        var permReqId = root.GetProperty("request_id").GetString();
+                        var permTool = root.GetProperty("tool").GetString();
+                        var permArgs = new Dictionary<string, object>();
+                        if (root.TryGetProperty("args", out var permArgsEl))
+                        {
+                            foreach (var prop in permArgsEl.EnumerateObject())
+                            {
+                                permArgs[prop.Name] = prop.Value.ValueKind switch
+                                {
+                                    JsonValueKind.String => prop.Value.GetString(),
+                                    JsonValueKind.Number => prop.Value.GetDouble(),
+                                    JsonValueKind.True => true,
+                                    JsonValueKind.False => false,
+                                    _ => prop.Value.GetRawText()
+                                };
+                            }
+                        }
+                        Logger.Instance.Info("PythonSidecar", $"OnPermissionRequest: tool={permTool}, req_id={permReqId}");
+                        SafeBeginInvoke(() => OnPermissionRequest?.Invoke(this, permReqId, permTool, permArgs));
                         break;
 
                     default:

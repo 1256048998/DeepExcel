@@ -1,4 +1,4 @@
-import { useRef, useState, ChangeEvent } from 'react'
+import { useRef, useState, ChangeEvent, useEffect } from 'react'
 
 interface Props {
   value: string
@@ -23,6 +23,41 @@ export function InputArea({
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
+  // ★ 底部输入区可调整高度：拖拽 resize handle 改变 textarea 高度
+  // 限制：最小 60px，最大 50vh（不超过整个面板高度的 50%）
+  const [inputHeight, setInputHeight] = useState<number>(120)
+  const dragStateRef = useRef<{ startY: number; startH: number } | null>(null)
+
+  const onHandleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    dragStateRef.current = { startY: e.clientY, startH: inputHeight }
+    document.body.style.cursor = 'ns-resize'
+    document.body.style.userSelect = 'none'
+  }
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      const st = dragStateRef.current
+      if (!st) return
+      // 向下拖 → 减小高度（handle 在上方，输入区在下方）
+      const delta = st.startY - e.clientY
+      const maxH = Math.floor(window.innerHeight * 0.5)
+      const next = Math.max(60, Math.min(maxH, st.startH + delta))
+      setInputHeight(next)
+    }
+    const onUp = () => {
+      dragStateRef.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+
   const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0 || !onUploadAttachment) return
@@ -41,7 +76,13 @@ export function InputArea({
   }
 
   return (
-    <div className="input-area">
+    <div className="input-area" style={{ height: inputHeight }}>
+      {/* ★ 拖拽手柄：上下调整输入区高度 */}
+      <div
+        className="input-resize-handle"
+        onMouseDown={onHandleMouseDown}
+        title="拖拽调整高度"
+      />
       {isClarifying && (
         <div className="clarify-hint">
           请回答上面的澄清问题
@@ -51,7 +92,7 @@ export function InputArea({
         <div className="upload-error">{uploadError}</div>
       )}
       <div className="input-row">
-        {/* ★ 附件上传按钮（回形针图标 + 数量徽章） */}
+        {/* ★ 附件上传按钮（上传图标 + 数量徽章） */}
         {onUploadAttachment && (
           <>
             <input
@@ -68,9 +109,11 @@ export function InputArea({
               title={uploading ? '上传中...' : '上传附件'}
               type="button"
             >
-              {/* 回形针图标 */}
+              {/* 上传图标（向上箭头 + 底线） */}
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
               </svg>
               {attachmentCount > 0 && (
                 <span
@@ -105,16 +148,27 @@ export function InputArea({
           <button
             onClick={onStop}
             className="stop-button"
+            title="停止生成"
+            type="button"
           >
-            停止
+            {/* 停止图标（方形停止符） */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+            </svg>
           </button>
         ) : (
           <button
             onClick={onSend}
             disabled={disabled || !value.trim()}
             className="send-button"
+            title="发送（Enter）"
+            type="button"
           >
-            发送
+            {/* 发送图标（纸飞机） */}
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
           </button>
         )}
       </div>

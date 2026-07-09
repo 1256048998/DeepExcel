@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Office.Interop.Excel;
 using Microsoft.Vbe.Interop;
@@ -98,7 +99,10 @@ namespace DeepExcel.AddIn.Executor
 
                 // 3. 创建或复用模块
                 module = FindOrCreateModule(vbProject, out moduleCreated);
-                module.CodeModule.AddFromString(procCode);
+                // ★ VBA Unicode 编码转换：系统 ANSI 代码页不支持中文时，AddFromString 会把中文变 "?"
+                // 将 VBA 字符串字面量中的非 ASCII 字符自动转换为 ChrW() 调用
+                string encodedCode = EncodeVbaUnicode(procCode);
+                module.CodeModule.AddFromString(encodedCode);
 
                 // ★ 诊断：记录注入后的实际代码内容 + 模块状态，便于排查"宏被禁用"
                 try
@@ -250,6 +254,126 @@ namespace DeepExcel.AddIn.Executor
 
             // 否则包装为Sub
             return $"Sub {macroName}()\r\n{code}\r\nEnd Sub";
+        }
+
+        /// <summary>
+        /// ★ VBA Unicode 编码转换：将 VBA 代码字符串字面量中的非 ASCII 字符转为 ChrW() 调用。
+        /// 解决系统 ANSI 代码页不支持中文（如英文 Windows cp1252）导致 AddFromString 中文变 "?" 的问题。
+        /// 转换后 VBA 代码全为 ASCII，VBA 解析器不会出错；ChrW() 在运行时返回正确 Unicode 字符。
+        /// 例如："销售数据" → ChrW(38144) & ChrW(21806) & ChrW(25968) & ChrW(25454)
+        /// </summary>
+        private static string EncodeVbaUnicode(string code)
+        {
+            if (string.IsNullOrEmpty(code)) return code;
+
+            var result = new StringBuilder(code.Length * 2);
+            int i = 0;
+            bool inString = false;
+            var stringBuf = new StringBuilder();
+
+            while (i < code.Length)
+            {
+                char c = code[i];
+
+                if (!inString)
+                {
+                    if (c == '"')
+                    {
+                        inString = true;
+                        stringBuf.Clear();
+                        i++;
+                    }
+                    else
+                    {
+                        result.Append(c);
+                        i++;
+                    }
+                }
+                else
+                {
+                    // 在字符串内
+                    if (c == '"')
+                    {
+                        // 检查是否是转义的 ""
+                        if (i + 1 < code.Length && code[i + 1] == '"')
+                        {
+                            stringBuf.Append('"');
+                            i += 2;
+                        }
+                        else
+                        {
+                            // 字符串结束，处理收集到的内容
+                            inString = false;
+                            i++;
+                            result.Append(EncodeStringToChrW(stringBuf.ToString()));
+                        }
+                    }
+                    else
+                    {
+                        stringBuf.Append(c);
+                        i++;
+                    }
+                }
+            }
+
+            // 异常情况：代码以未闭合的字符串结尾
+            if (inString && stringBuf.Length > 0)
+            {
+                result.Append(EncodeStringToChrW(stringBuf.ToString()));
+            }
+
+            return result.ToString();
+        }
+
+        /// <summary>
+        /// 将 VBA 字符串内容转换为 ChrW() 调用表达式。
+        /// 全 ASCII 的字符串保持原样（"hello"）。
+        /// 包含非 ASCII 的字符串拆分为 ChrW() & "ascii" 形式。
+        /// </summary>
+        private static string EncodeStringToChrW(string content)
+        {
+            // 检查是否有非 ASCII 字符
+            bool hasNonAscii = false;
+            foreach (char ch in content)
+            {
+                if (ch > 127) { hasNonAscii = true; break; }
+            }
+
+            if (!hasNonAscii)
+            {
+                // 全 ASCII，保持原样
+                return "\"" + content.Replace("\"", "\"\"") + "\"";
+            }
+
+            // 包含非 ASCII，转换为 ChrW() 调用
+            var parts = new List<string>();
+            var asciiBuf = new StringBuilder();
+
+            foreach (char ch in content)
+            {
+                if (ch <= 127)
+                {
+                    asciiBuf.Append(ch);
+                }
+                else
+                {
+                    if (asciiBuf.Length > 0)
+                    {
+                        parts.Add("\"" + asciiBuf.ToString().Replace("\"", "\"\"") + "\"");
+                        asciiBuf.Clear();
+                    }
+                    parts.Add("ChrW(" + (int)ch + ")");
+                }
+            }
+            if (asciiBuf.Length > 0)
+            {
+                parts.Add("\"" + asciiBuf.ToString().Replace("\"", "\"\"") + "\"");
+            }
+
+            if (parts.Count == 0)
+                return "\"\"";
+
+            return string.Join(" & ", parts);
         }
     }
 }

@@ -2,12 +2,14 @@ import { useEffect, useRef } from 'react'
 import type { Message } from '../types'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
+import { StreamingChoices } from './StreamingChoices'
 
 interface Props {
   messages: Message[]
   loading: boolean
   onToggleToolGroup?: (idx: number) => void
   onClarifyAnswer?: (answer: string) => void
+  onChoiceSelect?: (choice: string) => void
 }
 
 // 检测内容是否为 Markdown 格式
@@ -30,7 +32,7 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAnswer }: Props) {
+export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAnswer, onChoiceSelect }: Props) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -46,6 +48,7 @@ export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAns
           index={idx}
           onToggleToolGroup={onToggleToolGroup}
           onClarifyAnswer={onClarifyAnswer}
+          onChoiceSelect={onChoiceSelect}
         />
       ))}
       {loading && (
@@ -64,12 +67,14 @@ function MessageItem({
   message,
   index,
   onToggleToolGroup,
-  onClarifyAnswer
+  onClarifyAnswer,
+  onChoiceSelect
 }: {
   message: Message
   index: number
   onToggleToolGroup?: (idx: number) => void
   onClarifyAnswer?: (answer: string) => void
+  onChoiceSelect?: (choice: string) => void
 }) {
   // 工具调用组（已合并）：折叠卡片样式
   if (message.role === 'tool' && message.toolGroup) {
@@ -170,6 +175,14 @@ function MessageItem({
         )}
         {message.streaming && <span className="cursor">▊</span>}
       </div>
+      {/* ★ 流式选项卡片：assistant 消息自动检测"方案 A/B/C"模式并渲染可点击卡片 */}
+      {message.role === 'assistant' && onChoiceSelect && (
+        <StreamingChoices
+          content={message.content}
+          streaming={message.streaming}
+          onSelect={onChoiceSelect}
+        />
+      )}
     </div>
   )
 }

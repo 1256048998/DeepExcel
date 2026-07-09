@@ -20,5 +20,9 @@ namespace DeepExcel.AddIn.Sidecar
         public const string TypeToolUse = "tool_use";
         public const string TypeClarify = "clarify";
         public const string TypeStreamEnd = "stream_end";
+        public const string TypePermissionRequest = "permission_request";
+
+        // C# → Python（权限响应）
+        public const string TypePermissionResponse = "permission_response";
     }
 }

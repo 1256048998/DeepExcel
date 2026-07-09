@@ -1,11 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 using System.Windows.Forms;
 using DeepExcel.AddIn.Bridge;
 using DeepExcel.AddIn.Diagnostics;
-using DeepExcel.AddIn.Security;
 using DeepExcel.AddIn.Tools;
 using Microsoft.Office.Interop.Excel;
 
@@ -19,7 +23,6 @@ namespace DeepExcel.AddIn.Sidecar
     {
         private readonly IExcelActions _excel;
         private readonly Microsoft.Office.Interop.Excel.Application _excelApp;
-        private readonly SecurityGateway _securityGateway;
 
         /// <summary>
         /// ★ 附件映射（fileName → absolutePath），由 MessageBridge 在创建 session 时注入。
@@ -27,14 +30,6 @@ namespace DeepExcel.AddIn.Sidecar
         /// 引用 session.Attachments，session 增删附件时自动同步。
         /// </summary>
         public Dictionary<string, string> Attachments { get; set; }
-
-        /// <summary>
-        /// ★ 工具执行保护标志（静态，跨类共享）：
-        /// VBA/Python 等高风险工具执行期间设为 true，ThisAddIn.OnWorkbookBeforeClose
-        /// 读取此标志，为 true 时跳过会话清理，避免 Excel 因宏失败误触发 BeforeClose
-        /// 导致面板消失、sidecar 被 kill。
-        /// </summary>
-        public static volatile bool ExecutionGuardActive = false;
 
         /// <summary>
         /// read_range 返回的最大行数限制。
@@ -57,11 +52,10 @@ namespace DeepExcel.AddIn.Sidecar
             return opts;
         }
 
-        public ToolDispatcher(IExcelActions excel, Microsoft.Office.Interop.Excel.Application excelApp = null, SecurityGateway securityGateway = null)
+        public ToolDispatcher(IExcelActions excel, Microsoft.Office.Interop.Excel.Application excelApp = null)
         {
             _excel = excel;
             _excelApp = excelApp;
-            _securityGateway = securityGateway;
         }
 
         /// <summary>
@@ -71,32 +65,10 @@ namespace DeepExcel.AddIn.Sidecar
         {
             Logger.Instance.Info("ToolDispatcher", "Execute: " + toolName + ", args keys=" + (args == null ? "null" : string.Join(",", args.Keys)));
 
-            // ★ 设置工具执行保护标志：VBA/Python 执行期间 Excel 可能误触发
-            // WorkbookBeforeClose 事件，ThisAddIn 读取此标志跳过会话清理
-            var previousGuard = ExecutionGuardActive;
-            ExecutionGuardActive = true;
+            // ★ AI Native 改造后：权限确认由 PreToolUse hook 异步处理，UI 线程不再阻塞，
+            // Excel 不会误触发 WorkbookBeforeClose，不再需要 ExecutionGuard 保护标志。
             try
             {
-                // ★ P0-2 SecurityGateway 接线：高风险工具（execute_vba/execute_python/rollback 等）
-                // 执行前弹窗确认，用户拒绝则返回失败。LLM 无法绕过此检查直接执行危险操作。
-                if (_securityGateway != null && _securityGateway.RequiresVerification(toolName))
-                {
-                    Logger.Instance.Info("ToolDispatcher", "Tool requires security verification: " + toolName);
-                    bool approved = PromptUserApproval(toolName, args);
-                    if (!approved)
-                    {
-                        Logger.Instance.Warning("ToolDispatcher", "User DENIED execution of high-risk tool: " + toolName);
-                        return new ToolResult
-                        {
-                            Name = toolName,
-                            Success = false,
-                            Error = "用户取消了高风险操作: " + toolName,
-                            Suggestion = "如需执行，请重新发起请求并在弹窗中点击「是」",
-                        };
-                    }
-                    Logger.Instance.Info("ToolDispatcher", "User APPROVED execution of high-risk tool: " + toolName);
-                }
-
                 switch (toolName)
                 {
                     // 注：每个 case 的执行结果（含 success/error）在 switch 结束后统一记录
@@ -490,6 +462,13 @@ namespace DeepExcel.AddIn.Sidecar
                     case "read_attachment":
                         return ExecuteReadAttachment(args);
 
+                    // ★ Computer Use 工具：截图 + 模拟键盘
+                    case "screenshot_excel":
+                        return ExecuteScreenshotExcel();
+
+                    case "send_keys":
+                        return ExecuteSendKeys(GetArg<string>(args, "keys"));
+
                     default:
                         return new ToolResult
                         {
@@ -508,11 +487,6 @@ namespace DeepExcel.AddIn.Sidecar
                     Success = false,
                     Error = ex.Message,
                 };
-            }
-            finally
-            {
-                // ★ 恢复保护标志：工具执行结束，允许 WorkbookBeforeClose 正常清理
-                ExecutionGuardActive = previousGuard;
             }
         }
 
@@ -1234,56 +1208,9 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         /// <summary>
-        /// ★ P0-2 SecurityGateway 接线：高风险工具执行前的用户确认弹窗。
-        /// 同步调用（已在 UI 线程），返回 true=允许执行，false=用户拒绝。
+        /// ★ AI Native 权限确认已迁移至 Python sidecar 的 PreToolUse hook，
+        /// 此处不再需要同步 MessageBox 确认方法。
         /// </summary>
-        private bool PromptUserApproval(string toolName, Dictionary<string, object> args)
-        {
-            try
-            {
-                // 不在前台抢焦点，用 Yes/No 弹窗
-                string desc = toolName switch
-                {
-                    "execute_vba" => "AI 想执行 VBA 代码",
-                    "execute_python" => "AI 想执行 Python 代码",
-                    "rollback" => "AI 想回滚到历史快照",
-                    "remove_duplicates" => "AI 想删除重复行",
-                    "clean_data" => "AI 想批量清洗数据",
-                    _ => "AI 想执行高风险操作: " + toolName,
-                };
-                string argSummary = "";
-                if (args != null && args.Count > 0)
-                {
-                    argSummary = "\n\n参数预览:\n";
-                    int n = 0;
-                    foreach (var kvp in args)
-                    {
-                        if (n++ >= 5) { argSummary += "...(更多省略)\n"; break; }
-                        string valStr;
-                        try
-                        {
-                            valStr = kvp.Value?.ToString() ?? "";
-                            if (valStr.Length > 80) valStr = valStr.Substring(0, 80) + "...";
-                        }
-                        catch { valStr = "<无法显示>"; }
-                        argSummary += $"  • {kvp.Key}: {valStr}\n";
-                    }
-                }
-                var result = MessageBox.Show(
-                    _excelApp != null ? new ExcelWindowWrapper(_excelApp.Hwnd) : null,
-                    desc + argSummary + "\n\n是否允许执行？",
-                    "DeepExcel 安全确认",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning,
-                    MessageBoxDefaultButton.Button2);  // 默认选「否」更安全
-                return result == DialogResult.Yes;
-            }
-            catch (Exception ex)
-            {
-                Logger.Instance.Error("ToolDispatcher", "PromptUserApproval failed: " + ex.Message);
-                return false;  // 弹窗失败默认拒绝
-            }
-        }
 
         private ToolResult ExecuteCreatePivot(
             string sourceRange,
@@ -1621,8 +1548,7 @@ namespace DeepExcel.AddIn.Sidecar
 
         /// <summary>
         /// 用 Excel COM 以 ReadOnly 方式打开附件 xlsx，读取所有 sheet 数据后关闭。
-        /// 临时关闭 ScreenUpdating 避免界面闪烁，用 ExecutionGuardActive 防止
-        /// WorkbookBeforeClose 误触发会话清理。
+        /// 临时关闭 ScreenUpdating 避免界面闪烁。
         /// </summary>
         private ToolResult ReadAttachmentExcel(string filePath, string fileName)
         {
@@ -1748,15 +1674,301 @@ namespace DeepExcel.AddIn.Sidecar
                 try { _excelApp.ScreenUpdating = prevScreenUpdating; } catch { }
             }
         }
-    }
 
-    /// <summary>
-    /// 把 Excel 主窗口 HWND 包装为 IWin32Window，用于 MessageBox.Show(owner)。
-    /// 指定 owner 可避免 MessageBox 关闭后焦点丢失导致 CTP/面板状态异常。
-    /// </summary>
-    internal class ExcelWindowWrapper : System.Windows.Forms.IWin32Window
-    {
-        public IntPtr Handle { get; }
-        public ExcelWindowWrapper(int hwnd) { Handle = new IntPtr(hwnd); }
+        // ============================ Computer Use 工具 ============================
+
+        /// <summary>
+        /// ★ Win32 API：获取窗口矩形（含标题栏和边框）
+        /// </summary>
+        [StructLayout(LayoutKind.Sequential)]
+        private struct RECT
+        {
+            public int Left;
+            public int Top;
+            public int Right;
+            public int Bottom;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+        private const int SW_RESTORE = 9;
+
+        /// <summary>
+        /// ★ 截图 Excel 主窗口，返回 base64 PNG（image content block）。
+        /// 用于 Computer Use：AI 看不到 Excel 界面时，可调用此工具截图，
+        /// 根据截图判断当前状态（如对话框、错误提示、图表效果等）。
+        /// </summary>
+        private ToolResult ExecuteScreenshotExcel()
+        {
+            try
+            {
+                if (_excelApp == null)
+                {
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = false,
+                        Error = "Excel Application 不可用",
+                    };
+                }
+
+                // 获取 Excel 主窗口句柄
+                IntPtr hwnd;
+                try
+                {
+                    hwnd = new IntPtr(_excelApp.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = false,
+                        Error = "获取 Excel 窗口句柄失败: " + ex.Message,
+                    };
+                }
+
+                if (hwnd == IntPtr.Zero)
+                {
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = false,
+                        Error = "Excel 窗口句柄为 0",
+                    };
+                }
+
+                // 最小化状态先恢复
+                if (IsIconic(hwnd))
+                {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    Thread.Sleep(200);
+                }
+
+                // 获取窗口矩形
+                RECT rect;
+                if (!GetWindowRect(hwnd, out rect))
+                {
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = false,
+                        Error = "GetWindowRect 失败",
+                    };
+                }
+
+                int width = rect.Right - rect.Left;
+                int height = rect.Bottom - rect.Top;
+                if (width <= 0 || height <= 0)
+                {
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = false,
+                        Error = $"窗口尺寸无效: width={width}, height={height}",
+                    };
+                }
+
+                Logger.Instance.Info("ToolDispatcher", $"screenshot_excel: hwnd={hwnd}, rect=({rect.Left},{rect.Top},{rect.Right},{rect.Bottom}), size={width}x{height}");
+
+                // 截图
+                using (var bmp = new Bitmap(width, height, PixelFormat.Format32bppArgb))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(width, height), CopyPixelOperation.SourceCopy);
+                    }
+
+                    // ★ 体积优化：缩放 + JPEG 压缩，避免 base64 过大触发 SDK 1MB 缓冲区限制
+                    // 全屏 PNG 通常 2-5MB，base64 后更大。目标 < 300KB。
+                    var (scaledBmp, scaledW, scaledH) = ScaleToFit(bmp, 1280);
+                    string base64;
+                    int quality = 85;
+                    using (var ms = new MemoryStream())
+                    {
+                        // JPEG 编码 + 指定质量
+                        var jpegCodec = ImageCodecInfo.GetImageEncoders()
+                            .FirstOrDefault(c => c.FormatID == ImageFormat.Jpeg.Guid);
+                        var encoderParams = new EncoderParameters(1);
+                        encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, (long)quality);
+                        scaledBmp.Save(ms, jpegCodec, encoderParams);
+                        long len = ms.Length;
+
+                        // 如果仍超过 300KB，逐步降低质量
+                        while (len > 300 * 1024 && quality > 30)
+                        {
+                            quality -= 15;
+                            ms.SetLength(0);
+                            encoderParams.Param[0] = new EncoderParameter(Encoder.Quality, (long)quality);
+                            scaledBmp.Save(ms, jpegCodec, encoderParams);
+                            len = ms.Length;
+                        }
+
+                        base64 = Convert.ToBase64String(ms.ToArray());
+                    }
+
+                    Logger.Instance.Info("ToolDispatcher", $"screenshot_excel: success, orig={width}x{height}, scaled={scaledW}x{scaledH}, jpeg q={quality}, base64={base64.Length}");
+
+                    return new ToolResult
+                    {
+                        Name = "screenshot_excel",
+                        Success = true,
+                        Data = new
+                        {
+                            image_base64 = base64,
+                            media_type = "image/jpeg",
+                            width = scaledW,
+                            height = scaledH,
+                            original_width = width,
+                            original_height = height,
+                            jpeg_quality = quality,
+                        },
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("ToolDispatcher", "screenshot_excel failed", ex);
+                return new ToolResult
+                {
+                    Name = "screenshot_excel",
+                    Success = false,
+                    Error = "截图失败: " + ex.Message,
+                };
+            }
+        }
+
+        /// <summary>
+        /// ★ 等比缩放图片到最大宽度（保持宽高比）。
+        /// 如果原图宽度 ≤ maxWidth，返回原图（不放大）。
+        /// 返回的 Bitmap 调用方负责 Dispose。
+        /// </summary>
+        private (Bitmap bmp, int width, int height) ScaleToFit(Bitmap src, int maxWidth)
+        {
+            if (src.Width <= maxWidth)
+            {
+                // 不缩放，但转 Format24bppRgb（JPEG 不支持 32bppArgb，会黑屏）
+                var copy = new Bitmap(src.Width, src.Height, PixelFormat.Format24bppRgb);
+                using (var g = Graphics.FromImage(copy))
+                {
+                    g.DrawImage(src, 0, 0, src.Width, src.Height);
+                }
+                return (copy, src.Width, src.Height);
+            }
+
+            int newW = maxWidth;
+            int newH = (int)((long)src.Height * maxWidth / src.Width);
+            var scaled = new Bitmap(newW, newH, PixelFormat.Format24bppRgb);
+            using (var g = Graphics.FromImage(scaled))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.DrawImage(src, 0, 0, newW, newH);
+            }
+            return (scaled, newW, newH);
+        }
+
+        /// <summary>
+        /// ★ 模拟键盘输入到 Excel 窗口（Computer Use）。
+        /// 使用 SendKeys.SendWait，支持特殊键语法：
+        ///   {ENTER} {ESC} {TAB} {BACKSPACE} {DELETE} {UP} {DOWN} {LEFT} {RIGHT}
+        ///   {F1}~{F12} {HOME} {END} {PGUP} {PGDN}
+        ///   + = Shift, ^ = Ctrl, % = Alt（如 ^c 复制, ^v 粘贴, %{F4} Alt+F4）
+        /// 用于：操作 Excel 对话框、触发快捷键、关闭弹窗等。
+        /// </summary>
+        private ToolResult ExecuteSendKeys(string keys)
+        {
+            if (string.IsNullOrEmpty(keys))
+            {
+                return new ToolResult
+                {
+                    Name = "send_keys",
+                    Success = false,
+                    Error = "keys 是必传参数",
+                    Suggestion = "传入要模拟的按键，如 \"{ENTER}\"、\"^c\"（Ctrl+C）、\"%{F4}\"（Alt+F4）",
+                };
+            }
+
+            try
+            {
+                // ★ 关键：发送按键前必须把焦点从 WebView2 面板转到 Excel 工作表
+                // 否则 Ctrl+C/V/Z/S 等快捷键会作用于面板的输入框，而非 Excel 单元格
+                if (_excelApp != null)
+                {
+                    try
+                    {
+                        // 1. 激活 Excel 主窗口到前台
+                        IntPtr hwnd = new IntPtr(_excelApp.Hwnd);
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            SetForegroundWindow(hwnd);
+                            Thread.Sleep(50);
+                        }
+
+                        // 2. 激活当前工作表的 ActiveCell，把焦点从 WebView2 转到工作表
+                        //    这是跨进程转移焦点的可靠方式（SetFocus 跨进程无效）
+                        var activeSheet = _excelApp.ActiveSheet as Worksheet;
+                        if (activeSheet != null)
+                        {
+                            try
+                            {
+                                // 激活工作表，再激活一个单元格，强制 Excel 工作区获取焦点
+                                activeSheet.Activate();
+                                var activeCell = _excelApp.ActiveCell;
+                                if (activeCell != null)
+                                {
+                                    activeCell.Activate();
+                                    Thread.Sleep(50);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Instance.Warning("ToolDispatcher", "send_keys: activate cell failed: " + ex.Message);
+                            }
+                        }
+                    }
+                    catch { /* 忽略，继续尝试 SendKeys */ }
+                }
+
+                Logger.Instance.Info("ToolDispatcher", $"send_keys: keys=[{keys}]");
+
+                // ★ SendKeys 必须在 STA 线程，ToolDispatcher.Execute 已在 STA 线程
+                SendKeys.SendWait(keys);
+
+                // 等待 Excel 处理按键
+                Thread.Sleep(200);
+
+                return new ToolResult
+                {
+                    Name = "send_keys",
+                    Success = true,
+                    Data = new
+                    {
+                        keys_sent = keys,
+                        note = "按键已发送到 Excel 工作表（已自动转移焦点）",
+                    },
+                };
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("ToolDispatcher", "send_keys failed: " + keys, ex);
+                return new ToolResult
+                {
+                    Name = "send_keys",
+                    Success = false,
+                    Error = "模拟键盘输入失败: " + ex.Message,
+                    Suggestion = "keys 参数语法：{ENTER}/{TAB}/{ESC} 等特殊键用大括号；+Shift ^Ctrl %Alt 修饰键前缀",
+                };
+            }
+        }
     }
 }

@@ -54,7 +54,7 @@ function Register-ComClass {
         New-Item -Path $inproc32 -Force | Out-Null
     }
     Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
-    Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.1.0, Culture=neutral, PublicKeyToken=null" -Force
+    Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.2.0, Culture=neutral, PublicKeyToken=null" -Force
     Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
     Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
     Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force

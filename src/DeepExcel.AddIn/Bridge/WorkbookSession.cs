@@ -226,15 +226,58 @@ namespace DeepExcel.AddIn.Bridge
             return list;
         }
 
-        /// <summary>构建该 session 的 Excel 上下文（含附件信息）</summary>
+        /// <summary>构建该 session 的 Excel 上下文（含附件信息）。
+        /// ★ 性能优化：只预读取选中区域的地址和行列数（几十个 token），
+        /// 不读 Values/Formulas 等完整数据。AI 看到地址后可直接操作，
+        /// 需要详细数据时再调 read_range。兼顾速度和 token 消耗。</summary>
         public object BuildContext(IExcelActions excelActions)
         {
             try
             {
-                object workbook = null;
-                object selection = null;
-                try { workbook = excelActions.ReadWorkbook(); } catch { }
-                try { selection = excelActions.GetSelection(); } catch { }
+                // ★ 轻量级 selection：只取地址和行列数，不取 Values
+                object selectionLite = null;
+                try
+                {
+                    var fullSel = excelActions.GetSelection();
+                    if (fullSel != null)
+                    {
+                        // 用反射提取轻量字段，避免引用 RangeInfo 类型
+                        var t = fullSel.GetType();
+                        selectionLite = new
+                        {
+                            address = t.GetProperty("Address")?.GetValue(fullSel),
+                            sheet = t.GetProperty("WorksheetName")?.GetValue(fullSel),
+                            rowCount = t.GetProperty("RowCount")?.GetValue(fullSel),
+                            columnCount = t.GetProperty("ColumnCount")?.GetValue(fullSel),
+                        };
+                    }
+                }
+                catch { }
+
+                // ★ 轻量级 workbook：只取 sheet 名列表，不取每个 sheet 的数据
+                object workbookLite = null;
+                try
+                {
+                    var fullWb = excelActions.ReadWorkbook();
+                    if (fullWb != null)
+                    {
+                        var t = fullWb.GetType();
+                        var sheetsProp = t.GetProperty("Sheets");
+                        var sheets = sheetsProp?.GetValue(fullWb) as System.Collections.IEnumerable;
+                        var sheetNames = new List<string>();
+                        if (sheets != null)
+                        {
+                            foreach (var s in sheets)
+                            {
+                                var name = s?.GetType().GetProperty("Name")?.GetValue(s)?.ToString();
+                                if (name != null) sheetNames.Add(name);
+                            }
+                        }
+                        var activeSheet = t.GetProperty("ActiveSheet")?.GetValue(fullWb)?.ToString();
+                        workbookLite = new { sheets = sheetNames, activeSheet = activeSheet };
+                    }
+                }
+                catch { }
 
                 var attachmentList = new List<Dictionary<string, object>>();
                 foreach (var kvp in Attachments)
@@ -252,8 +295,8 @@ namespace DeepExcel.AddIn.Bridge
                 return new
                 {
                     workbookName = WorkbookName,
-                    workbook = workbook,
-                    selection = selection,
+                    workbook = workbookLite,
+                    selection = selectionLite,
                     attachments = attachmentList,
                     timestamp = DateTime.Now.ToString("o"),
                 };

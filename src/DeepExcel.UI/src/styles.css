@@ -40,9 +40,9 @@ body {
 
 .app-header {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg);
 }
@@ -59,20 +59,6 @@ body {
 .logo {
   font-size: 18px;
   color: var(--color-primary);
-}
-
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
 }
 
 .messages {
@@ -275,9 +261,39 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 0 16px 12px;
   border-top: 1px solid var(--color-border);
   background: var(--color-bg);
+  /* ★ 固定高度（由 resize handle 控制），子元素 flex 填充 */
+  flex-shrink: 0;
+  overflow: hidden;
+}
+
+/* ★ 输入区顶部拖拽手柄：上下调整输入区高度 */
+.input-resize-handle {
+  height: 6px;
+  margin: 0 -16px 4px;
+  padding: 0;
+  cursor: ns-resize;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.input-resize-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-border);
+  transition: background 0.15s;
+}
+
+.input-resize-handle:hover::before {
+  background: var(--color-primary);
 }
 
 .clarify-hint {
@@ -290,15 +306,19 @@ body {
 }
 
 .input-row {
+  position: relative;
   display: flex;
   gap: 8px;
   width: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 .input-area textarea {
   flex: 1;
   resize: none;
-  padding: 8px 12px;
+  /* ★ 左右留出嵌入图标的空间：左 38px (上传图标)、右 42px (发送按钮) */
+  padding: 10px 42px 10px 38px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   font-family: var(--font);
@@ -317,7 +337,15 @@ body {
 }
 
 .send-button {
-  padding: 0 20px;
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--color-primary);
   color: white;
   border: none;
@@ -338,7 +366,15 @@ body {
 }
 
 .stop-button {
-  padding: 0 20px;
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #e74c3c;
   color: white;
   border: none;
@@ -354,31 +390,32 @@ body {
   background: #c0392b;
 }
 
-/* === 输入框左侧附件按钮（回形针图标） === */
-.attach-btn {
-  position: relative;
+/* === 输入框内嵌附件按钮（左下角，无边框无背景） === */
+.input-area .attach-btn {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  min-height: 36px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   padding: 0;
   background: transparent;
-  border: 1px solid var(--color-border);
+  border: none;
   border-radius: var(--radius);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: color 0.15s;
+  z-index: 1;
 }
 
-.attach-btn:hover:not(:disabled) {
-  border-color: var(--color-primary);
+.input-area .attach-btn:hover:not(:disabled) {
   color: var(--color-primary);
-  background: var(--color-bg-secondary);
 }
 
-.attach-btn:disabled {
+.input-area .attach-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -437,49 +474,89 @@ body {
 .app-header-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
 }
 
-.history-toggle-btn {
-  padding: 4px 10px;
-  background: transparent;
-  border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: var(--font);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.history-toggle-btn:hover {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-/* === 顶部附件管理按钮（带数量徽章） === */
-.attach-toggle-btn {
+/* === 顶部统一文字按钮 === */
+.header-btn {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   padding: 4px 10px;
   background: transparent;
   border: 1px solid var(--color-border);
-  color: var(--color-text-secondary);
   border-radius: 6px;
   font-size: 12px;
   font-family: var(--font);
+  color: var(--color-text-secondary);
   cursor: pointer;
   transition: all 0.15s;
+  line-height: 1.4;
+  white-space: nowrap;
 }
 
-.attach-toggle-btn:hover {
+.header-btn:hover {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
 
-.attach-toggle-badge {
+/* 新建对话：primary 高亮 */
+.header-btn.primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+.header-btn.primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  color: white;
+}
+
+/* 加载历史开关：开启时高亮 */
+.header-btn.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: rgba(0, 120, 212, 0.06);
+}
+
+/* ★ 右侧纯图标按钮 */
+.header-btn.icon-only {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+.header-btn.icon-only.on {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: rgba(0, 120, 212, 0.06);
+}
+
+/* 附件按钮：带数字角标 */
+.header-btn.attach-btn {
+  padding-right: 8px;
+}
+
+/* 纯图标版的附件按钮：角标改为绝对定位 */
+.header-btn.icon-only.attach-btn {
+  padding: 0;
+  position: relative;
+}
+
+.header-btn.icon-only.attach-btn .attach-badge {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+}
+
+/* 附件数字角标 */
+.attach-badge {
   min-width: 14px;
   height: 14px;
   padding: 0 4px;
@@ -493,27 +570,6 @@ body {
   line-height: 1;
   border-radius: 7px;
   margin-left: 2px;
-}
-
-/* === 新建对话按钮 === */
-.new-conv-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  background: var(--color-primary);
-  border: 1px solid var(--color-primary);
-  color: white;
-  border-radius: 6px;
-  font-size: 12px;
-  font-family: var(--font);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.new-conv-btn:hover {
-  background: var(--color-primary-hover);
-  border-color: var(--color-primary-hover);
 }
 
 /* === 历史对话弹窗（居中模态框） === */
@@ -964,6 +1020,21 @@ body {
   opacity: 0.7;
 }
 
+/* ★ 用户消息（蓝底）上的"你"标签和复制按钮用浅色，提升对比度 */
+.message.user .role-label {
+  color: rgba(255, 255, 255, 0.9);
+  opacity: 1;
+}
+
+.message.user .copy-btn {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.message.user .copy-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
 .message.tool .message-header {
   margin-bottom: 0;
 }
@@ -1076,9 +1147,10 @@ body {
 .message-content blockquote {
   margin: 8px 0;
   padding: 6px 12px;
-  border-left: 3px solid var(--color-border);
+  border-left: none;
   background: rgba(0, 0, 0, 0.03);
   color: var(--color-text-secondary);
+  border-radius: 4px;
 }
 
 .message-content code.md-inline-code {
@@ -1459,3 +1531,223 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* === AI Native 权限确认抽屉（从输入框上方 slide-up，去 alert 感） === */
+.permission-drawer {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  background: var(--color-bg-secondary);
+  border-top: 1px solid var(--color-border);
+}
+
+.permission-drawer.visible {
+  max-height: 380px;
+}
+
+.permission-drawer-inner {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+}
+
+.permission-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+  opacity: 0.85;
+}
+
+.permission-action-text {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.permission-tool-chip {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: rgba(0, 120, 212, 0.1);
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid rgba(0, 120, 212, 0.2);
+}
+
+.permission-args {
+  background: #1e1e2e;
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.permission-arg {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  align-items: flex-start;
+}
+
+.arg-key {
+  color: #8b9bd9;
+  flex-shrink: 0;
+  min-width: 48px;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.arg-val {
+  color: #cdd6f4;
+  font-family: 'Consolas', 'Monaco', monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  flex: 1;
+}
+
+.permission-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.permission-hint {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  opacity: 0.75;
+}
+
+.permission-btns {
+  display: flex;
+  gap: 6px;
+}
+
+.perm-btn {
+  padding: 5px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all 0.15s;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+
+.perm-allow {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+.perm-allow:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.perm-deny {
+  background: transparent;
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+
+.perm-deny:hover {
+  color: #b91c1c;
+  border-color: #ef4444;
+  background: rgba(239, 68, 68, 0.05);
+}
+
+/* === 流式选项卡片（AI 输出"方案 A/B/C"时自动渲染可点击卡片） === */
+.streaming-choices {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.streaming-choices-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  opacity: 0.75;
+}
+
+.streaming-choices-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.streaming-choice-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px 7px 8px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 12.5px;
+  font-family: var(--font);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: all 0.15s;
+  max-width: 100%;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.streaming-choice-card:hover {
+  border-color: var(--color-primary);
+  background: rgba(0, 120, 212, 0.04);
+}
+
+.choice-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--color-bg-secondary);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+}
+
+.streaming-choice-card:hover .choice-tag {
+  background: var(--color-primary);
+  color: white;
+  border-color: var(--color-primary);
+}
+
+.choice-desc {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.streaming-choices-hint {
+  font-size: 10.5px;
+  color: var(--color-text-secondary);
+  opacity: 0.6;
+  font-style: italic;
+}
+

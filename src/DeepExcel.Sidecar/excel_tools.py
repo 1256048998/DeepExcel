@@ -501,6 +501,107 @@ async def add_pivot_slicer(args):
     return _wrap_result(result)
 
 
+@tool("auto_analyze", "自动分析数据范围并生成统计报告（包含基础统计、异常值检测、图表建议）。data_range 为数据区域地址（如 A1:C100）。", {"data_range": str})
+async def auto_analyze(args):
+    result = await call_csharp("auto_analyze", {"data_range": args["data_range"]})
+    return _wrap_result(result)
+
+
+@tool("quick_summary", "快速生成数据摘要：读取指定范围，计算基础统计（求和、平均、最大、最小、计数），并返回一句话摘要。address 为数据区域地址。", {"address": str})
+async def quick_summary(args):
+    result = await call_csharp("read_range", {"address": args["address"]})
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return _wrap_result(result)
+    data = result.get("data") or result.get("values") or []
+    if not data or not isinstance(data, list) or len(data) == 0:
+        return _wrap_result({"success": True, "data": {"summary": "数据为空", "stats": {}}})
+    nums = []
+    for row in data:
+        if isinstance(row, list):
+            for cell in row:
+                try:
+                    nums.append(float(cell))
+                except (ValueError, TypeError):
+                    pass
+    if len(nums) == 0:
+        return _wrap_result({"success": True, "data": {"summary": "无数字数据", "stats": {"count": 0}}})
+    total = sum(nums)
+    avg = total / len(nums)
+    max_val = max(nums)
+    min_val = min(nums)
+    summary = f"共 {len(nums)} 个数字，总和 {total:.2f}，平均 {avg:.2f}，最大 {max_val:.2f}，最小 {min_val:.2f}"
+    return _wrap_result({
+        "success": True,
+        "data": {
+            "summary": summary,
+            "stats": {
+                "count": len(nums),
+                "sum": total,
+                "average": avg,
+                "max": max_val,
+                "min": min_val,
+            }
+        }
+    })
+
+
+@tool("smart_chart", "智能创建图表：自动分析数据类型并选择最合适的图表类型。data_range 为数据范围，title 为图表标题。", {"data_range": str, "title": str})
+async def smart_chart(args):
+    result = await call_csharp("smart_chart", {
+        "data_range": args["data_range"],
+        "title": args.get("title", ""),
+    })
+    return _wrap_result(result)
+
+
+@tool("create_plan", "创建执行计划，用于复杂任务的分步执行。tasks 为任务列表（字符串数组），按顺序排列。description 为计划描述（可选）。", {"tasks": list, "description": str})
+async def create_plan(args):
+    tasks = args.get("tasks", [])
+    description = args.get("description", "")
+    plan_id = f"plan_{abs(hash(str(tasks) + description)) % 1000000}"
+    return _wrap_result({
+        "success": True,
+        "data": {
+            "plan_id": plan_id,
+            "tasks": tasks,
+            "description": description,
+            "total": len(tasks),
+            "completed": 0,
+            "current": 0,
+        }
+    })
+
+
+@tool("update_plan", "更新执行计划进度。plan_id 为计划 ID，task_index 为完成的任务索引（从 0 开始），status 为状态（completed/failed）。", {"plan_id": str, "task_index": int, "status": str})
+async def update_plan(args):
+    plan_id = args.get("plan_id", "")
+    task_index = args.get("task_index", 0)
+    status = args.get("status", "completed")
+    return _wrap_result({
+        "success": True,
+        "data": {
+            "plan_id": plan_id,
+            "task_index": task_index,
+            "status": status,
+            "message": f"任务 {task_index + 1} 已{status}",
+        }
+    })
+
+
+# ============================ Computer Use 工具 ============================
+
+@tool("screenshot_excel", "截图 Excel 主窗口（Computer Use）。仅在用户主动要求截图/computer use 时调用，禁止主动截图验证工具执行效果。返回 base64 JPEG（缩放到最大宽 1280px，<300KB）。无需传参。", {})
+async def screenshot_excel(args):
+    result = await call_csharp("screenshot_excel", {})
+    return _wrap_result(result)
+
+
+@tool("send_keys", "模拟键盘输入到 Excel 窗口（Computer Use）。仅用于操作 Excel 原生对话框/弹窗（如 {ESC} 关闭弹窗）。禁止用快捷键替代专门工具（保存/复制/撤销等用对应工具）。keys 语法：{ENTER}/{ESC}/{TAB}/{UP}/{DOWN} 等；+Shift ^Ctrl %Alt 前缀。", {"keys": str})
+async def send_keys(args):
+    result = await call_csharp("send_keys", {"keys": args["keys"]})
+    return _wrap_result(result)
+
+
 def register_all_tools() -> list:
     """返回所有 @tool 装饰后的工具对象列表"""
     return [
@@ -511,7 +612,7 @@ def register_all_tools() -> list:
         delete_blank_rows, split_text_to_columns, fill_blank_cells,
         highlight_duplicates, remove_special_chars, clean_amount,
         merge_columns, rename_columns, collapse_spaces,
-        create_chart, create_combo_chart,
+        create_chart, create_combo_chart, smart_chart,
         add_data_labels, set_chart_title, set_chart_colors, export_chart,
         create_pivot_table,
         refresh_pivot, group_pivot_date,
@@ -527,4 +628,8 @@ def register_all_tools() -> list:
         freeze_panes,
         apply_conditional_format, write_table,
         clarify_intent,
+        auto_analyze, quick_summary,
+        create_plan, update_plan,
+        # ★ Computer Use 工具
+        screenshot_excel, send_keys,
     ]

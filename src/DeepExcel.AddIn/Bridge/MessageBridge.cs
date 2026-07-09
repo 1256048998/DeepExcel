@@ -83,7 +83,7 @@ namespace DeepExcel.AddIn.Bridge
 
             var securityManager = SecurityManager.Instance;
             _securityGateway = new SecurityGateway(securityManager);
-            _toolDispatcher = new ToolDispatcher(_excelActions, _excelApp, _securityGateway);
+            _toolDispatcher = new ToolDispatcher(_excelActions, _excelApp);
         }
 
         /// <summary>
@@ -119,6 +119,8 @@ namespace DeepExcel.AddIn.Bridge
                 session.Sidecar.OnClarify += OnClarify;
                 session.Sidecar.OnStreamEnd += OnStreamEndFromSidecar;
                 session.Sidecar.OnError += OnSidecarError;
+                // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
+                session.Sidecar.OnPermissionRequest += OnPermissionRequest;
 
                 _sessions[key] = session;
 
@@ -342,6 +344,9 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleUserMessage(session, msg);
                     case "cancel":
                         return HandleCancel(session);
+                    // ★ AI Native 权限确认：前端抽屉用户点击"允许"/"拒绝"后回传
+                    case "permission_response":
+                        return HandlePermissionResponse(session, msg);
                     // ★ 附件管理
                     case "list_attachments":
                         return MakeResponse("attachments", new { list = session.GetAttachmentList() });
@@ -728,6 +733,28 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        /// <summary>
+        /// ★ AI Native 权限确认：处理前端抽屉回传的用户决定。
+        /// 前端发 {type:"permission_response", payload:{request_id, decision}} → 转发给 sidecar。
+        /// </summary>
+        private string HandlePermissionResponse(WorkbookSession session, Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var requestId = payload.GetProperty("request_id").GetString();
+                var decision = payload.GetProperty("decision").GetString();
+                Logger.Instance.Info("MessageBridge", $"HandlePermissionResponse: req_id={requestId}, decision={decision}, workbook={session.WorkbookName}");
+                session.Sidecar.SendPermissionResponse(requestId, decision);
+                return MakeResponse("ack", new { received = true });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandlePermissionResponse failed", ex);
+                return MakeError($"Permission response error: {ex.Message}");
+            }
+        }
+
         // ============= 多对话历史消息处理 =============
 
         /// <summary>★ 新建对话：存当前对话，清空内存，重启 sidecar 清 AI 上下文</summary>
@@ -1033,6 +1060,33 @@ namespace DeepExcel.AddIn.Bridge
                 SendToSessionUi(session.WorkbookKey, "clarify", new { question, options });
                 // ★ 追加到历史
                 session.AppendClarify(question, options?.ToArray());
+            }
+        }
+
+        /// <summary>
+        /// ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具。
+        /// 转发到 WebView，前端在输入框上方 slide-up 抽屉显示确认卡片。
+        /// 用户点击"允许"/"拒绝"后，前端发回 permission_response，C# 再转发给 sidecar。
+        /// ★ 不阻塞 UI 线程：hook 是异步的，等待期间 Excel 正常响应。
+        /// </summary>
+        private void OnPermissionRequest(PythonSidecar sender, string requestId, string tool, Dictionary<string, object> args)
+        {
+            var session = FindSessionBySidecar(sender);
+            if (session != null)
+            {
+                Logger.Instance.Info("MessageBridge", $"OnPermissionRequest: tool={tool}, req_id={requestId}, workbookKey={session.WorkbookKey}");
+                SendToSessionUi(session.WorkbookKey, "permission_request", new
+                {
+                    request_id = requestId,
+                    tool,
+                    args
+                });
+            }
+            else
+            {
+                // 找不到 session：直接拒绝，避免 hook 永久等待超时
+                Logger.Instance.Warning("MessageBridge", $"OnPermissionRequest: session not found, auto-deny, req_id={requestId}");
+                sender.SendPermissionResponse(requestId, "deny");
             }
         }
 

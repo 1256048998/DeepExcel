@@ -244,8 +244,9 @@ namespace DeepExcel.AddIn
 
         /// <summary>
         /// 工作簿关闭前：清理对应会话和 CTP 记录。
-        /// ★ 工具执行保护：VBA/Python 执行期间 Excel 可能因宏失败误触发此事件，
-        ///   此时 _toolExecutionGuard=true，跳过清理避免会话和面板被误销毁。
+        /// ★ AI Native 改造后：权限确认改由 PreToolUse hook 异步处理，UI 线程不再被
+        ///   同步 MessageBox 阻塞，Excel 不会误触发 WorkbookBeforeClose，
+        ///   因此不再需要 ExecutionGuard 跳过清理逻辑。
         /// </summary>
         private void OnWorkbookBeforeClose(Workbook Wb, ref bool Cancel)
         {
@@ -253,13 +254,6 @@ namespace DeepExcel.AddIn
             {
                 string wbKey = GetWorkbookKey(Wb);
                 Log($"WorkbookBeforeClose: " + wbKey);
-
-                // ★ 工具执行保护：执行期间不清理，避免 VBA 宏失败导致的误触发
-                if (Sidecar.ToolDispatcher.ExecutionGuardActive)
-                {
-                    Log("WorkbookBeforeClose SKIPPED (tool execution guard active): " + wbKey);
-                    return;
-                }
 
                 // 通知 bridge 清理会话
                 if (_bridge != null)

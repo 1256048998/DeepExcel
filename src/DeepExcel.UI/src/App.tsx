@@ -2,12 +2,20 @@ import { useState, useRef, useEffect } from 'react'
 import { sendToHost, sendToHostWithResponse, onHostMessage } from './bridge'
 import { MessageList } from './components/MessageList'
 import { InputArea } from './components/InputArea'
-import { StatusBar } from './components/StatusBar'
 import { HistoryPanel } from './components/HistoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
-import type { Message, ConnectionStatus } from './types'
+import { PermissionDrawer } from './components/PermissionDrawer'
+import type { Message } from './types'
+
+// ★ AI Native 权限确认抽屉状态（PreToolUse hook 触发，从输入框上方 slide-up）
+interface PermissionState {
+  visible: boolean
+  requestId?: string
+  tool?: string
+  args?: Record<string, any>
+}
 
 export interface AttachmentInfo {
   fileName: string
@@ -23,7 +31,6 @@ export default function App() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [status, setStatus] = useState<ConnectionStatus>('connecting')
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
@@ -33,6 +40,20 @@ export default function App() {
   const [conversationsOpen, setConversationsOpen] = useState(false)
   // ★ 模型配置弹窗（Ribbon 按钮触发）
   const [modelConfigOpen, setModelConfigOpen] = useState(false)
+  // ★ AI Native 权限确认抽屉（PreToolUse hook 请求时显示）
+  const [permission, setPermission] = useState<PermissionState>({ visible: false })
+
+  // ★ "加载历史"开关：默认开启，打开面板时自动恢复最近一次对话
+  // 状态持久化到 localStorage，用户可在顶部按钮切换
+  const [autoLoadHistory, setAutoLoadHistory] = useState<boolean>(() => {
+    try {
+      const v = localStorage.getItem('deepexcel_autoload_history')
+      // 默认开启：未设置或值为 "1" 都视为开启
+      return v === null || v === '1'
+    } catch { return true }
+  })
+  // 防止重复自动加载（连接重建时只加载一次）
+  const hasAutoLoadedRef = useRef(false)
 
   // ★ Loading 超时兜底：如果 5 分钟内没收到 stream_end（消息丢失/前端卡死等），
   // 自动停止 loading，避免输入框永久禁用、停止按钮永久转圈
@@ -115,6 +136,11 @@ export default function App() {
         }])
         setIsClarifying(true)
         setLoading(false)
+      } else if (data.type === 'permission_request') {
+        // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
+        // 从输入框上方 slide-up 显示抽屉，不阻塞 Excel UI 线程
+        const { request_id, tool, args } = data.payload
+        setPermission({ visible: true, requestId: request_id, tool, args })
       } else if (data.type === 'error') {
         clearLoadingTimeout()
         // ★ 同样重置所有 streaming 状态
@@ -124,7 +150,11 @@ export default function App() {
         ])
         setLoading(false)
       } else if (data.type === 'connection_ok') {
-        setStatus('connected')
+        // ★ 自动加载历史：开关开启时，连接建立后恢复最近一次对话
+        if (autoLoadHistory && !hasAutoLoadedRef.current) {
+          hasAutoLoadedRef.current = true
+          autoLoadLatestConversation()
+        }
       }
     })
     return unsubscribe
@@ -168,6 +198,33 @@ export default function App() {
   // 点击 clarify 选项按钮：直接作为用户回答发送
   const handleClarifyAnswer = (answer: string) => {
     sendMessage(answer)
+  }
+
+  // ★ 流式选项卡片点击：把选项作为用户消息发送
+  // 复用 sendMessage，不重复 loading 状态判断
+  const handleChoiceSelect = (choice: string) => {
+    sendMessage(choice)
+  }
+
+  // ★ AI Native 权限确认：用户点击"允许并记住"或"拒绝"
+  // 发送 permission_response 给 C#，C# 转发到 Python sidecar，sidecar 的 PreToolUse hook 收到后继续/中止
+  const handlePermissionAllow = () => {
+    if (permission.requestId) {
+      sendToHost({
+        type: 'permission_response',
+        payload: { request_id: permission.requestId, decision: 'allow' }
+      })
+    }
+    setPermission({ visible: false })
+  }
+  const handlePermissionDeny = () => {
+    if (permission.requestId) {
+      sendToHost({
+        type: 'permission_response',
+        payload: { request_id: permission.requestId, decision: 'deny' }
+      })
+    }
+    setPermission({ visible: false })
   }
 
   // ★ 附件：加载列表
@@ -243,6 +300,51 @@ export default function App() {
     }
   }
 
+  // ★ 自动加载最近一次对话：开关开启时连接建立后调用
+  // 复用 list_conversations + continue_conversation 接口，取列表第一条（最新）
+  const autoLoadLatestConversation = async () => {
+    try {
+      const listResp = await sendToHostWithResponse(
+        { type: 'list_conversations', payload: {} },
+        'conversations'
+      )
+      if (listResp?.type === 'conversations' && Array.isArray(listResp.payload?.list)) {
+        const list = listResp.payload.list
+        if (list.length === 0) return  // 无历史，保持欢迎语
+        // 取最新的一条（列表已按更新时间倒序）
+        const latest = list[0]
+        const contResp = await sendToHostWithResponse(
+          { type: 'continue_conversation', payload: { conversation_id: latest.id } },
+          'continue_conversation'
+        )
+        if (contResp?.type === 'continue_conversation' && Array.isArray(contResp.payload?.messages)) {
+          const msgs: Message[] = contResp.payload.messages.map((m: any) => ({
+            role: m.role,
+            content: m.content || '',
+            type: m.type,
+            options: m.options,
+            toolGroup: m.toolGroup,
+            streaming: false
+          }))
+          if (msgs.length > 0) {
+            setMessages(msgs)
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[DeepExcel] autoLoadLatestConversation failed', e)
+    }
+  }
+
+  // ★ 切换"加载历史"开关
+  const toggleAutoLoadHistory = () => {
+    const next = !autoLoadHistory
+    setAutoLoadHistory(next)
+    try {
+      localStorage.setItem('deepexcel_autoload_history', next ? '1' : '0')
+    } catch { /* ignore */ }
+  }
+
   // ★ 从历史继续对话：前端用历史 messages 恢复显示
   const handleContinueConversation = (historyMessages: Message[]) => {
     if (historyMessages.length === 0) {
@@ -263,54 +365,88 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <div className="app-header-actions">
+          {/* 左侧：图标 + 文字 */}
           <button
-            className="new-conv-btn"
+            className="header-btn primary"
             onClick={handleNewConversation}
             title="开始新对话（当前对话会保存到历史）"
+            type="button"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <line x1="12" y1="5" x2="12" y2="19"></line>
-              <line x1="5" y1="12" x2="19" y2="12"></line>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-            新对话
+            新建
           </button>
           <button
-            className="history-toggle-btn"
+            className="header-btn"
             onClick={() => setConversationsOpen(true)}
             title="查看历史对话"
+            type="button"
           >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/>
+              <polyline points="3 4 3 8 7 8"/>
+              <polyline points="12 7 12 12 15 14"/>
+            </svg>
             历史对话
           </button>
+        </div>
+        <div className="app-header-actions right">
+          {/* 右侧：纯图标 + tooltip */}
           <button
-            className="history-toggle-btn"
-            onClick={() => setHistoryOpen(true)}
-            title="查看历史版本"
+            className={`header-btn icon-only ${autoLoadHistory ? 'on' : ''}`}
+            onClick={toggleAutoLoadHistory}
+            title={autoLoadHistory ? '加载历史：开启（打开面板自动恢复上次对话）' : '加载历史：关闭（打开面板为新对话）'}
+            type="button"
           >
-            版本
+            {autoLoadHistory ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="1 4 1 10 7 10"/>
+                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+              </svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5">
+                <polyline points="23 4 23 10 17 10"/>
+                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+              </svg>
+            )}
           </button>
           <button
-            className="history-toggle-btn"
+            className="header-btn icon-only"
+            onClick={() => setHistoryOpen(true)}
+            title="历史版本"
+            type="button"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button
+            className="header-btn icon-only"
             onClick={() => setModelConfigOpen(true)}
             title="模型配置"
             type="button"
           >
-            模型
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
           </button>
           <button
-            className="attach-toggle-btn"
+            className="header-btn icon-only attach-btn"
             onClick={openAttachments}
             title="附件管理"
             type="button"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
-            附件
             {attachments.length > 0 && (
-              <span className="attach-toggle-badge">{attachments.length}</span>
+              <span className="attach-badge">{attachments.length}</span>
             )}
           </button>
-          <StatusBar status={status} />
         </div>
       </header>
 
@@ -319,6 +455,16 @@ export default function App() {
         loading={loading}
         onToggleToolGroup={toggleToolGroup}
         onClarifyAnswer={handleClarifyAnswer}
+        onChoiceSelect={handleChoiceSelect}
+      />
+
+      {/* ★ AI Native 权限确认抽屉：从输入框上方 slide-up 显示，类似 Claude Code/Trae/Codex */}
+      <PermissionDrawer
+        visible={permission.visible}
+        tool={permission.tool || ''}
+        args={permission.args || {}}
+        onAllow={handlePermissionAllow}
+        onDeny={handlePermissionDeny}
       />
 
       <InputArea

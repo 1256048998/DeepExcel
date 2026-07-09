@@ -24,6 +24,7 @@ _message_buffer: Dict[str, Any] = {
     "cancel": None,           # asyncio.Event，在 _init_buffer() 中创建
     "config": None,           # asyncio.Queue，在 _init_buffer() 中创建
     "restore_history": None,  # ★ 历史对话恢复（list of {role, content}），None 表示无历史
+    "permission_response": {}, # ★ request_id -> decision（"allow"/"deny"），PreToolUse hook 等待
 }
 
 
@@ -90,6 +91,11 @@ def route_message(msg: dict) -> None:
         # ★ 历史对话恢复：存到全局变量，sidecar 主循环会在首条 user_message 时注入
         _message_buffer["restore_history"] = msg.get("messages", [])
         _log(f"route_message: restore_history stored, count={len(_message_buffer['restore_history'] or [])}")
+    elif t == "permission_response":
+        # ★ 权限确认响应：存到字典，PreToolUse hook 用 request_id 查找
+        rid = msg.get("request_id", "?")
+        _message_buffer["permission_response"][rid] = msg.get("decision", "deny")
+        _log(f"route_message: permission_response stored, request_id={rid}, decision={msg.get('decision')}")
     else:
         _log(f"route_message: UNKNOWN type={t}, ignored")
     # 未知 type 静默丢弃，避免 sidecar 崩溃
@@ -145,3 +151,28 @@ async def call_csharp_clarify(question: str, options: list) -> str:
     answer = _message_buffer["clarify_answer"]
     _message_buffer["clarify_answer"] = None
     return answer
+
+
+async def request_permission(tool_name: str, args: dict, timeout: float = 300.0) -> str:
+    """向 C# 发送权限确认请求，阻塞等待用户回答。
+    返回 "allow" 或 "deny"。超时按 deny 处理。
+    ★ 用户在面板内抽屉式确认，不阻塞 Excel UI 线程。"""
+    _init_buffer()
+    request_id = generate_call_id()
+    _log(f"request_permission: sending, tool={tool_name}, request_id={request_id}")
+    await write_message({
+        "type": "permission_request",
+        "request_id": request_id,
+        "tool": tool_name,
+        "args": args,
+    })
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        if request_id in _message_buffer["permission_response"]:
+            decision = _message_buffer["permission_response"].pop(request_id)
+            _log(f"request_permission: got decision={decision}, request_id={request_id}")
+            return decision
+        if asyncio.get_event_loop().time() > deadline:
+            _log(f"request_permission: TIMEOUT after {timeout}s, request_id={request_id}")
+            return "deny"
+        await asyncio.sleep(0.05)

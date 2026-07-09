@@ -10,16 +10,20 @@
 import sys
 
 # ★ 必须在所有其他操作之前强制 UTF-8 编码
-# Windows 下 Python 子进程的 stdout 默认是 cp1252，写入中文/emoji 会抛 UnicodeEncodeError
+# Windows 下 Python 子进程的 stdin/stdout 默认是 cp1252，写入中文/emoji 会抛 UnicodeEncodeError
 # C# 端 PythonSidecar.cs 已设置 StandardOutputEncoding=UTF8，Python 端必须匹配
+# ★ 同时 reconfigure stdin：系统语言为英文时 ANSI 代码页 cp1252 不支持中文，
+# C# → Python 方向的消息（如 tool_result）中的中文会在 stdin 读取时丢失
 try:
     sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
     sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
+    sys.stdin.reconfigure(encoding='utf-8', line_buffering=True)
 except Exception:
     # Python < 3.7 没有 reconfigure，用 TextIOWrapper 兜底
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
+    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', line_buffering=True)
 
 import anyio
 import json
@@ -33,12 +37,168 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     create_sdk_mcp_server,
 )
-from claude_agent_sdk.types import AssistantMessage, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
+from claude_agent_sdk.types import AssistantMessage, HookMatcher, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
 
 from excel_tools import register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
-from ipc import _init_buffer
+from ipc import _init_buffer, request_permission
 from system_prompt import SYSTEM_PROMPT
+
+
+# ★ 高风险工具集合：需要用户在面板内抽屉式确认才能执行
+# 低风险工具（读/写值/排序/格式化等）直接放行，不打扰用户
+_HIGH_RISK_TOOLS = {
+    "execute_vba",       # 执行任意 VBA 代码
+    "execute_python",    # 执行任意 Python 代码
+    "rollback",          # 回滚工作簿到快照
+    "clean_data",        # 清洗数据（修改单元格）
+    "remove_duplicates", # 删除重复项（删除行）
+}
+
+# ★ 会话级"允许并记住"：用户允许过的工具本次会话内不再询问
+_allowed_tools_session = set()
+
+# ★ 最近一条用户消息文本（用于 Computer Use 工具的触发门槛检查）
+# run_agent_loop 每次收到用户消息时更新，PreToolUse hook 据此判断
+# screenshot_excel/send_keys 是否由用户主动要求
+_last_user_text = ""
+
+# ★ Computer Use 触发关键词：用户消息含这些词才允许调用 screenshot_excel/send_keys
+# 匹配到即放行，不匹配则 deny 并提示 AI"需要用户明确要求"
+_COMPUTER_USE_TRIGGERS = (
+    "截图", "看看界面", "看看效果", "看下界面", "看下效果",
+    "computer use", "computer-use", "computeruse",
+    "模拟键盘", "模拟按键", "按键模拟",
+    "帮我按", "按一下", "发送按键", "send keys", "sendkeys",
+    "截图看看", "截个图", "截屏",
+)
+
+
+async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
+    """PreToolUse hook：对高风险工具弹抽屉式确认，低风险直接放行。
+    ★ 这是 AI Native 的权限确认机制，替代旧的同步 MessageBox：
+       1. 不阻塞 Excel UI 线程（hook 是异步的，等待期间 Excel 正常响应）
+       2. 确认 UI 在对话面板内（从输入框上方 slide-up 抽屉），不跳出到 Excel 主窗口
+       3. 用户可"允许并记住"（同一工具本次会话内不再询问）
+    """
+    try:
+        tool_name = input_data.get("tool_name", "")
+        # 只拦截 mcp__excel__ 前缀的工具
+        if not tool_name.startswith("mcp__excel__"):
+            return {"continue_": True}
+        bare_name = tool_name.replace("mcp__excel__", "")
+
+        # 低风险工具直接放行
+        if bare_name not in _HIGH_RISK_TOOLS:
+            # ★ Computer Use 门槛检查：screenshot_excel/send_keys 仅在用户主动要求时放行
+            # 防止 AI 自作主张截图验证工具执行效果（token 浪费 + 延迟）
+            if bare_name in ("screenshot_excel", "send_keys"):
+                user_msg = _last_user_text.lower()
+                if not any(kw in user_msg for kw in _COMPUTER_USE_TRIGGERS):
+                    sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} blocked (user did not request computer use)\n")
+                    return {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "permissionDecision": "deny",
+                            "permissionDecisionReason": "screenshot_excel/send_keys 仅在用户主动要求截图或 computer use 时可用。当前用户消息未包含相关请求，请依靠工具返回值判断结果，不要主动截图验证。",
+                        },
+                        "reason": "Computer Use 工具需要用户明确要求才可调用",
+                    }
+            return {"continue_": True}
+
+        # ★ "允许并记住"：本次会话已允许过的工具不再询问
+        if bare_name in _allowed_tools_session:
+            sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} auto-allowed (session remembered)\n")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "用户已允许并记住",
+                }
+            }
+
+        # 高风险工具：向 C#/前端请求权限确认
+        sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} requires permission, requesting...\n")
+        tool_input = input_data.get("tool_input", {})
+        decision = await request_permission(bare_name, tool_input)
+        sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} decision={decision}\n")
+
+        if decision == "allow":
+            # ★ 用户允许 → 记住，本次会话内不再询问此工具
+            _allowed_tools_session.add(bare_name)
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "用户已确认允许",
+                }
+            }
+        else:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "用户拒绝执行此操作",
+                },
+                "reason": "用户拒绝了 " + bare_name + " 的执行",
+            }
+    except Exception as e:
+        sys.stderr.write(f"[sidecar] PreToolUse hook error: {e}\n")
+        # hook 出错时安全起见放行（避免阻塞正常流程），但记录错误
+        return {"continue_": True}
+
+
+class _ResponseCache:
+    """轻量级请求级响应缓存 — 只缓存纯文本响应（无工具调用副作用）。
+    线程安全，支持 LRU 淘汰和 TTL 过期。
+    """
+
+    def __init__(self, max_size: int = 100, ttl_minutes: int = 5):
+        self._cache = {}
+        self._lock = threading.Lock()
+        self.max_size = max_size
+        self.ttl = ttl_minutes * 60
+
+    def get(self, key: str):
+        with self._lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                if time.time() - entry["timestamp"] < self.ttl:
+                    return entry["data"]
+                else:
+                    del self._cache[key]
+        return None
+
+    def set(self, key: str, data: str):
+        if not isinstance(data, str) or len(data) > 10000:
+            return
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                oldest = min(self._cache.keys(), key=lambda k: self._cache[k]["timestamp"])
+                del self._cache[oldest]
+            self._cache[key] = {"data": data, "timestamp": time.time()}
+
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+
+
+_response_cache = _ResponseCache()
+
+
+def _build_cache_key(user_text: str, attachments: list, model: str, base_url: str) -> str:
+    """构建请求缓存键。
+    包含：用户文本 + 附件摘要 + 模型 + base_url + 日期
+    """
+    import hashlib
+    att_summary = []
+    if attachments and isinstance(attachments, list):
+        for a in attachments:
+            if isinstance(a, dict):
+                att_summary.append(f"{a.get('name','')}:{a.get('size',0)}")
+    date_str = time.strftime("%Y-%m-%d")
+    key_str = f"{user_text}|{'|'.join(att_summary)}|{model}|{base_url}|{date_str}"
+    return hashlib.md5(key_str.encode("utf-8")).hexdigest()
 
 
 def _parent_watchdog():
@@ -306,6 +466,40 @@ def _collect_pdf_blocks(attachments: list) -> list:
     return blocks
 
 
+def _build_excel_context_lite(context: dict) -> str:
+    """从 context 中提取轻量级 Excel 上下文（地址、sheet 名、行列数），
+    拼成简短文本注入用户消息。这样 AI 不需要额外调 read_workbook/read_selection。
+    """
+    if not isinstance(context, dict):
+        return ""
+    lines = []
+    wb = context.get("workbook")
+    if isinstance(wb, dict):
+        sheets = wb.get("sheets")
+        active = wb.get("activeSheet")
+        if active:
+            lines.append(f"[当前工作表] {active}")
+        if sheets and isinstance(sheets, list) and len(sheets) > 1:
+            lines.append(f"[所有工作表] {', '.join(str(s) for s in sheets[:10])}")
+    sel = context.get("selection")
+    if isinstance(sel, dict):
+        addr = sel.get("address")
+        sheet = sel.get("sheet")
+        rows = sel.get("rowCount")
+        cols = sel.get("columnCount")
+        if addr:
+            parts = [f"[选中区域] {addr}"]
+            if rows and cols:
+                parts.append(f"({rows}行×{cols}列)")
+            lines.append(" ".join(parts))
+    wb_name = context.get("workbookName")
+    if wb_name:
+        lines.append(f"[工作簿] {wb_name}")
+    if lines:
+        return " ".join(lines) + "\n"
+    return ""
+
+
 def _build_history_summary(history: list) -> str:
     """把历史对话列表构建为上下文摘要文本。
     只取 user/assistant 文本，跳过 tool/clarify。
@@ -362,13 +556,15 @@ async def stdin_reader_loop():
 # 每次新 user message 开始时重置为 False。
 _had_partial_text = False
 
+# ★ 缓存跟踪：本轮是否有工具调用（有工具调用则不缓存），以及收集的完整文本
+_tool_calls_in_turn = 0
+_collected_text = ""
+
 
 async def handle_sdk_message(response):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
-    global _had_partial_text
+    global _had_partial_text, _tool_calls_in_turn, _collected_text
     if isinstance(response, StreamEvent):
-        # ★ token 级流式：解析 Anthropic 原生 content_block_delta 事件
-        # event 格式: {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "..."}}
         evt = response.event if isinstance(response.event, dict) else {}
         if evt.get("type") == "content_block_delta":
             delta = evt.get("delta", {})
@@ -376,23 +572,21 @@ async def handle_sdk_message(response):
                 text = delta.get("text", "")
                 if text:
                     _had_partial_text = True
+                    _collected_text += text
                     await write_message({"type": "stream_delta", "text": text})
     elif isinstance(response, AssistantMessage):
         for block in response.content:
             if isinstance(block, TextBlock):
-                # ★ 如果已通过 StreamEvent 发送过 token delta，这里不再发完整文本（避免重复）
-                # 如果没有（某些 provider 不支持流式 / include_partial_messages 无效），发完整文本兜底
                 if not _had_partial_text:
+                    _collected_text += block.text
                     await write_message({"type": "stream_delta", "text": block.text})
             elif isinstance(block, ToolUseBlock):
-                # SDK 内部已调度 @tool 函数，工具函数会通过 call_csharp() 发 tool_call 给 C#
-                # 这里只发一个轻量通知给 C# 用于 UI 显示
+                _tool_calls_in_turn += 1
                 await write_message({
                     "type": "tool_use",
                     "tool": block.name,
                     "args": block.input if isinstance(block.input, dict) else {},
                 })
-        # ★ 一条 AssistantMessage 处理完后重置标志，为下一条消息（工具调用后的最终回复）做准备
         _had_partial_text = False
     elif isinstance(response, ResultMessage):
         usage = getattr(response, "usage", None)
@@ -412,7 +606,7 @@ async def handle_sdk_message(response):
         })
 
 
-async def run_agent_loop(client, supports_vision: bool = True):
+async def run_agent_loop(client, supports_vision: bool = True, model: str = "", base_url: str = ""):
     """主循环：从 user_message queue 取消息，发给 SDK 处理"""
     while True:
         msg = await _message_buffer["user_message"].get()
@@ -423,48 +617,73 @@ async def run_agent_loop(client, supports_vision: bool = True):
         if _message_buffer["cancel"].is_set():
             _message_buffer["cancel"].clear()
 
-        # ★ 重置流式标志：每轮新对话开始时，尚未收到任何 token delta
-        global _had_partial_text
+        # ★ 重置流式标志 + 缓存跟踪
+        global _had_partial_text, _tool_calls_in_turn, _collected_text
         _had_partial_text = False
+        _tool_calls_in_turn = 0
+        _collected_text = ""
 
         user_text = msg.get("text", "")
         context = msg.get("context") or {}
         attachments = context.get("attachments") if isinstance(context, dict) else None
 
+        # ★ 记录最近一条用户消息，供 PreToolUse hook 的 Computer Use 门槛检查使用
+        global _last_user_text
+        _last_user_text = user_text or ""
+
         sys.stderr.write(f"[sidecar] run_agent_loop: processing user message (len={len(user_text)}), supports_vision={supports_vision}\n")
         sys.stderr.flush()
 
+        # ★ 缓存检查：纯文本问答场景（无附件、无历史上下文）尝试命中缓存
+        history = _message_buffer.get("restore_history")
+        has_history = history and isinstance(history, list) and len(history) > 0
+        has_attachments = attachments and isinstance(attachments, list) and len(attachments) > 0
+        use_cache = not has_history and not has_attachments and len(user_text) < 500
+
+        if use_cache:
+            cache_key = _build_cache_key(user_text, attachments or [], model, base_url)
+            cached = _response_cache.get(cache_key)
+            if cached:
+                sys.stderr.write(f"[sidecar] cache hit, returning cached response\n")
+                sys.stderr.flush()
+                await write_message({"type": "stream_delta", "text": cached})
+                await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0, "cached": True})
+                continue
+
         # ★ 附件上下文注入：如果有附件，把附件信息拼到用户消息前面
         final_text = user_text
-        if attachments and isinstance(attachments, list) and len(attachments) > 0:
+        if has_attachments:
             att_context = _build_attachment_context(attachments, supports_vision=supports_vision)
             if att_context:
                 final_text = att_context + "\n\n用户问题：\n" + user_text
                 sys.stderr.write(f"[sidecar] attachment context injected ({len(attachments)} attachments)\n")
                 sys.stderr.flush()
 
+        # ★ 轻量级 Excel 上下文注入：把选中区域地址、sheet 名等信息拼到用户消息前
+        # 这样 AI 不需要额外调 read_workbook/read_selection 就能知道基本信息
+        excel_ctx = _build_excel_context_lite(context)
+        if excel_ctx:
+            final_text = excel_ctx + "\n" + final_text
+            sys.stderr.write(f"[sidecar] excel context lite injected\n")
+            sys.stderr.flush()
+
         # ★ 历史上下文注入：如果 C# 发了 restore_history，把历史对话摘要拼到首条用户消息前。
-        # 这样 AI 能"记得"之前聊过什么。只在首条消息注入一次，注入后清空。
-        history = _message_buffer.get("restore_history")
-        if history and isinstance(history, list) and len(history) > 0:
+        if has_history:
             summary = _build_history_summary(history)
             if summary:
                 final_text = summary + "\n\n用户问题：\n" + final_text
                 sys.stderr.write(f"[sidecar] history context injected ({len(history)} messages)\n")
                 sys.stderr.flush()
-            # 注入后清空，避免后续消息重复注入
             _message_buffer["restore_history"] = None
 
         try:
-            # ★ 附件处理：仅当模型支持 vision 时才发送 image/document block
             direct_blocks = []
-            if supports_vision and attachments and isinstance(attachments, list) and len(attachments) > 0:
+            if supports_vision and has_attachments:
                 image_blocks = _collect_image_blocks(attachments)
                 pdf_blocks = _collect_pdf_blocks(attachments)
                 direct_blocks = image_blocks + pdf_blocks
 
             if direct_blocks:
-                # 有图片/PDF：用 content blocks 数组（image/document blocks + text block）
                 content_blocks = direct_blocks + [{"type": "text", "text": final_text}]
 
                 async def _msg_gen():
@@ -476,16 +695,13 @@ async def run_agent_loop(client, supports_vision: bool = True):
                     }
 
                 await client.query(_msg_gen())
-                sys.stderr.write(f"[sidecar] client.query() done (with {len(image_blocks)} image(s) + {len(pdf_blocks)} pdf(s)), receiving response...\n")
+                sys.stderr.write(f"[sidecar] client.query() done (with images + pdfs), receiving response...\n")
             else:
-                # 无图片/PDF 或不支持 vision：传纯文本（PDF 文本已在 _build_attachment_context 中提取并拼入）
                 await client.query(final_text)
                 sys.stderr.write("[sidecar] client.query() done, receiving response...\n")
             sys.stderr.flush()
 
-            # 用 cancel_scope 包装 receive_response，以便在 cancel 时能中断
             async with anyio.create_task_group() as inner_tg:
-                # 启动一个 watchdog 协程：检测 cancel 标志，触发 task group 取消
                 async def _cancel_watchdog():
                     while True:
                         if _message_buffer["cancel"].is_set():
@@ -505,23 +721,26 @@ async def run_agent_loop(client, supports_vision: bool = True):
                     sys.stderr.flush()
                     raise
 
-                # 正常结束，取消 watchdog
                 inner_tg.cancel_scope.cancel()
 
-            sys.stderr.write("[sidecar] receive_response completed normally\n")
+            sys.stderr.write(f"[sidecar] receive_response completed, tool_calls={_tool_calls_in_turn}, text_len={len(_collected_text)}\n")
             sys.stderr.flush()
+
+            # ★ 缓存存储：纯文本响应（无工具调用）才缓存，避免副作用
+            if use_cache and _tool_calls_in_turn == 0 and _collected_text:
+                cache_key = _build_cache_key(user_text, attachments or [], model, base_url)
+                _response_cache.set(cache_key, _collected_text)
+                sys.stderr.write(f"[sidecar] cached response (key={cache_key[:16]}...)\n")
+                sys.stderr.flush()
 
         except Exception as e:
             sys.stderr.write(f"[sidecar] run_agent_loop exception: {type(e).__name__}: {e}\n")
             sys.stderr.flush()
-            # anyio 的取消异常不在这里捕获，让它传播
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
-            # 不用 emoji（避免编码问题），纯文本错误消息
             await write_message({"type": "stream_delta", "text": f"[错误] {type(e).__name__}: {e}"})
             await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
 
-        # 如果是 cancel 触发的结束，主动发 stream_end 让 UI 恢复
         if _message_buffer["cancel"].is_set():
             sys.stderr.write("[sidecar] cancel was set, sending stream_end to unblock UI\n")
             sys.stderr.flush()
@@ -566,6 +785,11 @@ async def main():
             }
             model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4")
 
+        # ★ KV Cache 优化：保持原始模型名称（model 参数会被 SDK 直接发送给 API，
+        # 修改它会导致 DeepSeek/Kimi 等提供商拒绝请求）。
+        # 真正的优化在于扩展系统提示词长度，系统提示词占总 token 的比例越大，
+        # KV Cache 命中率越高。当前 SYSTEM_PROMPT 约 1000 tokens，建议扩展到 5000+。
+
         # 注册工具到 MCP server
         server = create_sdk_mcp_server(name="excel", tools=register_all_tools())
 
@@ -588,6 +812,10 @@ async def main():
                 "freeze_panes",
                 "apply_conditional_format", "write_table",
                 "clarify_intent",
+                "auto_analyze", "quick_summary", "smart_chart",
+                "create_plan", "update_plan",
+                # ★ Computer Use 工具
+                "screenshot_excel", "send_keys",
             ]],
             system_prompt=SYSTEM_PROMPT,
             max_turns=20,
@@ -600,6 +828,12 @@ async def main():
             # ★ 启用 token 级流式：receive_response() 会产出 StreamEvent（含 content_block_delta），
             # 让 UI 逐 token 显示文本，而不是整段一次性出现
             include_partial_messages=True,
+            # ★ PreToolUse hook：AI Native 权限确认机制
+            # 对高风险工具（execute_vba/execute_python/rollback/clean_data/remove_duplicates）
+            # 在面板内抽屉式确认，替代旧的同步 MessageBox（阻塞 UI 线程导致 Excel 崩溃）
+            hooks={
+                "PreToolUse": [HookMatcher(matcher=None, hooks=[_pre_tool_use_hook])],
+            },
         )
 
         # ★ 检测模型是否支持 vision（image/document block）
@@ -611,7 +845,7 @@ async def main():
             sys.stderr.write("[sidecar] ClaudeSDKClient connected, entering agent loop\n")
             sys.stderr.flush()
             # 在 task_group 里跑主循环，reader 继续在后台跑
-            await run_agent_loop(client, supports_vision=vision_ok)
+            await run_agent_loop(client, supports_vision=vision_ok, model=model, base_url=base_url_for_check)
 
         # 主循环退出后，取消 reader
         tg.cancel_scope.cancel()
