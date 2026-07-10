@@ -7,7 +7,10 @@ import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
 import { PermissionDrawer } from './components/PermissionDrawer'
+import { PromptManager } from './components/PromptManager'
 import type { Message } from './types'
+import type { PromptTemplate } from './utils/prompts'
+import { loadPrompts } from './utils/prompts'
 
 // ★ AI Native 权限确认抽屉状态（PreToolUse hook 触发，从输入框上方 slide-up）
 interface PermissionState {
@@ -42,6 +45,11 @@ export default function App() {
   const [modelConfigOpen, setModelConfigOpen] = useState(false)
   // ★ AI Native 权限确认抽屉（PreToolUse hook 请求时显示）
   const [permission, setPermission] = useState<PermissionState>({ visible: false })
+  // ★ 提示词模板：localStorage 持久化，/ 触发下拉 + 管理面板
+  const [prompts, setPrompts] = useState<PromptTemplate[]>([])
+  const [promptManagerOpen, setPromptManagerOpen] = useState(false)
+  // ★ 从历史消息保存时预填内容
+  const [promptPrefillContent, setPromptPrefillContent] = useState<string | undefined>(undefined)
 
   // ★ "加载历史"开关：默认开启，打开面板时自动恢复最近一次对话
   // 状态持久化到 localStorage，用户可在顶部按钮切换
@@ -72,6 +80,29 @@ export default function App() {
       window.clearTimeout(loadingTimerRef.current)
       loadingTimerRef.current = null
     }
+  }
+
+  // ★ 挂载时加载提示词模板
+  useEffect(() => {
+    setPrompts(loadPrompts())
+  }, [])
+
+  // ★ 从历史消息保存为提示词：预填 content 并打开管理面板
+  const handleSaveAsPrompt = (content: string) => {
+    setPromptPrefillContent(content)
+    setPromptManagerOpen(true)
+  }
+
+  // ★ 从下拉新建提示词：打开管理面板（无预填）
+  const handleCreatePrompt = () => {
+    setPromptPrefillContent(undefined)
+    setPromptManagerOpen(true)
+  }
+
+  // ★ 关闭管理面板时清掉预填内容
+  const handleClosePromptManager = () => {
+    setPromptManagerOpen(false)
+    setPromptPrefillContent(undefined)
   }
 
   // 监听来自C#主机的消息
@@ -456,6 +487,7 @@ export default function App() {
         onToggleToolGroup={toggleToolGroup}
         onClarifyAnswer={handleClarifyAnswer}
         onChoiceSelect={handleChoiceSelect}
+        onSaveAsPrompt={handleSaveAsPrompt}
       />
 
       {/* ★ AI Native 权限确认抽屉：从输入框上方 slide-up 显示，类似 Claude Code/Trae/Codex */}
@@ -479,6 +511,8 @@ export default function App() {
         onViewAttachments={openAttachments}
         attachments={attachments}
         onDeleteAttachment={deleteAttachment}
+        prompts={prompts}
+        onCreatePrompt={handleCreatePrompt}
       />
 
       <HistoryPanel
@@ -501,6 +535,13 @@ export default function App() {
       <ModelConfigPanel
         open={modelConfigOpen}
         onClose={() => setModelConfigOpen(false)}
+      />
+      <PromptManager
+        visible={promptManagerOpen}
+        prompts={prompts}
+        onChange={setPrompts}
+        onClose={handleClosePromptManager}
+        prefillContent={promptPrefillContent}
       />
     </div>
   )

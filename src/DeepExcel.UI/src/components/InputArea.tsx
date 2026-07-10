@@ -1,4 +1,6 @@
 import { useRef, useState, ChangeEvent, useEffect } from 'react'
+import { PromptDropdown } from './PromptDropdown'
+import type { PromptTemplate } from '../utils/prompts'
 
 export interface AttachmentItem {
   fileName: string
@@ -22,16 +24,26 @@ interface Props {
   attachments?: AttachmentItem[]
   // ★ 删除附件
   onDeleteAttachment?: (fileName: string) => void
+  // ★ 提示词模板列表（/ 触发下拉）
+  prompts?: PromptTemplate[]
+  // ★ 从下拉新建提示词（打开管理面板）
+  onCreatePrompt?: () => void
 }
 
 export function InputArea({
   value, onChange, onSend, onStop, disabled, isClarifying,
   onUploadAttachment, attachmentCount = 0, onViewAttachments,
   attachments = [], onDeleteAttachment,
+  prompts = [], onCreatePrompt,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+
+  // ★ 斜杠命令：输入以 / 开头时显示 PromptDropdown
+  // 仅当 value === '/' 或 '/xxx'（单行、/ 是第一个字符）时触发
+  const slashActive = value.startsWith('/') && !value.includes('\n') && !disabled
+  const slashQuery = slashActive ? value.slice(1) : ''
 
   // ★ 底部输入区可调整高度：拖拽 resize handle 改变 textarea 高度
   // 限制：最小 60px，最大 50vh（不超过整个面板高度的 50%）
@@ -85,6 +97,23 @@ export function InputArea({
     }
   }
 
+  // ★ 选中提示词：用 content 替换输入框内容（不自动发送，用户可编辑后 Enter）
+  const handleSelectPrompt = (prompt: PromptTemplate) => {
+    onChange(prompt.content)
+  }
+
+  // ★ 点击"+ 新建提示词"：清掉 / 前缀，打开管理面板
+  const handleCreateNewPrompt = () => {
+    onChange('')
+    onCreatePrompt?.()
+  }
+
+  // ★ ESC 关闭下拉：清掉 / 前缀（保留剩余字符作为普通输入）
+  const handleCloseDropdown = () => {
+    // 仅去掉开头的 /，保留用户已输入的查询字符
+    if (value.startsWith('/')) onChange(value.slice(1))
+  }
+
   return (
     <div className="input-area" style={{ height: inputHeight }}>
       {/* ★ 拖拽手柄：上下调整输入区高度 */}
@@ -122,6 +151,17 @@ export function InputArea({
           ))}
         </div>
       )}
+      {/* ★ input-box 容器：相对定位，PromptDropdown 绝对定位浮在上方 */}
+      <div className="input-box-wrapper">
+        {slashActive && (
+          <PromptDropdown
+            query={slashQuery}
+            prompts={prompts}
+            onSelect={handleSelectPrompt}
+            onCreateNew={handleCreateNewPrompt}
+            onClose={handleCloseDropdown}
+          />
+        )}
       {/* ★ input-box：包裹输入框 + 工具栏，外层浅灰色边框 */}
       <div className="input-box">
       <div className="input-row">
@@ -206,6 +246,7 @@ export function InputArea({
             </svg>
           </button>
         )}
+      </div>
       </div>
       </div>
     </div>

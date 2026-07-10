@@ -10,6 +10,8 @@ interface Props {
   onToggleToolGroup?: (idx: number) => void
   onClarifyAnswer?: (answer: string) => void
   onChoiceSelect?: (choice: string) => void
+  // ★ 保存用户消息为提示词模板
+  onSaveAsPrompt?: (content: string) => void
 }
 
 // 检测内容是否为 Markdown 格式
@@ -32,7 +34,7 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAnswer, onChoiceSelect }: Props) {
+export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt }: Props) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -49,6 +51,7 @@ export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAns
           onToggleToolGroup={onToggleToolGroup}
           onClarifyAnswer={onClarifyAnswer}
           onChoiceSelect={onChoiceSelect}
+          onSaveAsPrompt={onSaveAsPrompt}
         />
       ))}
       {loading && (
@@ -68,13 +71,15 @@ function MessageItem({
   index,
   onToggleToolGroup,
   onClarifyAnswer,
-  onChoiceSelect
+  onChoiceSelect,
+  onSaveAsPrompt
 }: {
   message: Message
   index: number
   onToggleToolGroup?: (idx: number) => void
   onClarifyAnswer?: (answer: string) => void
   onChoiceSelect?: (choice: string) => void
+  onSaveAsPrompt?: (content: string) => void
 }) {
   // 工具调用组（已合并）：折叠卡片样式
   if (message.role === 'tool' && message.toolGroup) {
@@ -166,6 +171,19 @@ function MessageItem({
         {message.role === 'assistant' && <span className="role-label">助手</span>}
         {message.role === 'user' && <span className="role-label">你</span>}
         <CopyButton content={message.content} className="msg-copy-btn" />
+        {/* ★ 用户消息悬停时显示"保存为提示词"按钮 */}
+        {message.role === 'user' && onSaveAsPrompt && (
+          <button
+            className="save-prompt-btn"
+            onClick={() => onSaveAsPrompt(message.content)}
+            title="保存为提示词"
+            type="button"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
+        )}
       </div>
       <div className="message-content">
         {useMarkdown ? (
