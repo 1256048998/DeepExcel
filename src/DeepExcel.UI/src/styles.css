@@ -265,36 +265,10 @@ body {
   padding: 0 6px 6px;
   border-top: 1px solid var(--color-border);
   background: var(--color-bg);
-  /* ★ 固定高度（由 resize handle 控制），子元素 flex 填充 */
+  /* ★ 自动高度（由 textarea 内容决定），不固定高度 */
   flex-shrink: 0;
-  overflow: hidden;
-}
-
-/* ★ 输入区顶部拖拽手柄：上下调整输入区高度 */
-.input-resize-handle {
-  height: 6px;
-  margin: 0 -6px 4px;
-  padding: 0;
-  cursor: ns-resize;
-  position: relative;
-  flex-shrink: 0;
-}
-
-.input-resize-handle::before {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  width: 32px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--color-border);
-  transition: background 0.15s;
-}
-
-.input-resize-handle:hover::before {
-  background: var(--color-primary);
+  /* ★ 不裁剪：让 PromptDropdown 能向上溢出显示 */
+  overflow: visible;
 }
 
 .clarify-hint {
@@ -310,8 +284,6 @@ body {
 .input-box {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -322,8 +294,6 @@ body {
   display: flex;
   gap: 8px;
   width: 100%;
-  flex: 1;
-  min-height: 0;
 }
 
 .input-area textarea {
@@ -337,6 +307,8 @@ body {
   font-size: 14px;
   outline: none;
   background: transparent;
+  /* ★ 高度由 JS auto-resize 控制，不固定 */
+  min-height: 28px;
 }
 
 .input-area textarea:focus {
@@ -1804,8 +1776,6 @@ body {
   position: relative;
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
 }
 
 /* === / 触发的下拉列表 === */
