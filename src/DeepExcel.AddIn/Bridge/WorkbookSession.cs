@@ -522,7 +522,7 @@ namespace DeepExcel.AddIn.Bridge
         }
 
         /// <summary>把当前内存对话保存到磁盘</summary>
-        private void SaveCurrentConversation()
+        public void SaveCurrentConversation()
         {
             try
             {

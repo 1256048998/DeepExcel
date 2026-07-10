@@ -24,6 +24,8 @@ interface Props {
   attachments?: AttachmentItem[]
   // ★ 删除附件
   onDeleteAttachment?: (fileName: string) => void
+  // ★ 权限抽屉可见时隐藏停止按钮（防止抽屉收起后双击误点停止）
+  permissionPending?: boolean
   // ★ 提示词模板列表（/ 触发下拉）
   prompts?: PromptTemplate[]
   // ★ 从下拉新建提示词（打开管理面板）
@@ -34,6 +36,7 @@ export function InputArea({
   value, onChange, onSend, onStop, disabled, isClarifying,
   onUploadAttachment, attachmentCount = 0, onViewAttachments,
   attachments = [], onDeleteAttachment,
+  permissionPending = false,
   prompts = [], onCreatePrompt,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -220,7 +223,7 @@ export function InputArea({
             {uploading && <span className="attach-loading" />}
           </button>
         )}
-        {disabled && onStop ? (
+        {disabled && onStop && !permissionPending ? (
           <button
             onClick={onStop}
             className="toolbar-btn stop"

@@ -97,6 +97,10 @@ namespace DeepExcel.AddIn.Executor
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
+                // ★ 强制 UTF-8 模式：系统 ANSI 代码页 cp1252 不支持中文，
+                // python print() 中文会 UnicodeEncodeError 崩溃（project_memory 已记录同类问题）
+                psi.EnvironmentVariables["PYTHONUTF8"] = "1";
+                psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
 
                 using var process = Process.Start(psi);
                 // ★ 异步读取 stdout/stderr，避免管道满导致子进程阻塞

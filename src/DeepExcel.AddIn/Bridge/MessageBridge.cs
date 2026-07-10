@@ -1243,6 +1243,15 @@ namespace DeepExcel.AddIn.Bridge
             {
                 if (_sessions.TryGetValue(workbookKey, out var session))
                 {
+                    // ★ 关闭前先保存当前对话到磁盘，避免对话丢失
+                    try
+                    {
+                        session.SaveCurrentConversation();
+                    }
+                    catch (Exception saveEx)
+                    {
+                        Logger.Instance.Warning("MessageBridge", "SaveCurrentConversation on close failed: " + saveEx.Message);
+                    }
                     session.Dispose();
                     _sessions.Remove(workbookKey);
                     Logger.Instance.Info("MessageBridge", $"Session closed (workbook closed): {workbookKey}");

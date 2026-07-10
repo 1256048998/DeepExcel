@@ -511,6 +511,7 @@ export default function App() {
         onViewAttachments={openAttachments}
         attachments={attachments}
         onDeleteAttachment={deleteAttachment}
+        permissionPending={permission.visible}
         prompts={prompts}
         onCreatePrompt={handleCreatePrompt}
       />
