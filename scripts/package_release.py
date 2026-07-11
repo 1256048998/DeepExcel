@@ -48,27 +48,34 @@ System Requirements
 
 Installation Steps
 ------------------
-1. Extract this ZIP to any folder (e.g. C:\\DeepExcel)
+1. Extract this ZIP to any folder
 
-2. DOUBLE-CLICK install.bat
-   (That's it! The script will close Excel, register the add-in,
-    and offer to launch Excel automatically.)
+2. DOUBLE-CLICK DeepExcelInstaller.exe
+   - Click "Yes" when Windows asks for admin permission (UAC prompt)
+   - The installer will:
+     * Close Excel automatically
+     * Copy files to C:\\Program Files\\DeepExcel
+     * Register the COM component (via regasm)
+     * Register the Excel Add-in (both HKLM and HKCU)
+     * Launch Excel automatically
 
-   Alternatively, right-click register-user.ps1 -> "Run with PowerShell"
+3. Find the "DeepExcel" tab in the Excel ribbon
 
-3. Excel will open automatically (or launch it manually)
+4. Click "Open Panel" button to start the AI assistant panel
 
-4. Find the "DeepExcel" tab in the ribbon
+5. Click the "Model" button at the top of the panel to configure API Key
 
-5. Click "Open Panel" button to start the AI assistant panel
-
-6. Click the "Model" button at the top of the panel to configure API Key
+Alternative Installation (no admin required)
+--------------------------------------------
+If you cannot get admin permission, use the user-scope installer instead:
+  Double-click install.bat  (or right-click register-user.ps1 -> Run with PowerShell)
 
 Uninstallation
 --------------
 1. Close Excel
-2. DOUBLE-CLICK uninstall.bat
-   Or run: .\\register-user.ps1 -Unregister
+2. Run as admin: DeepExcelInstaller.exe -uninstall
+   Or: delete C:\\Program Files\\DeepExcel and remove registry keys:
+   HKLM\\Software\\Microsoft\\Office\\16.0\\Excel\\Addins\\DeepExcel.AddIn
 
 Configuration Locations
 -----------------------
@@ -80,7 +87,7 @@ Configuration Locations
 Troubleshooting
 ---------------
 1. Add-in not visible: File -> Options -> Add-ins -> Manage: COM Add-ins -> Go -> Check DeepExcel.AddIn
-2. Still not visible? Run: .\\diagnose.ps1  (sends a diagnostic report to help locate the cause)
+2. Still not visible? Run: .\\diagnose.ps1
 3. WebView2 blank: Install WebView2 Runtime
 4. Model config entry: Click "Model" button at the top of the panel
 
@@ -123,7 +130,7 @@ def main():
             print(f"  WARNING: missing {item}")
 
     # Copy registration scripts and .bat launchers
-    for script_name in ("register-user.ps1", "diagnose.ps1", "install.bat", "uninstall.bat"):
+    for script_name in ("register-user.ps1", "diagnose.ps1", "install.bat", "uninstall.bat", "DeepExcelInstaller.exe"):
         script_src = os.path.join(SCRIPTS, script_name)
         if os.path.exists(script_src):
             shutil.copy2(script_src, staging)
