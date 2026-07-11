@@ -161,14 +161,51 @@ $taskPaneClsid = "{B2C3D4E5-F6A7-404B-9A5F-9B3C1D2E3F4B}"
 $taskPaneProgId = "DeepExcel.AddIn.TaskPaneControl"
 $taskPaneClass = "DeepExcel.AddIn.TaskPaneControl"
 
+function Clear-ExcelResiliency {
+    # Excel maintains a "blacklist" of add-ins that failed to load at
+    # HKCU:\Software\Microsoft\Office\16.0\Excel\Resiliency\DisabledItems.
+    # Once an add-in is listed there, Excel will NOT attempt to reload it
+    # even after the underlying DLL is fixed. This is the #1 reason users
+    # see "registered successfully but not in COM Add-ins list".
+    # We clear all entries that reference DeepExcel so Excel gets a fresh start.
+    $disabledKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Resiliency\DisabledItems"
+    if (Test-Path $disabledKey) {
+        $cleared = 0
+        $items = Get-ChildItem $disabledKey -ErrorAction SilentlyContinue
+        foreach ($item in $items) {
+            $val = (Get-ItemProperty $item.PSPath -ErrorAction SilentlyContinue)
+            # DisabledItems entries store binary data; check all string properties for DeepExcel
+            $isDeepExcel = $false
+            foreach ($prop in $val.PSObject.Properties) {
+                if ($prop.Value -is [string] -and $prop.Value -match "DeepExcel") {
+                    $isDeepExcel = $true
+                    break
+                }
+            }
+            if ($isDeepExcel) {
+                Remove-Item -Path $item.PSPath -Force -ErrorAction SilentlyContinue
+                $cleared++
+            }
+        }
+        if ($cleared -gt 0) {
+            Write-Host "  Cleared $cleared DisabledItems entry(ies) for DeepExcel." -ForegroundColor Green
+        }
+    }
+}
+
 if ($Unregister) {
     Write-Host "[Unregister] DeepExcel.AddIn..." -ForegroundColor Yellow
     Unregister-ExcelAddIn -progId $progId
     Unregister-ComClass -clsid $clsid -progId $progId
     Unregister-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId
+    Clear-ExcelResiliency
     Write-Host "Unregistration complete!" -ForegroundColor Green
 } else {
     Write-Host "[Register] DeepExcel.AddIn..." -ForegroundColor Yellow
+
+    # Clear any prior "disabled" status before registering, so Excel
+    # gets a clean attempt at loading the (now-fixed) add-in.
+    Clear-ExcelResiliency
 
     Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass
     Register-ExcelAddIn -progId $progId -friendlyName "DeepExcel AI AddIn" -dllPath $dllPath
