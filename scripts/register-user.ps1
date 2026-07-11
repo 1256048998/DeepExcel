@@ -32,6 +32,28 @@ if (-not $dllPath) {
 
 $dllPath = Resolve-Path $dllPath
 Write-Host "AddIn DLL: $dllPath" -ForegroundColor Cyan
+
+# ★ 解除 Mark of the Web (MOTW) 标记
+#   从互联网下载的 ZIP 解压后，DLL 会带"来自互联网"标记，
+#   Excel 信任中心会静默阻止加载此类未签名加载项，导致功能区选项卡不出现。
+$scriptRoot = Split-Path -Parent $dllPath
+Write-Host "Unblocking files (removing Mark of the Web)..." -ForegroundColor Gray
+$unblocked = 0
+Get-ChildItem -Path $scriptRoot -Recurse -File -Include *.dll,*.exe,*.ps1,*.config,*.py,*.html,*.js,*.css | ForEach-Object {
+    if (Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+        try {
+            Unblock-File -Path $_.FullName -ErrorAction Stop
+            $unblocked++
+        } catch {
+            Write-Host "  WARN: failed to unblock $($_.Name)" -ForegroundColor Yellow
+        }
+    }
+}
+if ($unblocked -gt 0) {
+    Write-Host "  Unblocked $unblocked file(s) downloaded from internet." -ForegroundColor Green
+} else {
+    Write-Host "  No blocked files found (OK)." -ForegroundColor Gray
+}
 Write-Host ""
 
 $addInClass = "DeepExcel.AddIn.ThisAddIn"

@@ -154,12 +154,14 @@ powershell -ExecutionPolicy Bypass -File register-user.ps1
 
 ### Q: Excel 里找不到 DeepExcel 选项卡？
 
-**A:** 尝试以下方法：
+**A:** 注册显示成功但选项卡不出现，按以下顺序排查：
 
-1. 重启 Excel
+1. **重新运行一次 `register-user.ps1`**：最新版脚本会自动解除从互联网下载文件的"Mark of the Web"阻止标记（旧版本脚本无此功能）。这是从 GitHub 下载安装包后选项卡不出现的最常见原因。
 2. 检查是否被禁用：`文件 → 选项 → 加载项 → 管理: 禁用项目 → 转到 → 取消禁用 DeepExcel.AddIn`
-3. 重新运行 `register-user.ps1`
-4. 确认 .NET Framework 4.8 已安装
+3. 检查 COM 加载项是否勾选：`文件 → 选项 → 加载项 → 管理: COM 加载项 → 转到 → 勾选 DeepExcel.AddIn`
+4. 确认 .NET Framework 4.8 已安装（Win10/11 通常已预装，可在"设置 → 应用"中搜索验证）
+5. 手动解除阻止：右键 ZIP 包 → 属性 → 勾选"解除阻止" → 确定，然后重新解压并运行 `register-user.ps1`
+6. 查看日志 `%APPDATA%\DeepExcel\logs\` 确认加载项是否启动
 
 ### Q: 面板打开是空白/白屏？
 
