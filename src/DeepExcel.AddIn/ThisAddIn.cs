@@ -65,8 +65,24 @@ namespace DeepExcel.AddIn
                     string path = Path.Combine(dir, "System.Runtime.CompilerServices.Unsafe.dll");
                     if (File.Exists(path)) return Assembly.LoadFrom(path);
                 }
-                // 其他 System.* 依赖也按文件名加载
+                // 其他 System.* / Microsoft.* 依赖也按文件名加载
                 if (name.Name.StartsWith("System.") || name.Name.StartsWith("Microsoft."))
+                {
+                    string path = Path.Combine(dir, name.Name + ".dll");
+                    if (File.Exists(path))
+                    {
+                        var existing = AppDomain.CurrentDomain.GetAssemblies()
+                            .FirstOrDefault(a => a.GetName().Name == name.Name);
+                        if (existing != null) return existing;
+                        return Assembly.LoadFrom(path);
+                    }
+                }
+
+                // Generic fallback: try loading any assembly from the DLL's directory.
+                // This handles PIA dependencies like Extensibility.dll that are present
+                // on developer machines (Visual Studio installs them) but missing on
+                // end-user machines. Without this, QueryInterface IDTExtensibility2
+                // fails silently and OnConnection is never called.
                 {
                     string path = Path.Combine(dir, name.Name + ".dll");
                     if (File.Exists(path))

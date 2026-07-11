@@ -19,6 +19,7 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 INCLUDE_ITEMS = [
     "DeepExcel.AddIn.dll",
     "DeepExcel.AddIn.dll.config",
+    "Extensibility.dll",
     "Microsoft.Bcl.AsyncInterfaces.dll",
     "Microsoft.Web.WebView2.Core.dll",
     "Microsoft.Web.WebView2.WinForms.dll",
