@@ -9,7 +9,7 @@ import { ModelConfigPanel } from './components/ModelConfigPanel'
 import { PermissionDrawer } from './components/PermissionDrawer'
 import { PromptManager } from './components/PromptManager'
 import type { Message } from './types'
-import type { PromptTemplate } from './utils/prompts'
+import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 
 // ★ AI Native 权限确认抽屉状态（PreToolUse hook 触发，从输入框上方 slide-up）
@@ -45,11 +45,13 @@ export default function App() {
   const [modelConfigOpen, setModelConfigOpen] = useState(false)
   // ★ AI Native 权限确认抽屉（PreToolUse hook 请求时显示）
   const [permission, setPermission] = useState<PermissionState>({ visible: false })
-  // ★ 提示词模板：localStorage 持久化，/ 触发下拉 + 管理面板
+  // ★ 提示词/技能：localStorage 持久化（用户级，跨工作簿保留），/ 触发下拉 + 管理面板
   const [prompts, setPrompts] = useState<PromptTemplate[]>([])
   const [promptManagerOpen, setPromptManagerOpen] = useState(false)
   // ★ 从历史消息保存时预填内容
   const [promptPrefillContent, setPromptPrefillContent] = useState<string | undefined>(undefined)
+  // ★ 管理面板初始类型（从右上角"新建技能"入口传 skill；其余默认 prompt）
+  const [promptManagerInitialType, setPromptManagerInitialType] = useState<PromptType>('prompt')
 
   // ★ "加载历史"开关：默认开启，打开面板时自动恢复最近一次对话
   // 状态持久化到 localStorage，用户可在顶部按钮切换
@@ -87,15 +89,24 @@ export default function App() {
     setPrompts(loadPrompts())
   }, [])
 
-  // ★ 从历史消息保存为提示词：预填 content 并打开管理面板
+  // ★ 从历史消息保存为提示词/技能：预填 content 并打开管理面板（默认 prompt 类型）
   const handleSaveAsPrompt = (content: string) => {
     setPromptPrefillContent(content)
+    setPromptManagerInitialType('prompt')
     setPromptManagerOpen(true)
   }
 
-  // ★ 从下拉新建提示词：打开管理面板（无预填）
+  // ★ 从下拉新建：打开管理面板（无预填，默认 prompt）
   const handleCreatePrompt = () => {
     setPromptPrefillContent(undefined)
+    setPromptManagerInitialType('prompt')
+    setPromptManagerOpen(true)
+  }
+
+  // ★ 右上角管理入口：打开管理面板（无预填，默认 prompt）
+  const handleOpenPromptManager = () => {
+    setPromptPrefillContent(undefined)
+    setPromptManagerInitialType('prompt')
     setPromptManagerOpen(true)
   }
 
@@ -425,6 +436,17 @@ export default function App() {
         </div>
         <div className="app-header-actions right">
           {/* 右侧：纯图标 + tooltip */}
+          {/* ★ 提示词/技能管理入口（用户级，跨工作簿保留） */}
+          <button
+            className="header-btn icon-only"
+            onClick={handleOpenPromptManager}
+            title="提示词与技能管理"
+            type="button"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
+            </svg>
+          </button>
           <button
             className={`header-btn icon-only ${autoLoadHistory ? 'on' : ''}`}
             onClick={toggleAutoLoadHistory}
@@ -543,6 +565,7 @@ export default function App() {
         onChange={setPrompts}
         onClose={handleClosePromptManager}
         prefillContent={promptPrefillContent}
+        initialType={promptManagerInitialType}
       />
     </div>
   )

@@ -263,7 +263,6 @@ body {
   gap: 8px;
   /* ★ 减小外边距，让 input-box 占据更大宽度 */
   padding: 0 6px 6px;
-  border-top: 1px solid var(--color-border);
   background: var(--color-bg);
   /* ★ 自动高度（由 textarea 内容决定），不固定高度 */
   flex-shrink: 0;
@@ -1906,6 +1905,66 @@ body {
   max-height: 80%;
 }
 
+/* ★ 类型切换 tabs：提示词 / 技能（segmented control 风格） */
+.prompt-type-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.prompt-type-tab {
+  padding: 4px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1.4;
+}
+
+.prompt-type-tab:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.prompt-type-tab.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: white;
+}
+
+.prompt-type-hint {
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-left: 4px;
+}
+
+/* ★ 类型徽章（列表项 / 下拉项中的小标签） */
+.prompt-type-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* 提示词：中性灰色 */
+.prompt-type-badge.prompt-type-prompt {
+  background: var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+/* 技能：琥珀色（区别于提示词，非 AI 风格蓝紫/浅绿） */
+.prompt-type-badge.prompt-type-skill {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
 /* 编辑区 */
 .prompt-editor {
   padding: 10px 14px;
@@ -1945,7 +2004,7 @@ body {
   outline: none;
   resize: vertical;
   min-height: 60px;
-  max-height: 120px;
+  max-height: 280px;
   transition: border-color 0.15s;
 }
 

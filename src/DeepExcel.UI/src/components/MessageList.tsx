@@ -176,7 +176,7 @@ function MessageItem({
           <button
             className="save-prompt-btn"
             onClick={() => onSaveAsPrompt(message.content)}
-            title="保存为提示词"
+            title="保存为提示词/技能"
             type="button"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

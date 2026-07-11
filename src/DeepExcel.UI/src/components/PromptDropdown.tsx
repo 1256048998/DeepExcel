@@ -71,7 +71,7 @@ export function PromptDropdown({ query, prompts, onSelect, onCreateNew, onClose 
   return (
     <div className="prompt-dropdown" ref={listRef}>
       <div className="prompt-dropdown-header">
-        <span className="prompt-dropdown-title">提示词</span>
+        <span className="prompt-dropdown-title">提示词/技能</span>
         <span className="prompt-dropdown-count">{matched.length}</span>
       </div>
       <div className="prompt-dropdown-list">
@@ -89,6 +89,9 @@ export function PromptDropdown({ query, prompts, onSelect, onCreateNew, onClose 
             <div className="prompt-dropdown-item-title">
               <span className="prompt-dropdown-slash">/</span>
               {p.title}
+              <span className={`prompt-type-badge ${p.type === 'skill' ? 'prompt-type-skill' : 'prompt-type-prompt'}`}>
+                {p.type === 'skill' ? '技能' : '提示词'}
+              </span>
             </div>
             <div className="prompt-dropdown-item-content">{p.content}</div>
           </div>
@@ -105,7 +108,7 @@ export function PromptDropdown({ query, prompts, onSelect, onCreateNew, onClose 
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
-            新建提示词
+            新建提示词/技能
           </div>
         </div>
       </div>
