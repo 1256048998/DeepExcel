@@ -80,8 +80,9 @@ Configuration Locations
 Troubleshooting
 ---------------
 1. Add-in not visible: File -> Options -> Add-ins -> Manage: COM Add-ins -> Go -> Check DeepExcel.AddIn
-2. WebView2 blank: Install WebView2 Runtime
-3. Model config entry: Click "Model" button at the top of the panel
+2. Still not visible? Run: .\\diagnose.ps1  (sends a diagnostic report to help locate the cause)
+3. WebView2 blank: Install WebView2 Runtime
+4. Model config entry: Click "Model" button at the top of the panel
 
 Copyright (C) 2026 DeepExcel
 """
@@ -121,12 +122,13 @@ def main():
         else:
             print(f"  WARNING: missing {item}")
 
-    # Copy register-user.ps1
-    reg_script_src = os.path.join(SCRIPTS, "register-user.ps1")
-    if os.path.exists(reg_script_src):
-        shutil.copy2(reg_script_src, staging)
-    else:
-        print(f"  WARNING: register-user.ps1 not found at {reg_script_src}")
+    # Copy register-user.ps1 and diagnose.ps1
+    for script_name in ("register-user.ps1", "diagnose.ps1"):
+        script_src = os.path.join(SCRIPTS, script_name)
+        if os.path.exists(script_src):
+            shutil.copy2(script_src, staging)
+        else:
+            print(f"  WARNING: {script_name} not found at {script_src}")
 
     # Write INSTALL.txt
     install_path = os.path.join(staging, "INSTALL.txt")
