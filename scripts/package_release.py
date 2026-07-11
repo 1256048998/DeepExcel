@@ -50,12 +50,15 @@ Installation Steps
 ------------------
 1. Extract this ZIP to any folder (e.g. C:\\DeepExcel)
 
-2. Open PowerShell and navigate to the extracted folder
+2. DOUBLE-CLICK install.bat
+   (That's it! The script will close Excel, register the add-in,
+    and offer to launch Excel automatically.)
 
-3. Run the registration script (no admin required):
-   .\\register-user.ps1
+   Alternatively, right-click register-user.ps1 -> "Run with PowerShell"
 
-4. Launch Excel and find the "DeepExcel" tab in the ribbon
+3. Excel will open automatically (or launch it manually)
+
+4. Find the "DeepExcel" tab in the ribbon
 
 5. Click "Open Panel" button to start the AI assistant panel
 
@@ -64,11 +67,8 @@ Installation Steps
 Uninstallation
 --------------
 1. Close Excel
-2. Run: .\\register-user.ps1 -Unregister
-   Or manually delete registry keys:
-   HKCU\\Software\\Classes\\CLSID\\{{A1B2C3D4-E5F6-4F4B-9A5F-9B3C1D2E3F4A}}
-   HKCU\\Software\\Classes\\CLSID\\{{B2C3D4E5-F6A7-5B7C-AC4D-2E3F4A5B6C7D}}
-   HKCU\\Software\\Microsoft\\Office\\Excel\\Addins\\DeepExcel.AddIn
+2. DOUBLE-CLICK uninstall.bat
+   Or run: .\\register-user.ps1 -Unregister
 
 Configuration Locations
 -----------------------
@@ -122,8 +122,8 @@ def main():
         else:
             print(f"  WARNING: missing {item}")
 
-    # Copy register-user.ps1 and diagnose.ps1
-    for script_name in ("register-user.ps1", "diagnose.ps1"):
+    # Copy registration scripts and .bat launchers
+    for script_name in ("register-user.ps1", "diagnose.ps1", "install.bat", "uninstall.bat"):
         script_src = os.path.join(SCRIPTS, script_name)
         if os.path.exists(script_src):
             shutil.copy2(script_src, staging)

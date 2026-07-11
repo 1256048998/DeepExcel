@@ -13,6 +13,27 @@ $scriptDir = $PSScriptRoot
 # on exit, hiding any error messages from the user).
 try {
 
+# STEP 0: Kill any running Excel processes BEFORE registering.
+# If Excel is running during registration, it will NOT pick up the new
+# add-in key until restarted. Many users forget to close Excel first,
+# which is the #1 cause of "registered but not visible" issues.
+$excelProcs = Get-Process -Name EXCEL -ErrorAction SilentlyContinue
+if ($excelProcs) {
+    Write-Host "Closing running Excel processes (required for registration)..." -ForegroundColor Yellow
+    foreach ($ep in $excelProcs) {
+        try { $ep.CloseMainWindow() | Out-Null } catch {}
+    }
+    Start-Sleep -Seconds 2
+    # Force kill any that didn't close gracefully
+    $remaining = Get-Process -Name EXCEL -ErrorAction SilentlyContinue
+    if ($remaining) {
+        foreach ($ep in $remaining) {
+            try { Stop-Process -Id $ep.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        Start-Sleep -Seconds 1
+    }
+    Write-Host "  Excel closed." -ForegroundColor Green
+}
 
 # Find DLL next to this script first (release package layout),
 # then fall back to the dev folder structure.
@@ -220,6 +241,19 @@ if ($Unregister) {
     Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass
     Write-Host "TaskPaneControl registered (ProgID: $taskPaneProgId)" -ForegroundColor Gray
 
+    # Add DoNotDisableAddinList entry: tells Excel "never auto-disable this add-in
+    # even if it crashes on load". Without this, if the add-in fails to load once
+    # (e.g. missing dependency), Excel will silently add it to DisabledItems and
+    # it will never appear in the COM Add-ins list again. This is the #2 cause
+    # of "registered but not visible" issues, especially on enterprise Office 365
+    # which is more aggressive about disabling add-ins.
+    $doNotDisableKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Resiliency\DoNotDisableAddinList"
+    if (-not (Test-Path $doNotDisableKey)) {
+        New-Item -Path $doNotDisableKey -Force | Out-Null
+    }
+    Set-ItemProperty -Path $doNotDisableKey -Name $progId -Value 1 -Type DWord -Force
+    Write-Host "DoNotDisableAddinList entry added (prevents Excel from auto-disabling)" -ForegroundColor Gray
+
     # Post-registration verification: confirm key registry entries were written.
     Write-Host ""
     Write-Host "=== Verification ===" -ForegroundColor Yellow
@@ -289,6 +323,17 @@ if ($Unregister) {
     $psBitness = if ([IntPtr]::Size -eq 8) { "64-bit" } else { "32-bit" }
     Write-Host "  [INFO] PowerShell: $psBitness" -ForegroundColor Gray
 
+    # Check for Group Policy that might block add-ins.
+    $gpKey = "HKLM:\Software\Policies\Microsoft\Office\16.0\Excel\Addins"
+    if (Test-Path $gpKey) {
+        Write-Host "  [WARN] Group Policy add-in restrictions detected at: $gpKey" -ForegroundColor Yellow
+        Write-Host "         This may block user-installed add-ins. Contact your IT admin." -ForegroundColor Gray
+    }
+    $gpDisableKey = "HKLM:\Software\Policies\Microsoft\Office\16.0\Excel\Disabled"
+    if (Test-Path $gpDisableKey) {
+        Write-Host "  [WARN] Group Policy disabled-items key detected at: $gpDisableKey" -ForegroundColor Yellow
+    }
+
     Write-Host ""
     if ($verifyOk) {
         Write-Host "Registration successful!" -ForegroundColor Green
@@ -297,9 +342,8 @@ if ($Unregister) {
     }
     Write-Host ""
     Write-Host "Next steps:" -ForegroundColor Yellow
-    Write-Host "  1. Restart Excel (close ALL Excel windows)" -ForegroundColor Gray
-    Write-Host "  2. Find the 'DeepExcel' tab in the ribbon" -ForegroundColor Gray
-    Write-Host "  3. Click 'Open Panel' button to start" -ForegroundColor Gray
+    Write-Host "  Excel has been closed. Launch Excel now to see the DeepExcel tab." -ForegroundColor Gray
+
     Write-Host ""
     Write-Host "If you don't see the DeepExcel tab:" -ForegroundColor Yellow
     Write-Host "  File -> Options -> Add-Ins -> Manage: COM Add-ins -> Go" -ForegroundColor Gray
@@ -309,6 +353,22 @@ if ($Unregister) {
     Write-Host "  - Make sure Excel is 2016/2019/365 (version 16.0)" -ForegroundColor Gray
     Write-Host "  - Close all Excel windows and rerun this script" -ForegroundColor Gray
     Write-Host "  - Check %APPDATA%\DeepExcel\logs\ for errors" -ForegroundColor Gray
+
+    # Offer to launch Excel automatically.
+    Write-Host ""
+    $launchExcel = Read-Host "Launch Excel now? (Y/N, default Y)"
+    if ($launchExcel -ne "N" -and $launchExcel -ne "n") {
+        $excelExe = "${env:ProgramFiles}\Microsoft Office\root\Office16\EXCEL.EXE"
+        if (-not (Test-Path $excelExe)) {
+            $excelExe = "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\EXCEL.EXE"
+        }
+        if (Test-Path $excelExe) {
+            Write-Host "Launching Excel..." -ForegroundColor Cyan
+            Start-Process $excelExe
+        } else {
+            Write-Host "Excel not found in default path. Please launch manually." -ForegroundColor Yellow
+        }
+    }
 }
 
 } catch {
