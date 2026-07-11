@@ -429,11 +429,12 @@ namespace DeepExcelInstaller
                 var type = Type.GetTypeFromProgID(progId);
                 if (type != null)
                 {
+                    Log("  [OK] ProgID '" + progId + "' -> CLSID " + type.GUID);
                     var obj = Activator.CreateInstance(type);
                     if (obj != null)
                     {
                         Log("  [OK] COM instantiation test passed");
-                        Marshal.ReleaseComObject(obj);
+                        try { Marshal.ReleaseComObject(obj); } catch { }
                     }
                 }
                 else
@@ -445,6 +446,129 @@ namespace DeepExcelInstaller
             {
                 Log("  [WARN] COM test: " + ex.Message);
             }
+
+            // Enumerate Office version paths to find where Excel reads Addins from
+            Log("");
+            Log("  Office version paths in registry:");
+            try
+            {
+                using (var officeKey = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Office"))
+                {
+                    if (officeKey != null)
+                    {
+                        foreach (var verName in officeKey.GetSubKeyNames())
+                        {
+                            using (var verKey = officeKey.OpenSubKey(verName + @"\Excel\Addins"))
+                            {
+                                if (verKey != null)
+                                {
+                                    var subNames = verKey.GetSubKeyNames();
+                                    bool hasDeepExcel = false;
+                                    foreach (var sn in subNames)
+                                    {
+                                        if (sn.ToUpper().Contains("DEEPEXCEL")) hasDeepExcel = true;
+                                    }
+                                    Log("    HKCU\\Software\\Microsoft\\Office\\" + verName + "\\Excel\\Addins: " +
+                                        subNames.Length + " add-ins" + (hasDeepExcel ? " [DeepExcel FOUND]" : " [DeepExcel NOT here]"));
+                                }
+                            }
+                        }
+                    }
+                }
+                // Also check HKLM
+                using (var officeKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"Software\Microsoft\Office"))
+                {
+                    if (officeKey != null)
+                    {
+                        foreach (var verName in officeKey.GetSubKeyNames())
+                        {
+                            using (var verKey = officeKey.OpenSubKey(verName + @"\Excel\Addins"))
+                            {
+                                if (verKey != null)
+                                {
+                                    var subNames = verKey.GetSubKeyNames();
+                                    bool hasDeepExcel = false;
+                                    foreach (var sn in subNames)
+                                    {
+                                        if (sn.ToUpper().Contains("DEEPEXCEL")) hasDeepExcel = true;
+                                    }
+                                    Log("    HKLM\\Software\\Microsoft\\Office\\" + verName + "\\Excel\\Addins: " +
+                                        subNames.Length + " add-ins" + (hasDeepExcel ? " [DeepExcel FOUND]" : " [DeepExcel NOT here]"));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) { Log("  (enumerate failed: " + ex.Message + ")"); }
+
+            // Check if Resiliency CrashedAddinList or DoNotDisableAddinList has entries
+            Log("");
+            Log("  Resiliency status:");
+            try
+            {
+                string resiliencyKey = @"Software\Microsoft\Office\16.0\Excel\Resiliency";
+                using (var rk = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(resiliencyKey))
+                {
+                    if (rk != null)
+                    {
+                        Log("    SubKeys: " + string.Join(", ", rk.GetSubKeyNames()));
+                        foreach (var sn in rk.GetSubKeyNames())
+                        {
+                            using (var sub = rk.OpenSubKey(sn))
+                            {
+                                if (sub != null)
+                                {
+                                    var subNames = sub.GetSubKeyNames();
+                                    Log("      " + sn + ": " + subNames.Length + " entries");
+                                    foreach (var entry in subNames)
+                                    {
+                                        using (var entryKey = sub.OpenSubKey(entry))
+                                        {
+                                            if (entryKey != null)
+                                            {
+                                                var vals = entryKey.GetValueNames();
+                                                foreach (var v in vals)
+                                                {
+                                                    object val = entryKey.GetValue(v);
+                                                    byte[] valBytes = val as byte[];
+                                                    if (valBytes != null)
+                                                    {
+                                                        string text = "";
+                                                        try { text = System.Text.Encoding.Unicode.GetString(valBytes); } catch { }
+                                                        if (text.Contains("DeepExcel") || text.Contains("deepexcel"))
+                                                            Log("        ** " + entry + " -> " + v + " = [DeepExcel ref!]");
+                                                        else if (text.Length > 0)
+                                                            Log("        " + entry + " -> " + v + " = " + (text.Length > 60 ? text.Substring(0, 60) + "..." : text));
+                                                    }
+                                                    else
+                                                    {
+                                                        string s = val as string;
+                                                        if (s != null)
+                                                        {
+                                                            if (s.Contains("DeepExcel") || s.Contains("deepexcel"))
+                                                                Log("        ** " + entry + " -> " + v + " = " + s + " [DeepExcel ref!]");
+                                                        }
+                                                        else if (v == progId)
+                                                        {
+                                                            Log("        " + entry + " -> " + v + " = " + val);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        Log("    No Resiliency key found");
+                    }
+                }
+            }
+            catch (Exception ex) { Log("    (resiliency check failed: " + ex.Message + ")"); }
 
             Log("");
 
