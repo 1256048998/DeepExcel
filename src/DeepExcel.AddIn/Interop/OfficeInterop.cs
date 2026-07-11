@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Microsoft.Office.Core
 {
-    [ComVisible(false)]
+    [ComVisible(true)]
     [Guid("000C0396-0000-0000-C000-000000000046")]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonExtensibility
@@ -11,7 +11,7 @@ namespace Microsoft.Office.Core
         string GetCustomUI(string RibbonID);
     }
 
-    [ComVisible(false)]
+    [ComVisible(true)]
     [Guid("000C03A7-0000-0000-C000-000000000046")]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonUI
@@ -20,7 +20,7 @@ namespace Microsoft.Office.Core
         void InvalidateControl(string ControlID);
     }
 
-    [ComVisible(false)]
+    [ComVisible(true)]
     [Guid("000C0395-0000-0000-C000-000000000046")]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IRibbonControl
