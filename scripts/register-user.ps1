@@ -8,8 +8,8 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
 
-# ★ 优先查找脚本同目录下的 DLL（发布包场景：脚本和 DLL 在同一目录）
-#   回退到开发场景的目录结构
+# Find DLL next to this script first (release package layout),
+# then fall back to the dev folder structure.
 $possiblePaths = @(
     (Join-Path $scriptDir "DeepExcel.AddIn.dll"),
     (Join-Path $scriptDir "bin\Release\DeepExcel.AddIn.dll"),
@@ -33,9 +33,10 @@ if (-not $dllPath) {
 $dllPath = Resolve-Path $dllPath
 Write-Host "AddIn DLL: $dllPath" -ForegroundColor Cyan
 
-# ★ 解除 Mark of the Web (MOTW) 标记
-#   从互联网下载的 ZIP 解压后，DLL 会带"来自互联网"标记，
-#   Excel 信任中心会静默阻止加载此类未签名加载项，导致功能区选项卡不出现。
+# Remove Mark of the Web (MOTW) from downloaded files.
+# DLLs extracted from a ZIP downloaded online carry an internet-zone mark;
+# the Excel Trust Center silently blocks unsigned add-ins with this mark,
+# so the ribbon tab never appears even when registration succeeds.
 $scriptRoot = Split-Path -Parent $dllPath
 Write-Host "Unblocking files (removing Mark of the Web)..." -ForegroundColor Gray
 $unblocked = 0
@@ -63,10 +64,11 @@ $addinName = "DeepExcel.AddIn"
 function Register-ComClass {
     param([string]$clsid, [string]$progId, [string]$dllPath, [string]$className)
 
-    # ★ 同时写入 64 位和 32 位 (WOW6432Node) 视图
-    #   AnyCPU 托管 DLL 可被 32/64 位 Excel 加载，但 32 位 Excel 读取
-    #   HKCU\Software\Classes\WOW6432Node\CLSID，64 位读取 CLSID。
-    #   若只写一处，另一位 Excel 在 COM 加载项列表里看不到此项。
+    # Write both 64-bit and 32-bit (WOW6432Node) registry views.
+    # The AnyCPU managed DLL loads in both 32/64-bit Excel, but 32-bit Excel
+    # reads HKCU\Software\Classes\WOW6432Node\CLSID while 64-bit reads CLSID.
+    # Writing only one view makes the add-in invisible in the other Excel's
+    # COM Add-ins list.
     $clsidViews = @(
         "HKCU:\Software\Classes\CLSID\$clsid",
         "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
@@ -171,11 +173,11 @@ if ($Unregister) {
     Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass
     Register-ExcelAddIn -progId $progId -friendlyName "DeepExcel AI AddIn" -dllPath $dllPath
 
-    # 注册 TaskPaneControl（CustomTaskPane 需要）
+    # Register TaskPaneControl (required by CustomTaskPane)
     Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass
     Write-Host "TaskPaneControl registered (ProgID: $taskPaneProgId)" -ForegroundColor Gray
 
-    # ★ 注册后验证：确认关键注册表项真实写入
+    # Post-registration verification: confirm key registry entries were written.
     Write-Host ""
     Write-Host "=== Verification ===" -ForegroundColor Yellow
     $verifyOk = $true
@@ -206,10 +208,10 @@ if ($Unregister) {
         $verifyOk = $false
     }
 
-    # ★ 环境诊断信息
+    # Environment diagnostics.
     Write-Host ""
     Write-Host "=== Environment Diagnostics ===" -ForegroundColor Yellow
-    # .NET Framework 4.8 检测
+    # .NET Framework 4.8 check.
     try {
         $ndpKey = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
         $release = (Get-ItemProperty $ndpKey -Name Release -ErrorAction Stop).Release
@@ -222,7 +224,7 @@ if ($Unregister) {
     } catch {
         Write-Host "  [WARN] Cannot determine .NET Framework version" -ForegroundColor Yellow
     }
-    # 检测已安装 Excel 位数
+    # Detect installed Excel bitness.
     $excelPaths = @(
         @{ Name = "Excel 64-bit (Click-to-Run)"; Path = "${env:ProgramFiles}\Microsoft Office\root\Office16\EXCEL.EXE" },
         @{ Name = "Excel 32-bit (Click-to-Run)"; Path = "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\EXCEL.EXE" },
@@ -240,7 +242,7 @@ if ($Unregister) {
         Write-Host "  [WARN] Excel 2016+ not found in default paths (other version/location?)" -ForegroundColor Yellow
         Write-Host "         DeepExcel only supports Excel 2016/2019/365 (version 16.0)" -ForegroundColor Gray
     }
-    # PowerShell 位数
+    # PowerShell bitness.
     $psBitness = if ([IntPtr]::Size -eq 8) { "64-bit" } else { "32-bit" }
     Write-Host "  [INFO] PowerShell: $psBitness" -ForegroundColor Gray
 
