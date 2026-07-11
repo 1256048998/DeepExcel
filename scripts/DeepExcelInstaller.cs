@@ -53,15 +53,9 @@ namespace DeepExcelInstaller
             Console.WriteLine("==========================================");
             Console.WriteLine();
 
-            // Check if running as admin
-            if (!IsRunningAsAdmin())
-            {
-                Console.WriteLine("Administrator privileges required to install DeepExcel.");
-                Console.WriteLine("Requesting elevation...");
-                Console.WriteLine();
-                RestartAsAdmin();
-                return;
-            }
+            // No administrator privileges required.
+            // All registration uses HKCU (current user only), which doesn't need elevation.
+            // HKLM writes are attempted in try/catch blocks and skipped if access denied.
 
             string scriptDir = AppDomain.CurrentDomain.BaseDirectory;
             // Install to LOCALAPPDATA (clean path, no admin needed for file copy,
@@ -107,6 +101,7 @@ namespace DeepExcelInstaller
 
                 string[] requiredFiles = {
                     "DeepExcel.AddIn.dll", "DeepExcel.AddIn.dll.config",
+                    "Extensibility.dll",
                     "Microsoft.Bcl.AsyncInterfaces.dll",
                     "Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.WinForms.dll",
                     "System.Buffers.dll", "System.Memory.dll", "System.Numerics.Vectors.dll",
@@ -162,63 +157,12 @@ namespace DeepExcelInstaller
             string taskPaneProgId = "DeepExcel.AddIn.TaskPaneControl";
             string taskPaneClass = "DeepExcel.AddIn.TaskPaneControl";
 
-            // Step 3: Register COM via regasm (with fallback to manual)
+            // Step 3: Register COM component (manual registration, no admin required)
             Log("[3/6] Registering COM component...");
-            bool regasmOk = false;
-            string regasm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                @"Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe");
-            if (!File.Exists(regasm))
-            {
-                regasm = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
-                    @"Microsoft.NET\Framework\v4.0.30319\RegAsm.exe");
-            }
-
-            if (File.Exists(regasm))
-            {
-                Log("  Using regasm: " + regasm);
-                var psi = new ProcessStartInfo
-                {
-                    FileName = regasm,
-                    Arguments = "/codebase \"" + dllPath + "\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                };
-                try
-                {
-                    var p = Process.Start(psi);
-                    string stdout = p.StandardOutput.ReadToEnd();
-                    string stderr = p.StandardError.ReadToEnd();
-                    p.WaitForExit();
-                    if (p.ExitCode == 0)
-                    {
-                        Log("  COM registered successfully via regasm.");
-                        regasmOk = true;
-                    }
-                    else
-                    {
-                        Log("  regasm failed (exit " + p.ExitCode + "): " + stderr.Trim());
-                        Log("  Falling back to manual registration...");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log("  regasm exception: " + ex.Message);
-                    Log("  Falling back to manual registration...");
-                }
-            }
-            else
-            {
-                Log("  RegAsm.exe not found, using manual registration...");
-            }
-
-            // ALWAYS run manual registration for ThisAddIn too, even if regasm succeeded.
-            // Reason: regasm registers CLSID only under HKCU\Software\Classes, but 64-bit
-            // Excel reads HKLM\Software\Classes\CLSID. Without HKLM registration, Excel
-            // cannot find the COM class and silently skips loading the add-in.
+            // Skip regasm — it requires admin for HKLM writes and complicates non-admin install.
+            // ManualRegisterCom writes HKCU (always works) and HKLM (try/catch, skipped if no admin).
             ManualRegisterCom(clsid, progId, className, dllPath);
-            Log("  ThisAddIn COM registration ensured (HKLM + HKCU).");
+            Log("  ThisAddIn COM registration complete (HKCU + HKLM if available).");
 
             // Register TaskPaneControl
             ManualRegisterCom(taskPaneClsid, taskPaneProgId, taskPaneClass, dllPath);
@@ -365,24 +309,35 @@ namespace DeepExcelInstaller
                     Log("  [WARN] HKCU CLSID InprocServer32 missing");
                 }
             }
-            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(clsidKeyHklm + @"\InprocServer32", true))
+            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(clsidKeyHklm + @"\InprocServer32"))
             {
                 if (key != null)
                 {
                     var codebase = key.GetValue("CodeBase");
                     if (codebase == null || codebase.ToString() == "")
                     {
-                        // CodeBase missing in HKLM — this is the root cause!
-                        // 64-bit Excel reads HKLM\Software\Classes\CLSID, and without
-                        // CodeBase it cannot find the DLL. Re-write it now.
-                        Log("  [WARN] HKLM CLSID CodeBase missing, re-writing...");
-                        key.SetValue("CodeBase", dllPath);
-                        key.SetValue("Assembly", "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null");
-                        key.SetValue("Class", className);
-                        key.SetValue("RuntimeVersion", "v4.0.30319");
-                        key.SetValue("ThreadingModel", "Both");
-                        codebase = key.GetValue("CodeBase");
-                        Log("  [OK] HKLM CLSID (CodeBase=" + codebase + ") [re-written]");
+                        // CodeBase missing in HKLM. Try to re-write (may fail without admin).
+                        Log("  [WARN] HKLM CLSID CodeBase missing, attempting re-write...");
+                        try
+                        {
+                            using (var wkey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(clsidKeyHklm + @"\InprocServer32", true))
+                            {
+                                if (wkey != null)
+                                {
+                                    wkey.SetValue("CodeBase", dllPath);
+                                    wkey.SetValue("Assembly", "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null");
+                                    wkey.SetValue("Class", className);
+                                    wkey.SetValue("RuntimeVersion", "v4.0.30319");
+                                    wkey.SetValue("ThreadingModel", "Both");
+                                    codebase = wkey.GetValue("CodeBase");
+                                    Log("  [OK] HKLM CLSID (CodeBase=" + codebase + ") [re-written]");
+                                }
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            Log("  [INFO] HKLM write skipped (no admin). HKCU registration is sufficient.");
+                        }
                     }
                     else
                     {
@@ -392,18 +347,25 @@ namespace DeepExcelInstaller
                 }
                 else
                 {
-                    Log("  [INFO] HKLM CLSID InprocServer32 missing, creating...");
-                    using (var newKey = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(clsidKeyHklm + @"\InprocServer32"))
+                    Log("  [INFO] HKLM CLSID InprocServer32 missing, attempting to create...");
+                    try
                     {
-                        newKey.SetValue(null, "mscoree.dll");
-                        newKey.SetValue("Assembly", "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null");
-                        newKey.SetValue("Class", className);
-                        newKey.SetValue("CodeBase", dllPath);
-                        newKey.SetValue("RuntimeVersion", "v4.0.30319");
-                        newKey.SetValue("ThreadingModel", "Both");
+                        using (var newKey = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(clsidKeyHklm + @"\InprocServer32"))
+                        {
+                            newKey.SetValue(null, "mscoree.dll");
+                            newKey.SetValue("Assembly", "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null");
+                            newKey.SetValue("Class", className);
+                            newKey.SetValue("CodeBase", dllPath);
+                            newKey.SetValue("RuntimeVersion", "v4.0.30319");
+                            newKey.SetValue("ThreadingModel", "Both");
+                        }
+                        Log("  [OK] HKLM CLSID InprocServer32 created with CodeBase");
+                        clsidHklmOk = true;
                     }
-                    Log("  [OK] HKLM CLSID InprocServer32 created with CodeBase");
-                    clsidHklmOk = true;
+                    catch (Exception)
+                    {
+                        Log("  [INFO] HKLM CLSID creation skipped (no admin). HKCU registration is sufficient.");
+                    }
                 }
             }
             if (!clsidHkcuOk && !clsidHklmOk)

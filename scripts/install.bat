@@ -10,16 +10,15 @@ REM Unblock all files in this folder (removes Mark of the Web from download)
 echo Files unblocked.
 echo.
 
-REM Try the .exe installer first (full install with HKLM + clean path)
+REM No admin privileges required - uses HKCU (current user only) registration.
 if exist "%~dp0DeepExcelInstaller.exe" (
     echo Launching DeepExcelInstaller.exe ...
-    echo Click "Yes" on the UAC permission prompt.
     echo.
     "%~dp0DeepExcelInstaller.exe"
     goto :done
 )
 
-REM Fallback: user-scope PowerShell installer (no admin required)
+REM Fallback: user-scope PowerShell installer
 echo DeepExcelInstaller.exe not found, using PowerShell installer...
 %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0register-user.ps1"
 
