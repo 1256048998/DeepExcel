@@ -1,4 +1,4 @@
-# DeepExcel User-Scope Registration Script
+﻿# DeepExcel User-Scope Registration Script
 # Registers the AddIn for the current user only (no admin required)
 
 param(
