@@ -8,12 +8,17 @@ $csc = Join-Path $packages 'Microsoft.Net.Compilers.3.8.0\tools\csc.exe'
 # 收集 .cs 文件，排除：
 # - bin/obj 目录
 # - DeepExcelRibbon.cs（VSTO 依赖）
-# - Interop 目录（自定义 interop 会与引用的 Extensibility.dll/OFFICE.dll 冲突，导致 CS0436 和 QueryInterface 失败）
+# - OfficeInterop.cs（与引用的 OFFICE.dll PIA 冲突）
+# 注意：不再排除 Extensibility.cs！改为内联编译 IDTExtensibility2 定义，
+# 不再引用 Extensibility.dll PIA。原因：PIA 只在开发机（有 Visual Studio）的 GAC 中存在，
+# 用户机器找不到，导致 QueryInterface IDTExtensibility2 失败，OnConnection 不被调用。
+# 自定义定义只要 GUID 和 InterfaceType 正确，vtable 布局就和 PIA 一致。
 $csFiles = Get-ChildItem -Path $addinDir -Recurse -Filter '*.cs' -ErrorAction SilentlyContinue |
     Where-Object {
         $_.FullName -notmatch '\\(obj|bin)\\' -and
         $_.Name -ne 'DeepExcelRibbon.cs' -and
-        $_.FullName -notmatch '\\Interop\\'
+        $_.Name -ne 'OfficeInterop.cs' -and
+        $_.FullName -notmatch '\\Interop\\OfficeInterop\.cs'
     } |
     ForEach-Object { $_.FullName }
 
@@ -43,7 +48,7 @@ $args = @(
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll"',
-    '/reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll"',
+    # 不再引用 Extensibility.dll PIA — 改为内联编译 Interop/Extensibility.cs
     '/reference:"C:\Windows\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll"',
     "/reference:`"$outDir\Microsoft.Web.WebView2.WinForms.dll`"",
     "/reference:`"$outDir\Microsoft.Web.WebView2.Core.dll`"",

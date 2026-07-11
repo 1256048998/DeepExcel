@@ -101,7 +101,6 @@ namespace DeepExcelInstaller
 
                 string[] requiredFiles = {
                     "DeepExcel.AddIn.dll", "DeepExcel.AddIn.dll.config",
-                    "Extensibility.dll",
                     "Microsoft.Bcl.AsyncInterfaces.dll",
                     "Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.WinForms.dll",
                     "System.Buffers.dll", "System.Memory.dll", "System.Numerics.Vectors.dll",
