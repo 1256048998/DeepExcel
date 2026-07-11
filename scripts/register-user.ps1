@@ -8,6 +8,12 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
 
+# Wrap everything in try/catch so errors are displayed before the window
+# closes (when launched via "Run with PowerShell" the window auto-closes
+# on exit, hiding any error messages from the user).
+try {
+
+
 # Find DLL next to this script first (release package layout),
 # then fall back to the dev folder structure.
 $possiblePaths = @(
@@ -304,3 +310,23 @@ if ($Unregister) {
     Write-Host "  - Close all Excel windows and rerun this script" -ForegroundColor Gray
     Write-Host "  - Check %APPDATA%\DeepExcel\logs\ for errors" -ForegroundColor Gray
 }
+
+} catch {
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Red
+    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "==========================================" -ForegroundColor Red
+    if ($_.Exception.InnerException) {
+        Write-Host "Details: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+    }
+    Write-Host ""
+    Write-Host "Full error:" -ForegroundColor Yellow
+    Write-Host $_.ScriptStackTrace -ForegroundColor Gray
+}
+
+# Keep the window open when launched via "Run with PowerShell" right-click,
+# which auto-closes the window on script exit. Pause so user can read output.
+Write-Host ""
+Write-Host "==========================================" -ForegroundColor Cyan
+Read-Host "Press Enter to close this window"
+
