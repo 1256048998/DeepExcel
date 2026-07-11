@@ -62,49 +62,68 @@ $addinName = "DeepExcel.AddIn"
 
 function Register-ComClass {
     param([string]$clsid, [string]$progId, [string]$dllPath, [string]$className)
-    
-    $hkcuClsid = "HKCU:\Software\Classes\CLSID\$clsid"
-    $hkcuProgId = "HKCU:\Software\Classes\$progId"
-    
-    if (-not (Test-Path $hkcuClsid)) {
-        New-Item -Path $hkcuClsid -Force | Out-Null
+
+    # ★ 同时写入 64 位和 32 位 (WOW6432Node) 视图
+    #   AnyCPU 托管 DLL 可被 32/64 位 Excel 加载，但 32 位 Excel 读取
+    #   HKCU\Software\Classes\WOW6432Node\CLSID，64 位读取 CLSID。
+    #   若只写一处，另一位 Excel 在 COM 加载项列表里看不到此项。
+    $clsidViews = @(
+        "HKCU:\Software\Classes\CLSID\$clsid",
+        "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
+    )
+    $progIdViews = @(
+        "HKCU:\Software\Classes\$progId",
+        "HKCU:\Software\Classes\WOW6432Node\$progId"
+    )
+
+    foreach ($hkcuClsid in $clsidViews) {
+        if (-not (Test-Path $hkcuClsid)) {
+            New-Item -Path $hkcuClsid -Force | Out-Null
+        }
+        Set-ItemProperty -Path $hkcuClsid -Name "(default)" -Value $className -Force
+
+        $inproc32 = Join-Path $hkcuClsid "InprocServer32"
+        if (-not (Test-Path $inproc32)) {
+            New-Item -Path $inproc32 -Force | Out-Null
+        }
+        Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
+        Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null" -Force
+        Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
+        Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
+        Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force
+        Set-ItemProperty -Path $inproc32 -Name "ThreadingModel" -Value "Both" -Force
     }
-    Set-ItemProperty -Path $hkcuClsid -Name "(default)" -Value $className -Force
-    
-    $inproc32 = Join-Path $hkcuClsid "InprocServer32"
-    if (-not (Test-Path $inproc32)) {
-        New-Item -Path $inproc32 -Force | Out-Null
+
+    foreach ($hkcuProgId in $progIdViews) {
+        if (-not (Test-Path $hkcuProgId)) {
+            New-Item -Path $hkcuProgId -Force | Out-Null
+        }
+        Set-ItemProperty -Path $hkcuProgId -Name "(default)" -Value $className -Force
+
+        $clsIdKey = Join-Path $hkcuProgId "CLSID"
+        if (-not (Test-Path $clsIdKey)) {
+            New-Item -Path $clsIdKey -Force | Out-Null
+        }
+        Set-ItemProperty -Path $clsIdKey -Name "(default)" -Value $clsid -Force
     }
-    Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
-    Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null" -Force
-    Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
-    Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
-    Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force
-    Set-ItemProperty -Path $inproc32 -Name "ThreadingModel" -Value "Both" -Force
-    
-    if (-not (Test-Path $hkcuProgId)) {
-        New-Item -Path $hkcuProgId -Force | Out-Null
-    }
-    Set-ItemProperty -Path $hkcuProgId -Name "(default)" -Value $className -Force
-    
-    $clsIdKey = Join-Path $hkcuProgId "CLSID"
-    if (-not (Test-Path $clsIdKey)) {
-        New-Item -Path $clsIdKey -Force | Out-Null
-    }
-    Set-ItemProperty -Path $clsIdKey -Name "(default)" -Value $clsid -Force
 }
 
 function Unregister-ComClass {
     param([string]$clsid, [string]$progId)
-    
-    $hkcuClsid = "HKCU:\Software\Classes\CLSID\$clsid"
-    $hkcuProgId = "HKCU:\Software\Classes\$progId"
-    
-    if (Test-Path $hkcuClsid) {
-        Remove-Item -Path $hkcuClsid -Recurse -Force
+
+    $clsidViews = @(
+        "HKCU:\Software\Classes\CLSID\$clsid",
+        "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
+    )
+    $progIdViews = @(
+        "HKCU:\Software\Classes\$progId",
+        "HKCU:\Software\Classes\WOW6432Node\$progId"
+    )
+    foreach ($p in $clsidViews) {
+        if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
     }
-    if (Test-Path $hkcuProgId) {
-        Remove-Item -Path $hkcuProgId -Recurse -Force
+    foreach ($p in $progIdViews) {
+        if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
     }
 }
 
@@ -155,16 +174,94 @@ if ($Unregister) {
     # 注册 TaskPaneControl（CustomTaskPane 需要）
     Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass
     Write-Host "TaskPaneControl registered (ProgID: $taskPaneProgId)" -ForegroundColor Gray
-    
+
+    # ★ 注册后验证：确认关键注册表项真实写入
     Write-Host ""
-    Write-Host "Registration successful!" -ForegroundColor Green
+    Write-Host "=== Verification ===" -ForegroundColor Yellow
+    $verifyOk = $true
+    $addinKeyCheck = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
+    if (Test-Path $addinKeyCheck) {
+        $lb = (Get-ItemProperty $addinKeyCheck -Name LoadBehavior -ErrorAction SilentlyContinue).LoadBehavior
+        Write-Host "  [OK] Excel Addin key (LoadBehavior=$lb)" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] Excel Addin key missing!" -ForegroundColor Red
+        $verifyOk = $false
+    }
+    $clsidPaths = @(
+        "HKCU:\Software\Classes\CLSID\$clsid",
+        "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
+    )
+    foreach ($cp in $clsidPaths) {
+        $tag = if ($cp -match "WOW6432Node") { "32-bit (WOW6432Node)" } else { "64-bit" }
+        if (Test-Path $cp) {
+            Write-Host "  [OK] CLSID $tag" -ForegroundColor Green
+        } else {
+            Write-Host "  [WARN] CLSID $tag missing (may be OK if not needed)" -ForegroundColor Yellow
+        }
+    }
+    if (Test-Path $dllPath) {
+        Write-Host "  [OK] DLL exists: $dllPath" -ForegroundColor Green
+    } else {
+        Write-Host "  [FAIL] DLL missing!" -ForegroundColor Red
+        $verifyOk = $false
+    }
+
+    # ★ 环境诊断信息
+    Write-Host ""
+    Write-Host "=== Environment Diagnostics ===" -ForegroundColor Yellow
+    # .NET Framework 4.8 检测
+    try {
+        $ndpKey = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
+        $release = (Get-ItemProperty $ndpKey -Name Release -ErrorAction Stop).Release
+        if ($release -ge 462834) {
+            Write-Host "  [OK] .NET Framework 4.8+ (release=$release)" -ForegroundColor Green
+        } else {
+            Write-Host "  [FAIL] .NET Framework 4.8 required (found release=$release)" -ForegroundColor Red
+            $verifyOk = $false
+        }
+    } catch {
+        Write-Host "  [WARN] Cannot determine .NET Framework version" -ForegroundColor Yellow
+    }
+    # 检测已安装 Excel 位数
+    $excelPaths = @(
+        @{ Name = "Excel 64-bit (Click-to-Run)"; Path = "${env:ProgramFiles}\Microsoft Office\root\Office16\EXCEL.EXE" },
+        @{ Name = "Excel 32-bit (Click-to-Run)"; Path = "${env:ProgramFiles(x86)}\Microsoft Office\root\Office16\EXCEL.EXE" },
+        @{ Name = "Excel 64-bit (MSI)"; Path = "${env:ProgramFiles}\Microsoft Office\Office16\EXCEL.EXE" },
+        @{ Name = "Excel 32-bit (MSI)"; Path = "${env:ProgramFiles(x86)}\Microsoft Office\Office16\EXCEL.EXE" }
+    )
+    $excelFound = $false
+    foreach ($ep in $excelPaths) {
+        if (Test-Path $ep.Path) {
+            $excelFound = $true
+            Write-Host "  [OK] $($ep.Name): $($ep.Path)" -ForegroundColor Green
+        }
+    }
+    if (-not $excelFound) {
+        Write-Host "  [WARN] Excel 2016+ not found in default paths (other version/location?)" -ForegroundColor Yellow
+        Write-Host "         DeepExcel only supports Excel 2016/2019/365 (version 16.0)" -ForegroundColor Gray
+    }
+    # PowerShell 位数
+    $psBitness = if ([IntPtr]::Size -eq 8) { "64-bit" } else { "32-bit" }
+    Write-Host "  [INFO] PowerShell: $psBitness" -ForegroundColor Gray
+
+    Write-Host ""
+    if ($verifyOk) {
+        Write-Host "Registration successful!" -ForegroundColor Green
+    } else {
+        Write-Host "Registration completed with ERRORS! See [FAIL] items above." -ForegroundColor Red
+    }
     Write-Host ""
     Write-Host "Next steps:" -ForegroundColor Yellow
-    Write-Host "  1. Restart Excel" -ForegroundColor Gray
+    Write-Host "  1. Restart Excel (close ALL Excel windows)" -ForegroundColor Gray
     Write-Host "  2. Find the 'DeepExcel' tab in the ribbon" -ForegroundColor Gray
     Write-Host "  3. Click 'Open Panel' button to start" -ForegroundColor Gray
     Write-Host ""
     Write-Host "If you don't see the DeepExcel tab:" -ForegroundColor Yellow
     Write-Host "  File -> Options -> Add-Ins -> Manage: COM Add-ins -> Go" -ForegroundColor Gray
     Write-Host "  Check 'DeepExcel.AddIn' -> OK" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "If it's NOT in the COM Add-ins list:" -ForegroundColor Yellow
+    Write-Host "  - Make sure Excel is 2016/2019/365 (version 16.0)" -ForegroundColor Gray
+    Write-Host "  - Close all Excel windows and rerun this script" -ForegroundColor Gray
+    Write-Host "  - Check %APPDATA%\DeepExcel\logs\ for errors" -ForegroundColor Gray
 }
