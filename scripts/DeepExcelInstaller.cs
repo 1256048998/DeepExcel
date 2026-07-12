@@ -49,7 +49,7 @@ namespace DeepExcelInstaller
         {
             Console.Title = "DeepExcel Installer";
             Console.WriteLine("==========================================");
-            Console.WriteLine("  DeepExcel Installer v0.4.1");
+            Console.WriteLine("  DeepExcel Installer v0.4.8");
             Console.WriteLine("==========================================");
             Console.WriteLine();
 
@@ -98,6 +98,17 @@ namespace DeepExcelInstaller
                     Directory.Delete(installDir, true);
                 }
                 Directory.CreateDirectory(installDir);
+
+                // Unblock source files (remove MOTW) BEFORE copying.
+                // If source files have MOTW, the copied files inherit it and
+                // Excel Trust Center may silently block the DLL.
+                int srcUnblocked = 0;
+                foreach (var f in Directory.GetFiles(scriptDir, "*", SearchOption.AllDirectories))
+                {
+                    try { File.Delete(f + ":Zone.Identifier"); srcUnblocked++; } catch { }
+                }
+                if (srcUnblocked > 0)
+                    Log("  Unblocked " + srcUnblocked + " source file(s) (MOTW removed).");
 
                 string[] requiredFiles = {
                     "DeepExcel.AddIn.dll", "DeepExcel.AddIn.dll.config",
@@ -211,7 +222,7 @@ namespace DeepExcelInstaller
             }
             Log("  DoNotDisableAddinList entry added.");
 
-            // Clear DisabledItems (HKCU)
+            // Clear DisabledItems (HKCU) - only DeepExcel entries, preserve other add-ins
             string disabledKey = @"Software\Microsoft\Office\16.0\Excel\Resiliency\DisabledItems";
             try
             {
@@ -222,9 +233,49 @@ namespace DeepExcelInstaller
                         int cleared = 0;
                         foreach (var name in key.GetSubKeyNames())
                         {
-                            try { key.DeleteSubKeyTree(name, false); cleared++; } catch { }
+                            try
+                            {
+                                bool isDeepExcel = false;
+                                using (var entryKey = key.OpenSubKey(name))
+                                {
+                                    if (entryKey != null)
+                                    {
+                                        foreach (var v in entryKey.GetValueNames())
+                                        {
+                                            object val = entryKey.GetValue(v);
+                                            byte[] valBytes = val as byte[];
+                                            if (valBytes != null)
+                                            {
+                                                string text = "";
+                                                try { text = System.Text.Encoding.Unicode.GetString(valBytes); } catch { }
+                                                if (text.IndexOf("DeepExcel", StringComparison.OrdinalIgnoreCase) >= 0)
+                                                {
+                                                    isDeepExcel = true;
+                                                    break;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                string s = val as string;
+                                                if (s != null && s.IndexOf("DeepExcel", StringComparison.OrdinalIgnoreCase) >= 0)
+                                                {
+                                                    isDeepExcel = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if (isDeepExcel)
+                                {
+                                    key.DeleteSubKeyTree(name, false);
+                                    cleared++;
+                                    Log("    Deleted DisabledItems entry: " + name + " (DeepExcel reference)");
+                                }
+                            }
+                            catch { }
                         }
-                        Log("  Cleared " + cleared + " DisabledItems entr(ies).");
+                        Log("  Cleared " + cleared + " DeepExcel DisabledItems entr(ies).");
                     }
                 }
             }
@@ -586,67 +637,76 @@ namespace DeepExcelInstaller
                 new { Root = Microsoft.Win32.Registry.CurrentUser, Prefix = "HKCU" }
             };
 
+            // Write to both 64-bit (default) and 32-bit (WOW6432Node) views.
+            // 32-bit Excel reads from WOW6432Node; 64-bit Excel reads from the default view.
+            // Without WOW6432Node, 32-bit Excel cannot find the CLSID and the add-in won't load.
+            string[] clsidBases = { @"Software\Classes\CLSID", @"Software\Classes\WOW6432Node\CLSID" };
+            string[] progIdBases = { @"Software\Classes", @"Software\Classes\WOW6432Node" };
+
             foreach (var r in roots)
             {
-                try
+                for (int i = 0; i < clsidBases.Length; i++)
                 {
-                    string clsidKey = @"Software\Classes\CLSID\" + clsid;
+                    string bitness = (i == 0) ? "64-bit" : "32-bit (WOW6432Node)";
+                    string clsidKey = clsidBases[i] + @"\" + clsid;
+                    string progIdKey = progIdBases[i] + @"\" + progId;
 
-                    // CLSID root
-                    using (var key = r.Root.CreateSubKey(clsidKey))
+                    try
                     {
-                        key.SetValue(null, className);
-                    }
+                        // CLSID root
+                        using (var key = r.Root.CreateSubKey(clsidKey))
+                        {
+                            key.SetValue(null, className);
+                        }
 
-                    // InprocServer32
-                    using (var key = r.Root.CreateSubKey(clsidKey + @"\InprocServer32"))
-                    {
-                        key.SetValue(null, "mscoree.dll");
-                        key.SetValue("Assembly", assemblyVersion);
-                        key.SetValue("Class", className);
-                        key.SetValue("CodeBase", dllPath);
-                        key.SetValue("RuntimeVersion", "v4.0.30319");
-                        key.SetValue("ThreadingModel", "Both");
-                    }
+                        // InprocServer32
+                        using (var key = r.Root.CreateSubKey(clsidKey + @"\InprocServer32"))
+                        {
+                            key.SetValue(null, "mscoree.dll");
+                            key.SetValue("Assembly", assemblyVersion);
+                            key.SetValue("Class", className);
+                            key.SetValue("CodeBase", dllPath);
+                            key.SetValue("RuntimeVersion", "v4.0.30319");
+                            key.SetValue("ThreadingModel", "Both");
+                        }
 
-                    // Version subkey (regasm writes this)
-                    using (var key = r.Root.CreateSubKey(clsidKey + @"\InprocServer32\0.2.4.0"))
-                    {
-                        key.SetValue("Assembly", assemblyVersion);
-                        key.SetValue("Class", className);
-                        key.SetValue("CodeBase", dllPath);
-                        key.SetValue("RuntimeVersion", "v4.0.30319");
-                    }
+                        // Version subkey (regasm writes this)
+                        using (var key = r.Root.CreateSubKey(clsidKey + @"\InprocServer32\0.2.4.0"))
+                        {
+                            key.SetValue("Assembly", assemblyVersion);
+                            key.SetValue("Class", className);
+                            key.SetValue("CodeBase", dllPath);
+                            key.SetValue("RuntimeVersion", "v4.0.30319");
+                        }
 
-                    // Implemented Categories (.NET Category - important for .NET COM)
-                    using (var key = r.Root.CreateSubKey(clsidKey + @"\Implemented Categories\" + netCategory))
-                    {
-                        // Empty key, just needs to exist
-                    }
+                        // Implemented Categories (.NET Category - important for .NET COM)
+                        using (var key = r.Root.CreateSubKey(clsidKey + @"\Implemented Categories\" + netCategory))
+                        {
+                            // Empty key, just needs to exist
+                        }
 
-                    // ProgId subkey under CLSID
-                    using (var key = r.Root.CreateSubKey(clsidKey + @"\ProgId"))
-                    {
-                        key.SetValue(null, progId);
-                    }
+                        // ProgId subkey under CLSID
+                        using (var key = r.Root.CreateSubKey(clsidKey + @"\ProgId"))
+                        {
+                            key.SetValue(null, progId);
+                        }
 
-                    // ProgID mapping
-                    string progIdKey = @"Software\Classes\" + progId;
-                    using (var key = r.Root.CreateSubKey(progIdKey))
-                    {
-                        key.SetValue(null, className);
+                        // ProgID mapping
+                        using (var key = r.Root.CreateSubKey(progIdKey))
+                        {
+                            key.SetValue(null, className);
+                        }
+                        using (var key = r.Root.CreateSubKey(progIdKey + @"\CLSID"))
+                        {
+                            key.SetValue(null, clsid);
+                        }
                     }
-                    using (var key = r.Root.CreateSubKey(progIdKey + @"\CLSID"))
+                    catch (Exception ex)
                     {
-                        key.SetValue(null, clsid);
+                        Log("    " + r.Prefix + " " + bitness + " registration failed: " + ex.Message);
                     }
-
-                    Log("    " + r.Prefix + " registration complete.");
                 }
-                catch (Exception ex)
-                {
-                    Log("    " + r.Prefix + " registration failed: " + ex.Message);
-                }
+                Log("    " + r.Prefix + " registration complete (64-bit + 32-bit).");
             }
         }
 
