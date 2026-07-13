@@ -289,24 +289,21 @@ namespace DeepExcel.AddIn
                     try
                     {
                         _workbookKeyByCtp.Remove(ctp);
+                        // ★ F1 修复：同时从 _ctpsByWindow 移除该 CTP 的条目（用 Hwnd key）
+                        var wndKeys = _ctpsByWindow
+                            .Where(kvp => kvp.Value == ctp)
+                            .Select(kvp => kvp.Key)
+                            .ToList();
+                        foreach (var wk in wndKeys)
+                        {
+                            _ctpsByWindow.Remove(wk);
+                            Log("Removed window CTP entry (hwnd): " + wk);
+                        }
                         try { ctp.Delete(); } catch { }
                         Log("Removed CTP for workbook: " + wbKey);
                     }
                     catch (Exception ctpEx) { Log("CTP cleanup error: " + ctpEx.Message); }
                 }
-
-                // 清理 _ctpsByWindow 中对应窗口的记录
-                try
-                {
-                    string wbName = Wb.Name ?? "";
-                    if (_ctpsByWindow.ContainsKey(wbName))
-                    {
-                        try { _ctpsByWindow[wbName].Delete(); } catch { }
-                        _ctpsByWindow.Remove(wbName);
-                        Log("Removed window CTP entry: " + wbName);
-                    }
-                }
-                catch { }
             }
             catch (Exception ex)
             {
@@ -367,8 +364,9 @@ namespace DeepExcel.AddIn
                     {
                         try
                         {
-                            string caption = wnd.Caption as string ?? "";
-                            if (_ctpsByWindow.TryGetValue(caption, out var ctp) && ctp != null)
+                            // ★ F1 修复：用 Hwnd 作为 key 查找，而非 Caption（Caption 在另存为后已改变）
+                            string hwndKey = wnd.Hwnd.ToString();
+                            if (_ctpsByWindow.TryGetValue(hwndKey, out var ctp) && ctp != null)
                             {
                                 // 找到旧 key
                                 if (_workbookKeyByCtp.TryGetValue(ctp, out oldKey))
@@ -628,8 +626,9 @@ namespace DeepExcel.AddIn
                 string windowCaption = activeWindow.Caption as string ?? "";
                 Log("ActiveWindow caption=" + windowCaption);
 
-                // ★ 用 Caption（workbook 名）作为字典 key，而非 Window COM 对象本身
-                string windowKey = windowCaption;
+                // ★ F1 修复：用 Hwnd（稳定且唯一）作为字典 key，而非 Caption。
+                //   Caption 在多个未保存工作簿都叫 Book1 时会冲突，另存为后也会改变导致旧 key 残留。
+                string windowKey = activeWindow.Hwnd.ToString();
 
                 // 查找或创建该窗口对应的 CTP
                 Microsoft.Office.Core.CustomTaskPane ctp;
@@ -775,6 +774,8 @@ namespace DeepExcel.AddIn
             {
                 Log("InitializeWebView FAILED: " + ex.GetType().Name + " - " + ex.Message);
                 Log("Stack: " + ex.StackTrace);
+                // ★ F2 修复：WebView2 初始化失败时提示用户，避免空白面板无反馈
+                ShowWebView2Error(ex);
             }
         }
 
@@ -806,7 +807,31 @@ namespace DeepExcel.AddIn
             {
                 Log("InitializeWebViewForPane FAILED: " + ex.GetType().Name + " - " + ex.Message);
                 Log("Stack: " + ex.StackTrace);
+                // ★ F2 修复：后续窗口 WebView 初始化失败也提示用户
+                ShowWebView2Error(ex);
             }
+        }
+
+        /// <summary>
+        /// ★ F2 修复：WebView2 初始化失败时向用户显示明确的错误提示，
+        ///   而非让面板空白无反馈。最常见原因是用户机器未安装 WebView2 Runtime。
+        /// </summary>
+        private void ShowWebView2Error(Exception ex)
+        {
+            try
+            {
+                string msg = "DeepExcel 面板初始化失败。\n\n" +
+                    "错误: " + ex.Message + "\n\n" +
+                    "可能原因：\n" +
+                    "1. 未安装 Microsoft Edge WebView2 Runtime\n" +
+                    "   下载地址: https://developer.microsoft.com/microsoft-edge/webview2/\n" +
+                    "2. WebView2 用户数据目录被锁定（可能有多余的 Excel 进程）\n\n" +
+                    "请安装 WebView2 Runtime 或重启 Excel 后重试。";
+                Log("Showing WebView2 error to user");
+                MessageBox.Show(msg, "DeepExcel - 面板初始化失败",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch { }
         }
 
         /// <summary>
@@ -1044,10 +1069,12 @@ namespace DeepExcel.AddIn
 
         /// <summary>
         /// 清理字典中已失效的 CTP（用户点 X 关闭后 CTP 对象访问任何属性都会抛异常）
+        /// ★ F8 修复：同时清理 _workbookKeyByCtp 中以失效 CTP 为 key 的条目，避免内存泄漏
         /// </summary>
         private void PurgeInvalidCtps()
         {
             var invalidKeys = new System.Collections.Generic.List<string>();
+            var invalidCtps = new System.Collections.Generic.List<Microsoft.Office.Core.CustomTaskPane>();
             foreach (var kvp in _ctpsByWindow)
             {
                 try
@@ -1057,12 +1084,21 @@ namespace DeepExcel.AddIn
                 catch
                 {
                     invalidKeys.Add(kvp.Key);
+                    invalidCtps.Add(kvp.Value);
                 }
             }
             foreach (var k in invalidKeys)
             {
                 Log("PurgeInvalidCtps: removing invalid CTP for window: " + k);
                 _ctpsByWindow.Remove(k);
+            }
+            // ★ F8 修复：同步清理 _workbookKeyByCtp
+            foreach (var ctp in invalidCtps)
+            {
+                if (_workbookKeyByCtp.Remove(ctp))
+                {
+                    Log("PurgeInvalidCtps: removed _workbookKeyByCtp entry for invalid CTP");
+                }
             }
         }
     }
