@@ -587,7 +587,19 @@ namespace DeepExcel.AddIn
 
         void IRibbonCallbacks.OnTogglePanel(object control)
         {
-            Log("OnTogglePanel called");
+            OnTogglePanelInternal(control, depth: 0);
+        }
+
+        private void OnTogglePanelInternal(object control, int depth)
+        {
+            Log("OnTogglePanel called (depth=" + depth + ")");
+            if (depth > 2)
+            {
+                Log("OnTogglePanel recursion limit reached, aborting");
+                MessageBox.Show("面板打开失败（CTP 反复失效），请重启 Excel 后重试。",
+                    "DeepExcel", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
             try
             {
                 // ★ 按钮仅用于"打开面板"，不切换可见性。
@@ -700,8 +712,8 @@ namespace DeepExcel.AddIn
                     Log("CTP.Visible threw: " + visEx.Message + " - recreating");
                     _ctpsByWindow.Remove(windowKey);
                     try { ctp.Delete(); } catch { }
-                    // 递归一次重新创建
-                    ((IRibbonCallbacks)this).OnTogglePanel(control);
+                    // 递归重建（带深度限制防止栈溢出）
+                    OnTogglePanelInternal(control, depth + 1);
                     return;
                 }
             }
