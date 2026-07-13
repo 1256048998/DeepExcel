@@ -147,10 +147,6 @@ namespace DeepExcel.AddIn.Performance
 
                 processed += batch.Count;
                 OnBatchProgress?.Invoke(processed, total);
-
-                // 每批后短暂释放资源
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
             }
         }
 
@@ -175,9 +171,6 @@ namespace DeepExcel.AddIn.Performance
 
                 processed += batch.Count;
                 OnBatchProgress?.Invoke(processed, total);
-
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
             }
         }
 

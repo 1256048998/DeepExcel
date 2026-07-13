@@ -43,7 +43,9 @@ namespace DeepExcel.AddIn.Security
             }
             catch
             {
-                return plainText;
+                // ★ fail-closed：加密失败返回空字符串，与 Decrypt 的 fail-closed 行为一致。
+                // 返回明文会导致 API Key 以明文写入 .crypt 文件，绕过 DPAPI 保护。
+                return "";
             }
         }
 
