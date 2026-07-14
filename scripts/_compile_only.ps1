@@ -5,19 +5,24 @@ $outDir = Join-Path $addinDir 'bin\Release'
 $packages = Join-Path $baseDir 'packages'
 $csc = Join-Path $packages 'Microsoft.Net.Compilers.3.8.0\tools\csc.exe'
 
-# 收集 .cs 文件，排除：
-# - bin/obj 目录
-# - DeepExcelRibbon.cs（VSTO 依赖）
-# - Interop 目录（自定义 interop 会与引用的 Extensibility.dll/OFFICE.dll 冲突，导致 CS0436 和 QueryInterface 失败）
+# Collect .cs files, excluding:
+# - bin/obj directories
+# - DeepExcelRibbon.cs (VSTO dependency)
+# - OfficeInterop.cs (conflicts with referenced OFFICE.dll PIA)
+# NOTE: Extensibility.cs MUST be included (inline compiled) - NOT referenced as external PIA.
+# Reason: PIA only exists in GAC on machines with Visual Studio installed. On user machines
+# without VS, CLR cannot resolve IDTExtensibility2 type -> QueryInterface silently fails ->
+# OnConnection never called -> add-in doesn't load (symptom: log shows "Constructor called"
+# but no "OnConnection started").
 $csFiles = Get-ChildItem -Path $addinDir -Recurse -Filter '*.cs' -ErrorAction SilentlyContinue |
     Where-Object {
         $_.FullName -notmatch '\\(obj|bin)\\' -and
         $_.Name -ne 'DeepExcelRibbon.cs' -and
-        $_.FullName -notmatch '\\Interop\\'
+        $_.Name -ne 'OfficeInterop.cs'
     } |
     ForEach-Object { $_.FullName }
 
-Write-Host "Compiling $($csFiles.Count) files (excluded Interop/, DeepExcelRibbon.cs)..."
+Write-Host "Compiling $($csFiles.Count) files (excluded OfficeInterop.cs, DeepExcelRibbon.cs; included Extensibility.cs)..."
 
 # 构建参数
 $args = @(
@@ -43,7 +48,6 @@ $args = @(
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll"',
-    '/reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll"',
     '/reference:"C:\Windows\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll"',
     "/reference:`"$outDir\Microsoft.Web.WebView2.WinForms.dll`"",
     "/reference:`"$outDir\Microsoft.Web.WebView2.Core.dll`"",
