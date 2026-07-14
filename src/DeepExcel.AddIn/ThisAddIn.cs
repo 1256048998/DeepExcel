@@ -50,6 +50,16 @@ namespace DeepExcel.AddIn
             Log("Constructor called - COM object being created");
             // COM 加载项不读取 .dll.config，需手动处理 binding redirect
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
+            // ★ 诊断：捕获所有 first-chance 异常，防止静默崩溃导致 OnConnection 不被调用
+            AppDomain.CurrentDomain.FirstChanceException += (sender, e) =>
+            {
+                try
+                {
+                    var ex = e.Exception;
+                    Log("FirstChanceException: " + ex.GetType().Name + " - " + ex.Message);
+                }
+                catch { }
+            };
         }
 
         private static Assembly OnAssemblyResolve(object sender, ResolveEventArgs args)
@@ -58,6 +68,17 @@ namespace DeepExcel.AddIn
             {
                 var name = new AssemblyName(args.Name);
                 string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+
+                // Extensibility.dll fallback: if GAC PIA not available, load from DLL directory
+                if (name.Name == "Extensibility")
+                {
+                    string extPath = Path.Combine(dir, "Extensibility.dll");
+                    if (File.Exists(extPath))
+                    {
+                        Log("OnAssemblyResolve: loading Extensibility from " + extPath);
+                        return Assembly.LoadFrom(extPath);
+                    }
+                }
 
                 // System.Runtime.CompilerServices.Unsafe 4.0.4.1 → 6.0.0.0 重定向
                 if (name.Name == "System.Runtime.CompilerServices.Unsafe")

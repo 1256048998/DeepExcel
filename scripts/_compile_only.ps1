@@ -9,20 +9,23 @@ $csc = Join-Path $packages 'Microsoft.Net.Compilers.3.8.0\tools\csc.exe'
 # - bin/obj directories
 # - DeepExcelRibbon.cs (VSTO dependency)
 # - OfficeInterop.cs (conflicts with referenced OFFICE.dll PIA)
-# NOTE: Extensibility.cs MUST be included (inline compiled) - NOT referenced as external PIA.
-# Reason: PIA only exists in GAC on machines with Visual Studio installed. On user machines
-# without VS, CLR cannot resolve IDTExtensibility2 type -> QueryInterface silently fails ->
-# OnConnection never called -> add-in doesn't load (symptom: log shows "Constructor called"
-# but no "OnConnection started").
+# - Extensibility.cs (use GAC PIA instead, see reference below)
+# Reason for NOT inlining Extensibility.cs: user machines with Office/VS installed have
+# Extensibility.dll PIA in GAC (v7.0.3300.0__b03f5f7f11d50a3a). Inlined version has different
+# assembly identity (no version, no PublicKeyToken), so CLR treats them as different types
+# even with same GUID -> QueryInterface(IDTExtensibility2) fails -> OnConnection never called.
+# Solution: reference the PIA. It's in GAC on all machines with Office Developer Tools or VS.
+# For machines without PIA, we ship Extensibility.dll alongside and OnAssemblyResolve loads it.
 $csFiles = Get-ChildItem -Path $addinDir -Recurse -Filter '*.cs' -ErrorAction SilentlyContinue |
     Where-Object {
         $_.FullName -notmatch '\\(obj|bin)\\' -and
         $_.Name -ne 'DeepExcelRibbon.cs' -and
-        $_.Name -ne 'OfficeInterop.cs'
+        $_.Name -ne 'OfficeInterop.cs' -and
+        $_.Name -ne 'Extensibility.cs'
     } |
     ForEach-Object { $_.FullName }
 
-Write-Host "Compiling $($csFiles.Count) files (excluded OfficeInterop.cs, DeepExcelRibbon.cs; included Extensibility.cs)..."
+Write-Host "Compiling $($csFiles.Count) files (excluded OfficeInterop.cs, Extensibility.cs, DeepExcelRibbon.cs)..."
 
 # 构建参数
 $args = @(
@@ -48,6 +51,7 @@ $args = @(
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll"',
+    '/reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll"',
     '/reference:"C:\Windows\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll"',
     "/reference:`"$outDir\Microsoft.Web.WebView2.WinForms.dll`"",
     "/reference:`"$outDir\Microsoft.Web.WebView2.Core.dll`"",
