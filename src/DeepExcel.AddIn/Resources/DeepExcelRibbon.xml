@@ -5,7 +5,7 @@
       <tab id="tabDeepExcel" label="DeepExcel" insertAfterMso="TabHome">
         <group id="grpTools" label="AI Agent">
           <button id="btnTogglePanel" label="打开面板" size="large"
-                  imageMso="InsertFunction"
+                  imageMso="WindowUnhide"
                   onAction="OnTogglePanel"
                   screentip="打开 DeepExcel AI 面板"
                   supertip="在面板中输入你的需求，AI 会自动帮你处理 Excel。"/>

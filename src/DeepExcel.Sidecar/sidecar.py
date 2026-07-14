@@ -560,10 +560,14 @@ _had_partial_text = False
 _tool_calls_in_turn = 0
 _collected_text = ""
 
+# ★ 压缩检测：记录上一轮 context usage percentage。
+# autocompact 触发后 percentage 会突然下降，通过比较前后值检测压缩发生。
+_prev_context_percentage = None
 
-async def handle_sdk_message(response):
+
+async def handle_sdk_message(response, client=None):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
-    global _had_partial_text, _tool_calls_in_turn, _collected_text
+    global _had_partial_text, _tool_calls_in_turn, _collected_text, _prev_context_percentage
     if isinstance(response, StreamEvent):
         evt = response.event if isinstance(response.event, dict) else {}
         if evt.get("type") == "content_block_delta":
@@ -604,6 +608,26 @@ async def handle_sdk_message(response):
             "input_tokens": in_tok,
             "output_tokens": out_tok,
         })
+        # ★ 压缩检测：每轮结束后查 context usage，percentage 突然下降说明 autocompact 发生了。
+        # SDK 无 isCompactSummary 标记，只能通过 percentage 下降检测（阈值：下降超 40%）。
+        if client is not None:
+            try:
+                context_usage = await client.get_context_usage()
+                # ContextUsageResponse 可能是 dict 或对象，统一取 percentage
+                if isinstance(context_usage, dict):
+                    curr_pct = context_usage.get("percentage", 0)
+                else:
+                    curr_pct = getattr(context_usage, "percentage", 0)
+                if _prev_context_percentage is not None and curr_pct < _prev_context_percentage * 0.6:
+                    await write_message({
+                        "type": "compacted",
+                        "prev_percentage": _prev_context_percentage,
+                        "curr_percentage": curr_pct,
+                    })
+                _prev_context_percentage = curr_pct
+            except Exception as ctx_e:
+                sys.stderr.write(f"[sidecar] get_context_usage failed: {type(ctx_e).__name__}: {ctx_e}\n")
+                sys.stderr.flush()
 
 
 async def run_agent_loop(client, supports_vision: bool = True, model: str = "", base_url: str = ""):
@@ -715,7 +739,7 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
 
                 try:
                     async for response in client.receive_response():
-                        await handle_sdk_message(response)
+                        await handle_sdk_message(response, client)
                 except Exception as inner_e:
                     sys.stderr.write(f"[sidecar] receive_response exception: {type(inner_e).__name__}: {inner_e}\n")
                     sys.stderr.flush()

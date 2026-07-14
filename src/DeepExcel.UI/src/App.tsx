@@ -183,6 +183,13 @@ export default function App() {
         // 从输入框上方 slide-up 显示抽屉，不阻塞 Excel UI 线程
         const { request_id, tool, args } = data.payload
         setPermission({ visible: true, requestId: request_id, tool, args })
+      } else if (data.type === 'compacted') {
+        // ★ autocompact 触发：插入压缩提示卡，让用户知道发生了上下文压缩
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: '对话已自动压缩，保留了关键上下文。',
+          type: 'compacted'
+        }])
       } else if (data.type === 'error') {
         clearLoadingTimeout()
         // ★ 同样重置所有 streaming 状态

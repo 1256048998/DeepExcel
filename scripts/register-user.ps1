@@ -1,4 +1,4 @@
-﻿# DeepExcel User-Scope Registration Script
+# DeepExcel User-Scope Registration Script
 # Registers the AddIn for the current user only (no admin required)
 
 param(
@@ -7,6 +7,21 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
+
+# ★ 路径合规检查：中文/空格/括号路径会导致 .NET CLR CodeBase 加载失败
+if ($scriptDir -match '[\u4e00-\u9fff]') {
+    Write-Host "ERROR: Path contains Chinese characters. .NET CLR cannot load assemblies from such paths." -ForegroundColor Red
+    Write-Host "  Current path: $scriptDir" -ForegroundColor Yellow
+    Write-Host "  Please move this folder to an ASCII-only path (e.g. C:\DeepExcel) and rerun." -ForegroundColor Yellow
+    exit 1
+}
+if ($scriptDir -match '[\(\)]') {
+    Write-Host "WARN: Path contains parentheses. This may cause CodeBase parsing issues." -ForegroundColor Yellow
+    Write-Host "  Current path: $scriptDir" -ForegroundColor Gray
+}
+if ($scriptDir -like '*Desktop*' -or $scriptDir -like '*Downloads*') {
+    Write-Host "WARN: Running from Desktop/Downloads is not recommended. Consider C:\DeepExcel." -ForegroundColor Yellow
+}
 
 # Find DLL next to this script first (release package layout),
 # then fall back to the dev folder structure.
@@ -33,6 +48,17 @@ if (-not $dllPath) {
 $dllPath = Resolve-Path $dllPath
 Write-Host "AddIn DLL: $dllPath" -ForegroundColor Cyan
 
+# ★ 从 DLL 读取 Assembly 版本（替代硬编码 0.2.4.0）
+try {
+    $asmName = [System.Reflection.AssemblyName]::GetAssemblyName($dllPath)
+    $asmVersion = $asmName.Version.ToString()
+    $assemblyValue = "DeepExcel.AddIn, Version=$asmVersion, Culture=neutral, PublicKeyToken=null"
+    Write-Host "Assembly version: $asmVersion" -ForegroundColor Cyan
+} catch {
+    Write-Host "WARN: Cannot read assembly version from DLL, using fallback 0.2.4.0" -ForegroundColor Yellow
+    $assemblyValue = "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null"
+}
+
 # Remove Mark of the Web (MOTW) from downloaded files.
 # DLLs extracted from a ZIP downloaded online carry an internet-zone mark;
 # the Excel Trust Center silently blocks unsigned add-ins with this mark,
@@ -40,7 +66,7 @@ Write-Host "AddIn DLL: $dllPath" -ForegroundColor Cyan
 $scriptRoot = Split-Path -Parent $dllPath
 Write-Host "Unblocking files (removing Mark of the Web)..." -ForegroundColor Gray
 $unblocked = 0
-Get-ChildItem -Path $scriptRoot -Recurse -File -Include *.dll,*.exe,*.ps1,*.config,*.py,*.html,*.js,*.css | ForEach-Object {
+Get-ChildItem -Path $scriptRoot -Recurse -File -Include *.dll,*.exe,*.ps1,*.config,*.py,*.html,*.js,*.css,*.txt | ForEach-Object {
     if (Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
         try {
             Unblock-File -Path $_.FullName -ErrorAction Stop
@@ -62,7 +88,7 @@ $progId = "DeepExcel.AddIn"
 $addinName = "DeepExcel.AddIn"
 
 function Register-ComClass {
-    param([string]$clsid, [string]$progId, [string]$dllPath, [string]$className)
+    param([string]$clsid, [string]$progId, [string]$dllPath, [string]$className, [string]$assemblyValue)
 
     # Write both 64-bit and 32-bit (WOW6432Node) registry views.
     # The AnyCPU managed DLL loads in both 32/64-bit Excel, but 32-bit Excel
@@ -78,6 +104,10 @@ function Register-ComClass {
         "HKCU:\Software\Classes\WOW6432Node\$progId"
     )
 
+    # .NET Component Category GUID — RegAsm writes this; without it some Excel
+    # builds refuse to enumerate the CLSID as a valid .NET COM component.
+    $dotNetCat = "{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}"
+
     foreach ($hkcuClsid in $clsidViews) {
         if (-not (Test-Path $hkcuClsid)) {
             New-Item -Path $hkcuClsid -Force | Out-Null
@@ -89,11 +119,24 @@ function Register-ComClass {
             New-Item -Path $inproc32 -Force | Out-Null
         }
         Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
-        Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null" -Force
+        Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value $assemblyValue -Force
         Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
         Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
         Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force
         Set-ItemProperty -Path $inproc32 -Name "ThreadingModel" -Value "Both" -Force
+
+        # ★ Implemented Categories (.NET) — 全新系统上缺失会导致 COM 不可见
+        $catPath = Join-Path $hkcuClsid "Implemented Categories\$dotNetCat"
+        if (-not (Test-Path $catPath)) {
+            New-Item -Path $catPath -Force | Out-Null
+        }
+
+        # ★ ProgId 反向映射 (CLSID -> ProgID) — RegAsm 会写，手动注册必须补上
+        $progIdSubPath = Join-Path $hkcuClsid "ProgId"
+        if (-not (Test-Path $progIdSubPath)) {
+            New-Item -Path $progIdSubPath -Force | Out-Null
+        }
+        Set-ItemProperty -Path $progIdSubPath -Name "(default)" -Value $progId -Force
     }
 
     foreach ($hkcuProgId in $progIdViews) {
@@ -166,15 +209,46 @@ if ($Unregister) {
     Unregister-ExcelAddIn -progId $progId
     Unregister-ComClass -clsid $clsid -progId $progId
     Unregister-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId
+    # ★ 同时清理 HKLM 旧版残留（需要管理员权限，失败忽略）
+    foreach ($p in @(
+        "HKLM:\SOFTWARE\Classes\CLSID\$clsid",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
+        "HKLM:\SOFTWARE\Classes\CLSID\$taskPaneClsid",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$taskPaneClsid",
+        "HKLM:\SOFTWARE\Microsoft\Office\16.0\Excel\Addins\$progId"
+    )) {
+        if (Test-Path $p) {
+            try { Remove-Item -Path $p -Recurse -Force -ErrorAction Stop } catch { }
+        }
+    }
     Write-Host "Unregistration complete!" -ForegroundColor Green
 } else {
     Write-Host "[Register] DeepExcel.AddIn..." -ForegroundColor Yellow
 
-    Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass
+    # ★ 清理 HKLM 中旧版安装器残留（RegAsm 写入，需管理员权限，失败忽略）
+    # 避免 HKCU/HKLM 指向不同 DLL 导致 .NET CLR 加载冲突
+    foreach ($p in @(
+        "HKLM:\SOFTWARE\Classes\CLSID\$clsid",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
+        "HKLM:\SOFTWARE\Classes\CLSID\$taskPaneClsid",
+        "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$taskPaneClsid",
+        "HKLM:\SOFTWARE\Microsoft\Office\16.0\Excel\Addins\$progId"
+    )) {
+        if (Test-Path $p) {
+            try {
+                Remove-Item -Path $p -Recurse -Force -ErrorAction Stop
+                Write-Host "  Cleaned HKLM residual: $p" -ForegroundColor Gray
+            } catch {
+                Write-Host "  WARN: Cannot clean HKLM (admin needed): $p" -ForegroundColor DarkGray
+            }
+        }
+    }
+
+    Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass -assemblyValue $assemblyValue
     Register-ExcelAddIn -progId $progId -friendlyName "DeepExcel AI AddIn" -dllPath $dllPath
 
     # Register TaskPaneControl (required by CustomTaskPane)
-    Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass
+    Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass -assemblyValue $assemblyValue
     Write-Host "TaskPaneControl registered (ProgID: $taskPaneProgId)" -ForegroundColor Gray
 
     # Post-registration verification: confirm key registry entries were written.
@@ -245,6 +319,24 @@ if ($Unregister) {
     # PowerShell bitness.
     $psBitness = if ([IntPtr]::Size -eq 8) { "64-bit" } else { "32-bit" }
     Write-Host "  [INFO] PowerShell: $psBitness" -ForegroundColor Gray
+
+    # ★ COM 实例化验证：尝试通过 ProgID 创建 COM 对象
+    Write-Host ""
+    Write-Host "=== COM Instantiation Test ===" -ForegroundColor Yellow
+    try {
+        $type = [Type]::GetTypeFromProgID($progId)
+        if ($type) {
+            $obj = [Activator]::CreateInstance($type)
+            Write-Host "  [OK] COM instantiation succeeded (ProgID: $progId)" -ForegroundColor Green
+            # 托管对象可能是 __ComObject 也可能不是，释放失败忽略
+            try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($obj) | Out-Null } catch { }
+        } else {
+            Write-Host "  [WARN] ProgID not found in registry (may require Excel restart to take effect)" -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "  [WARN] COM instantiation failed: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "         This can be normal if Excel is currently running. Close Excel and retry." -ForegroundColor Gray
+    }
 
     Write-Host ""
     if ($verifyOk) {

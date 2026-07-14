@@ -1325,6 +1325,13 @@ namespace DeepExcel.AddIn.Bridge
         {
             foreach (var kvp in _sessions)
             {
+                try
+                {
+                    // ★ 兜底保存：OnWorkbookBeforeClose 未触发时（如 Excel 直接关闭），
+                    // 确保当前对话写入磁盘，避免丢失
+                    kvp.Value.SaveCurrentConversation();
+                }
+                catch (Exception ex) { Logger.Instance.Warning("MessageBridge", $"Save on dispose failed for {kvp.Value.WorkbookName}: {ex.Message}"); }
                 try { kvp.Value.Dispose(); }
                 catch (Exception ex) { Logger.Instance.Error("MessageBridge", $"Dispose session {kvp.Value.WorkbookName} failed", ex); }
             }

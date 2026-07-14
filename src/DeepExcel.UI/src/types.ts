@@ -4,7 +4,7 @@ export type Message = {
   streaming?: boolean
   toolName?: string
   result?: string
-  type?: 'clarify'
+  type?: 'clarify' | 'compacted'
   options?: string[]
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并
