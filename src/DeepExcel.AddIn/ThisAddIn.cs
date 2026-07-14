@@ -16,8 +16,8 @@ namespace DeepExcel.AddIn
     [ComVisible(true)]
     [Guid("A1B2C3D4-E5F6-4F4B-9A5F-9B3C1D2E3F4A")]
     [ProgId("DeepExcel.AddIn")]
-    [ClassInterface(ClassInterfaceType.AutoDispatch)]
-    [ComDefaultInterface(typeof(IDTExtensibility2))]
+    [ClassInterface(ClassInterfaceType.None)]
+    [ComDefaultInterface(typeof(IRibbonCallbacks))]
     public class ThisAddIn : Object, IDTExtensibility2, IRibbonExtensibility, IRibbonCallbacks, ICustomTaskPaneConsumer
     {
         private Microsoft.Office.Interop.Excel.Application _excelApp;
