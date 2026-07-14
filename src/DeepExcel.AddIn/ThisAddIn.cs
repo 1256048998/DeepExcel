@@ -45,6 +45,35 @@ namespace DeepExcel.AddIn
         private int? _originalAccessVbom;
         private bool _vbaSecurityModified;
 
+        // ★ 静态构造函数：在实例构造函数之前运行，用于诊断类型加载阶段的问题
+        static ThisAddIn()
+        {
+            LogStatic("Static constructor started");
+            try
+            {
+                // 验证 IDTExtensibility2 接口是否可解析
+                var idtType = typeof(IDTExtensibility2);
+                LogStatic("IDTExtensibility2 type resolved: " + idtType.AssemblyQualifiedName);
+                LogStatic("IDTExtensibility2 GUID: " + idtType.GUID);
+
+                // 验证 ThisAddIn 实现的接口列表
+                var implType = typeof(ThisAddIn);
+                var ifaces = implType.GetInterfaces();
+                foreach (var iface in ifaces)
+                {
+                    var guidAttr = iface.GetCustomAttributes(typeof(GuidAttribute), false);
+                    string guid = guidAttr.Length > 0 ? ((GuidAttribute)guidAttr[0]).Value : "(no Guid)";
+                    LogStatic("Interface: " + iface.FullName + " GUID={" + guid + "} Assembly=" + iface.Assembly.GetName().Name);
+                }
+            }
+            catch (Exception ex)
+            {
+                LogStatic("Static constructor FAILED: " + ex.GetType().Name + " - " + ex.Message);
+                LogStatic("Stack: " + ex.StackTrace);
+            }
+            LogStatic("Static constructor completed");
+        }
+
         public ThisAddIn()
         {
             Log("Constructor called - COM object being created");
@@ -68,17 +97,6 @@ namespace DeepExcel.AddIn
             {
                 var name = new AssemblyName(args.Name);
                 string dir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-
-                // Extensibility.dll fallback: if GAC PIA not available, load from DLL directory
-                if (name.Name == "Extensibility")
-                {
-                    string extPath = Path.Combine(dir, "Extensibility.dll");
-                    if (File.Exists(extPath))
-                    {
-                        Log("OnAssemblyResolve: loading Extensibility from " + extPath);
-                        return Assembly.LoadFrom(extPath);
-                    }
-                }
 
                 // System.Runtime.CompilerServices.Unsafe 4.0.4.1 → 6.0.0.0 重定向
                 if (name.Name == "System.Runtime.CompilerServices.Unsafe")
@@ -136,7 +154,37 @@ namespace DeepExcel.AddIn
 
                 // ★ H-2 修复：对日志内容做基本转义，防止日志注入（移除换行符）
                 string safeMessage = (message ?? "").Replace("\r", " ").Replace("\n", " ");
-                File.AppendAllText(logPath, "[" + DateTime.Now + "] " + safeMessage + Environment.NewLine);
+                string line = "[" + DateTime.Now + "] " + safeMessage + Environment.NewLine;
+                File.AppendAllText(logPath, line);
+                // ★ 诊断 fallback：同时写入 %TEMP%，防止 %APPDATA% 权限问题导致日志丢失
+                try
+                {
+                    string tempLog = Path.Combine(Path.GetTempPath(), "DeepExcel_Load.log");
+                    File.AppendAllText(tempLog, line);
+                }
+                catch { }
+            }
+            catch { }
+        }
+
+        // ★ 静态日志方法：静态构造函数中使用，独立于实例 Log 方法
+        private static void LogStatic(string message)
+        {
+            string line = "[" + DateTime.Now + "] [STATIC] " + (message ?? "").Replace("\r", " ").Replace("\n", " ") + Environment.NewLine;
+            // 写入 %APPDATA%
+            try
+            {
+                string logDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "DeepExcel", "logs");
+                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+                File.AppendAllText(Path.Combine(logDir, "DeepExcel_Load.log"), line);
+            }
+            catch { }
+            // 写入 %TEMP% (fallback)
+            try
+            {
+                File.AppendAllText(Path.Combine(Path.GetTempPath(), "DeepExcel_Load.log"), line);
             }
             catch { }
         }

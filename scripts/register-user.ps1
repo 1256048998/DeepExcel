@@ -187,6 +187,50 @@ function Register-ExcelAddIn {
     Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Force
     Set-ItemProperty -Path $addinKey -Name "CommandLineSafe" -Value 0 -Force
     Set-ItemProperty -Path $addinKey -Name "Location" -Value $dllPath -Force
+
+    # DoNotDisableAddinList: prevents Excel from soft-disabling this add-in on load failure
+    # Without this, Excel sets LoadBehavior=2 after any startup error, hiding the add-in
+    $resiliencyKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Resiliency"
+    if (-not (Test-Path $resiliencyKey)) {
+        New-Item -Path $resiliencyKey -Force | Out-Null
+    }
+    $doNotDisableKey = "$resiliencyKey\DoNotDisableAddinList"
+    if (-not (Test-Path $doNotDisableKey)) {
+        New-Item -Path $doNotDisableKey -Force | Out-Null
+    }
+    Set-ItemProperty -Path $doNotDisableKey -Name $progId -Value 1 -Force
+    Write-Host "  Set DoNotDisableAddinList for $progId" -ForegroundColor Gray
+
+    # Clean CrashingAddinList (another Excel blocklist besides DisabledItems)
+    $crashingKey = "$resiliencyKey\CrashingAddinList"
+    if (Test-Path $crashingKey) {
+        try {
+            $crashVal = (Get-ItemProperty $crashingKey -Name $progId -ErrorAction SilentlyContinue).$progId
+            if ($null -ne $crashVal) {
+                Remove-ItemProperty -Path $crashingKey -Name $progId -Force -ErrorAction Stop
+                Write-Host "  Cleaned CrashingAddinList entry for $progId" -ForegroundColor Gray
+            }
+        } catch { }
+    }
+
+    # Clean DisabledItems (Excel's main blocklist, binary entries, scan and remove DeepExcel refs)
+    $disabledKey = "$resiliencyKey\DisabledItems"
+    if (Test-Path $disabledKey) {
+        try {
+            $items = Get-ChildItem $disabledKey -ErrorAction Stop
+            foreach ($item in $items) {
+                try {
+                    $data = (Get-ItemProperty $item.PSPath -ErrorAction SilentlyContinue)
+                    $allVals = $data.PSObject.Properties | Where-Object { $_.Name -notmatch "^PS" } | ForEach-Object { "$($_.Name)=$($_.Value)" }
+                    $joined = $allVals -join " "
+                    if ($joined -match "DeepExcel|DeepExcel\.AddIn") {
+                        Remove-Item -Path $item.PSPath -Force -ErrorAction Stop
+                        Write-Host "  Cleaned DisabledItems entry (matched DeepExcel)" -ForegroundColor Gray
+                    }
+                } catch { }
+            }
+        } catch { }
+    }
 }
 
 function Unregister-ExcelAddIn {
@@ -328,7 +372,35 @@ if ($Unregister) {
         if ($type) {
             $obj = [Activator]::CreateInstance($type)
             Write-Host "  [OK] COM instantiation succeeded (ProgID: $progId)" -ForegroundColor Green
-            # Managed object may or may not be __ComObject, release failure is ignored
+
+            # QI diagnostic: check if the managed type implements IDTExtensibility2
+            try {
+                $asm = [System.Reflection.Assembly]::LoadFrom($dllPath)
+                $managedType = $asm.GetType("DeepExcel.AddIn.ThisAddIn")
+                if ($managedType) {
+                    $idtType = $managedType.GetInterface("IDTExtensibility2")
+                    if ($idtType) {
+                        Write-Host "  [OK] ThisAddIn implements IDTExtensibility2" -ForegroundColor Green
+                        Write-Host "       Interface GUID: $($idtType.GUID)" -ForegroundColor Gray
+                        Write-Host "       Interface Assembly: $($idtType.Assembly.GetName().Name) v$($idtType.Assembly.GetName().Version)" -ForegroundColor Gray
+                    } else {
+                        Write-Host "  [FAIL] ThisAddIn does NOT implement IDTExtensibility2!" -ForegroundColor Red
+                    }
+                    # List all COM interfaces
+                    $ifaces = $managedType.GetInterfaces()
+                    foreach ($iface in $ifaces) {
+                        $guidAttrs = $iface.GetCustomAttributes([System.Runtime.InteropServices.GuidAttribute], $false)
+                        if ($guidAttrs.Length -gt 0) {
+                            Write-Host "       COM iface: $($iface.FullName) GUID={$($guidAttrs[0].Value)}" -ForegroundColor Gray
+                        }
+                    }
+                } else {
+                    Write-Host "  [WARN] Type 'DeepExcel.AddIn.ThisAddIn' not found in assembly" -ForegroundColor Yellow
+                }
+            } catch {
+                Write-Host "  [WARN] QI diagnostic failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+
             try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($obj) | Out-Null } catch { }
         } else {
             Write-Host "  [WARN] ProgID not found in registry (may require Excel restart to take effect)" -ForegroundColor Yellow
@@ -336,6 +408,23 @@ if ($Unregister) {
     } catch {
         Write-Host "  [WARN] COM instantiation failed: $($_.Exception.Message)" -ForegroundColor Yellow
         Write-Host "         This can be normal if Excel is currently running. Close Excel and retry." -ForegroundColor Gray
+    }
+
+    # Display recent log file contents for diagnostics
+    Write-Host ""
+    Write-Host "=== Log File Check ===" -ForegroundColor Yellow
+    $logPath = "$env:APPDATA\DeepExcel\logs\DeepExcel_Load.log"
+    $tempLogPath = "$env:TEMP\DeepExcel_Load.log"
+    foreach ($lp in @($logPath, $tempLogPath)) {
+        if (Test-Path $lp) {
+            $logContent = Get-Content $lp -Tail 20 -ErrorAction SilentlyContinue
+            if ($logContent) {
+                Write-Host "  Log: $lp" -ForegroundColor Gray
+                foreach ($line in $logContent) {
+                    Write-Host "    $line" -ForegroundColor DarkGray
+                }
+            }
+        }
     }
 
     Write-Host ""

@@ -66,7 +66,6 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   /reference:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll" ^
   /reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll" ^
   /reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll" ^
-  /reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll" ^
   /reference:"%WINDIR%\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll" ^
   /reference:"%OUTDIR%\Microsoft.Web.WebView2.WinForms.dll" ^
   /reference:"%OUTDIR%\Microsoft.Web.WebView2.Core.dll" ^
@@ -108,6 +107,7 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   "%ADDINDIR%\Sidecar\JsonConverters.cs" ^
   "%ADDINDIR%\TaskPaneControl.cs" ^
   "%ADDINDIR%\IRibbonCallbacks.cs" ^
+  "%ADDINDIR%\Interop\Extensibility.cs" ^
   "%ADDINDIR%\ThisAddIn.cs" ^
   "%ADDINDIR%\Tools\ChartTool.cs" ^
   "%ADDINDIR%\Tools\DataCleaner.cs" ^

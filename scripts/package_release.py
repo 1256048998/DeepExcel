@@ -19,7 +19,6 @@ SCRIPTS = os.path.join(ROOT, "scripts")
 INCLUDE_ITEMS = [
     "DeepExcel.AddIn.dll",
     "DeepExcel.AddIn.dll.config",
-    "Extensibility.dll",  # PIA fallback for machines without VS/Office Dev Tools
     "Microsoft.Bcl.AsyncInterfaces.dll",
     "Microsoft.Web.WebView2.Core.dll",
     "Microsoft.Web.WebView2.WinForms.dll",
