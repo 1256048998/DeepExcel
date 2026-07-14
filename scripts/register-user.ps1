@@ -1,4 +1,4 @@
-# DeepExcel User-Scope Registration Script
+﻿# DeepExcel User-Scope Registration Script
 # Registers the AddIn for the current user only (no admin required)
 
 param(
@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
 
-# ★ 路径合规检查：中文/空格/括号路径会导致 .NET CLR CodeBase 加载失败
+# Path compliance check: Chinese/space/parenthesis paths break .NET CLR CodeBase loading
 if ($scriptDir -match '[\u4e00-\u9fff]') {
     Write-Host "ERROR: Path contains Chinese characters. .NET CLR cannot load assemblies from such paths." -ForegroundColor Red
     Write-Host "  Current path: $scriptDir" -ForegroundColor Yellow
@@ -48,7 +48,7 @@ if (-not $dllPath) {
 $dllPath = Resolve-Path $dllPath
 Write-Host "AddIn DLL: $dllPath" -ForegroundColor Cyan
 
-# ★ 从 DLL 读取 Assembly 版本（替代硬编码 0.2.4.0）
+# Read Assembly version from DLL (replaces hardcoded 0.2.4.0)
 try {
     $asmName = [System.Reflection.AssemblyName]::GetAssemblyName($dllPath)
     $asmVersion = $asmName.Version.ToString()
@@ -104,7 +104,7 @@ function Register-ComClass {
         "HKCU:\Software\Classes\WOW6432Node\$progId"
     )
 
-    # .NET Component Category GUID — RegAsm writes this; without it some Excel
+    # .NET Component Category GUID - RegAsm writes this; without it some Excel
     # builds refuse to enumerate the CLSID as a valid .NET COM component.
     $dotNetCat = "{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}"
 
@@ -125,13 +125,13 @@ function Register-ComClass {
         Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force
         Set-ItemProperty -Path $inproc32 -Name "ThreadingModel" -Value "Both" -Force
 
-        # ★ Implemented Categories (.NET) — 全新系统上缺失会导致 COM 不可见
+        # Implemented Categories (.NET) - missing on fresh systems breaks COM visibility
         $catPath = Join-Path $hkcuClsid "Implemented Categories\$dotNetCat"
         if (-not (Test-Path $catPath)) {
             New-Item -Path $catPath -Force | Out-Null
         }
 
-        # ★ ProgId 反向映射 (CLSID -> ProgID) — RegAsm 会写，手动注册必须补上
+        # ProgId reverse mapping (CLSID -> ProgID) - RegAsm writes this, manual reg must add it
         $progIdSubPath = Join-Path $hkcuClsid "ProgId"
         if (-not (Test-Path $progIdSubPath)) {
             New-Item -Path $progIdSubPath -Force | Out-Null
@@ -174,14 +174,14 @@ function Unregister-ComClass {
 
 function Register-ExcelAddIn {
     param([string]$progId, [string]$friendlyName, [string]$dllPath)
-    
+
     # Excel 16.0 (2016/2019/365) uses versioned path
     $addinKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
-    
+
     if (-not (Test-Path $addinKey)) {
         New-Item -Path $addinKey -Force | Out-Null
     }
-    
+
     Set-ItemProperty -Path $addinKey -Name "Description" -Value $friendlyName -Force
     Set-ItemProperty -Path $addinKey -Name "FriendlyName" -Value $friendlyName -Force
     Set-ItemProperty -Path $addinKey -Name "LoadBehavior" -Value 3 -Force
@@ -191,9 +191,9 @@ function Register-ExcelAddIn {
 
 function Unregister-ExcelAddIn {
     param([string]$progId)
-    
+
     $addinKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
-    
+
     if (Test-Path $addinKey) {
         Remove-Item -Path $addinKey -Recurse -Force
     }
@@ -209,7 +209,7 @@ if ($Unregister) {
     Unregister-ExcelAddIn -progId $progId
     Unregister-ComClass -clsid $clsid -progId $progId
     Unregister-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId
-    # ★ 同时清理 HKLM 旧版残留（需要管理员权限，失败忽略）
+    # Also clean HKLM residuals from old installer (needs admin, ignore failures)
     foreach ($p in @(
         "HKLM:\SOFTWARE\Classes\CLSID\$clsid",
         "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
@@ -225,8 +225,8 @@ if ($Unregister) {
 } else {
     Write-Host "[Register] DeepExcel.AddIn..." -ForegroundColor Yellow
 
-    # ★ 清理 HKLM 中旧版安装器残留（RegAsm 写入，需管理员权限，失败忽略）
-    # 避免 HKCU/HKLM 指向不同 DLL 导致 .NET CLR 加载冲突
+    # Clean HKLM residuals from old RegAsm installer (needs admin, ignore failures)
+    # Prevents HKCU/HKLM pointing to different DLLs causing .NET CLR load conflict
     foreach ($p in @(
         "HKLM:\SOFTWARE\Classes\CLSID\$clsid",
         "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
@@ -320,7 +320,7 @@ if ($Unregister) {
     $psBitness = if ([IntPtr]::Size -eq 8) { "64-bit" } else { "32-bit" }
     Write-Host "  [INFO] PowerShell: $psBitness" -ForegroundColor Gray
 
-    # ★ COM 实例化验证：尝试通过 ProgID 创建 COM 对象
+    # COM instantiation test: try creating COM object via ProgID
     Write-Host ""
     Write-Host "=== COM Instantiation Test ===" -ForegroundColor Yellow
     try {
@@ -328,7 +328,7 @@ if ($Unregister) {
         if ($type) {
             $obj = [Activator]::CreateInstance($type)
             Write-Host "  [OK] COM instantiation succeeded (ProgID: $progId)" -ForegroundColor Green
-            # 托管对象可能是 __ComObject 也可能不是，释放失败忽略
+            # Managed object may or may not be __ComObject, release failure is ignored
             try { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($obj) | Out-Null } catch { }
         } else {
             Write-Host "  [WARN] ProgID not found in registry (may require Excel restart to take effect)" -ForegroundColor Yellow
