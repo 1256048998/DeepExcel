@@ -76,7 +76,61 @@ namespace DeepExcel.AddIn
 
         public ThisAddIn()
         {
-            Log("Constructor called - COM object being created");
+            // ★ 记录调用进程名，区分 Excel vs PowerShell vs 其他
+            string procName = "unknown";
+            try
+            {
+                procName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
+            } catch { }
+            Log("Constructor called - COM object being created (Process=" + procName + ", PID=" + System.Diagnostics.Process.GetCurrentProcess().Id + ")");
+
+            // ★ 关键诊断：自 QI 测试 - 在构造函数中测试 CLR 能否获取 IDTExtensibility2 接口
+            try
+            {
+                Type idtType = typeof(IDTExtensibility2);
+                Log("  [QI-Diag] IDTExtensibility2 type: " + idtType.AssemblyQualifiedName);
+                Log("  [QI-Diag] IDTExtensibility2 GUID: " + idtType.GUID);
+                Log("  [QI-Diag] IDTExtensibility2 Assembly: " + idtType.Assembly.FullName);
+
+                // 列出 ThisAddIn 实现的所有接口
+                Type thisType = typeof(ThisAddIn);
+                Type[] ifaces = thisType.GetInterfaces();
+                Log("  [QI-Diag] ThisAddIn implements " + ifaces.Length + " interfaces:");
+                foreach (Type iface in ifaces)
+                {
+                    object[] guidAttrs = iface.GetCustomAttributes(typeof(GuidAttribute), false);
+                    string guidStr = guidAttrs.Length > 0 ? ((GuidAttribute)guidAttrs[0]).Value : "(no Guid)";
+                    Log("    - " + iface.FullName + " GUID={" + guidStr + "} Assembly=" + iface.Assembly.GetName().Name);
+                }
+
+                // 尝试通过 COM 方式 QI 自己
+                IntPtr punk = Marshal.GetIUnknownForObject(this);
+                try
+                {
+                    Guid iid = idtType.GUID;
+                    IntPtr pExt;
+                    int hr = Marshal.QueryInterface(punk, ref iid, out pExt);
+                    Log("  [QI-Diag] Marshal.QueryInterface(IDTExtensibility2) hr=0x" + hr.ToString("X8"));
+                    if (hr == 0)
+                    {
+                        Log("  [QI-Diag] QI SUCCEEDED - Excel should be able to get IDTExtensibility2");
+                        Marshal.Release(pExt);
+                    }
+                    else
+                    {
+                        Log("  [QI-Diag] QI FAILED! This is the root cause - Excel cannot get IDTExtensibility2");
+                    }
+                }
+                finally
+                {
+                    Marshal.Release(punk);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("  [QI-Diag] Diagnostic failed: " + ex.GetType().Name + " - " + ex.Message);
+            }
+
             // COM 加载项不读取 .dll.config，需手动处理 binding redirect
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
             // ★ 诊断：捕获所有 first-chance 异常，防止静默崩溃导致 OnConnection 不被调用
