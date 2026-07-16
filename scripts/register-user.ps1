@@ -269,23 +269,46 @@ if ($Unregister) {
 } else {
     Write-Host "[Register] DeepExcel.AddIn..." -ForegroundColor Yellow
 
-    # Clean HKLM residuals from old RegAsm installer (needs admin, ignore failures)
-    # Prevents HKCU/HKLM pointing to different DLLs causing .NET CLR load conflict
-    foreach ($p in @(
+    # Clean HKLM residuals from old RegAsm installer.
+    # CRITICAL: HKLM has HIGHER priority than HKCU for COM CLSID resolution.
+    # If HKLM residual exists and points to an old DLL path, Excel will load the old DLL
+    # regardless of HKCU settings. This was the root cause of v0.3.4-v0.4.15 all failing
+    # to load on user machines (see project_memory.md).
+    $hklmResiduals = @(
         "HKLM:\SOFTWARE\Classes\CLSID\$clsid",
         "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$clsid",
         "HKLM:\SOFTWARE\Classes\CLSID\$taskPaneClsid",
         "HKLM:\SOFTWARE\Classes\WOW6432Node\CLSID\$taskPaneClsid",
         "HKLM:\SOFTWARE\Microsoft\Office\16.0\Excel\Addins\$progId"
-    )) {
+    )
+    $blockedResiduals = @()
+    foreach ($p in $hklmResiduals) {
         if (Test-Path $p) {
             try {
                 Remove-Item -Path $p -Recurse -Force -ErrorAction Stop
                 Write-Host "  Cleaned HKLM residual: $p" -ForegroundColor Gray
             } catch {
-                Write-Host "  WARN: Cannot clean HKLM (admin needed): $p" -ForegroundColor DarkGray
+                Write-Host "  BLOCKED: Cannot clean HKLM (admin needed): $p" -ForegroundColor Red
+                $blockedResiduals += $p
             }
         }
+    }
+    if ($blockedResiduals.Count -gt 0) {
+        Write-Host ""
+        Write-Host "========================================" -ForegroundColor Red
+        Write-Host "CRITICAL: HKLM residuals cannot be cleaned!" -ForegroundColor Red
+        Write-Host "========================================" -ForegroundColor Red
+        Write-Host "HKLM has HIGHER priority than HKCU for COM CLSID." -ForegroundColor Yellow
+        Write-Host "Excel will load the OLD DLL from HKLM, ignoring the new DLL in HKCU." -ForegroundColor Yellow
+        Write-Host "This is the root cause of the add-in not loading." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "SOLUTION: Right-click PowerShell -> Run as Administrator -> rerun this script." -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Blocked paths:" -ForegroundColor Yellow
+        foreach ($p in $blockedResiduals) { Write-Host "  $p" -ForegroundColor Gray }
+        Write-Host ""
+        Write-Host "Aborting registration to avoid false success." -ForegroundColor Red
+        exit 2
     }
 
     Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass -assemblyValue $assemblyValue
