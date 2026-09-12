@@ -13,6 +13,35 @@ namespace DeepExcel.AddIn.Config
     {
         public string CurrentProvider { get; set; } = "anthropic";
         public string CurrentModel { get; set; } = "claude-sonnet-5";
+        /// <summary>★ 全局默认厂商（前端 provider 列表排序最前，输入框下拉默认值）。
+        /// 全局唯一，用户在 ModelConfigPanel 切换"设为默认"开关时更新。
+        /// 旧 config 无此字段默认 null，前端回退到 CurrentProvider。</summary>
+        public string DefaultProvider { get; set; } = null;
+
+        /// <summary>★ 内置模型目录版本号。MigrateConfig 只在本地版本落后时才把
+        /// LatestModelCatalog 推送到各 provider，避免每次启动都覆盖用户自己整理的模型列表/排序。
+        /// 旧 config.json 无此字段默认 0，会执行一次升级后写入当前版本。</summary>
+        public int ModelCatalogVersion { get; set; } = 0;
+
+        /// <summary>★ 当前内置模型目录版本。新增/淘汰内置模型时 +1，
+        /// 让老用户在下次启动时拿到新目录（用户已自定义的 provider 除外）。</summary>
+        public const int CurrentModelCatalogVersion = 2;
+
+        /// <summary>
+        /// ★ 合并模型列表：保留用户已有的全部模型和顺序，只把内置目录里缺的追加到末尾。
+        /// 永远不删——内置目录滞后于厂商，拿它裁剪用户列表只会把能用的模型弄丢。
+        /// </summary>
+        internal static string[] MergeModels(string[] existing, string[] catalogModels)
+        {
+            var merged = new List<string>(existing ?? new string[0]);
+            foreach (var model in catalogModels ?? new string[0])
+            {
+                if (string.IsNullOrWhiteSpace(model)) continue;
+                if (!merged.Exists(m => string.Equals(m, model, StringComparison.OrdinalIgnoreCase)))
+                    merged.Add(model);
+            }
+            return merged.ToArray();
+        }
 
         public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
         public GeneralSettings General { get; set; } = new();
@@ -21,13 +50,14 @@ namespace DeepExcel.AddIn.Config
         public static AppConfig CreateDefault()
         {
             var cfg = new AppConfig();
+            cfg.ModelCatalogVersion = CurrentModelCatalogVersion;
             cfg.Providers["anthropic"] = new ProviderConfig
             {
                 Type = "anthropic",
                 DisplayName = "Claude (Anthropic)",
                 ApiKey = "",
                 BaseUrl = "https://api.anthropic.com",
-                Models = new[] { "claude-sonnet-5", "claude-opus-4.8", "claude-haiku-5" },
+                Models = new[] { "claude-sonnet-5", "claude-opus-5", "claude-opus-4.8", "claude-haiku-5", "claude-haiku-4-5-20251001" },
                 DefaultModel = "claude-sonnet-5",
                 SupportsVision = true
             };
@@ -138,6 +168,14 @@ namespace DeepExcel.AddIn.Config
         /// <summary>★ 该 provider 是否支持 vision（图片识别）。用于附件含图片时自动切换。
         /// anthropic/stepfun=true, deepseek=false。旧 config.json 无此字段时默认 false。</summary>
         public bool SupportsVision { get; set; } = false;
+        /// <summary>★ 最近一次测试连接是否成功。前端 provider 列表的圆点据此显示，
+        /// 而非 hasApiKey（hasApiKey 只反映 .crypt 文件存在，不代表 key 有效）。
+        /// test_api_key 成功置 true，失败/删除 key 时置 false。旧 config 无此字段默认 false。</summary>
+        public bool LastTestSuccess { get; set; } = false;
+        /// <summary>★ 用户是否自己整理过该 provider 的模型列表（导入/新增/删除/拖拽排序）。
+        /// 为 true 时 MigrateConfig 不再用内置目录覆盖 Models/DefaultModel，
+        /// 否则用户在"模型优先级"里排好的顺序会在下次启动时被重置。</summary>
+        public bool ModelsCustomized { get; set; } = false;
     }
 
     public class GeneralSettings
@@ -296,14 +334,42 @@ namespace DeepExcel.AddIn.Config
         }
 
         /// <summary>
-        /// ★ 最新模型目录（2026-07 更新）。
-        /// 用于 MigrateConfig 强制更新各 provider 的 Models 列表，保证用户看到最新模型名称。
-        /// 添加新模型或淘汰旧模型时只需修改此处。
+        /// ★ 保存某个 provider 的"已选模型"有序列表（数组顺序即优先级，第 0 个为主模型）。
+        /// 由前端"模型优先级"列表（导入 / 新增 / 删除 / 拖拽排序）驱动。
+        /// 同时把 DefaultModel 对齐到主模型，并标记 ModelsCustomized=true，
+        /// 使 MigrateConfig 不再用内置目录覆盖该列表。
+        /// </summary>
+        /// <returns>false 表示 provider 不存在或模型列表为空</returns>
+        public bool UpdateProviderModels(string providerKey, string[] models)
+        {
+            if (string.IsNullOrEmpty(providerKey) || !_config.Providers.ContainsKey(providerKey)) return false;
+            if (models == null || models.Length == 0) return false;
+
+            var p = _config.Providers[providerKey];
+            p.Models = models;
+            p.DefaultModel = models[0];
+            p.ModelsCustomized = true;
+
+            // 当前正在使用的模型如果被移出列表，回落到主模型，避免请求到一个已删除的模型名
+            if (_config.CurrentProvider == providerKey &&
+                Array.IndexOf(models, _config.CurrentModel) < 0)
+            {
+                _config.CurrentModel = models[0];
+            }
+            Save();
+            return true;
+        }
+
+        /// <summary>
+        /// ★ 内置模型目录。
+        /// MigrateConfig 只用它**补充**用户还没有的模型，绝不删除用户已有的模型名——
+        /// 厂商模型迭代很快，内置目录一定滞后于现实，用它去裁剪用户的列表只会误伤。
+        /// 新增模型直接往这里加即可。
         /// </summary>
         private static readonly Dictionary<string, (string[] Models, string DefaultModel)> LatestModelCatalog =
             new Dictionary<string, (string[], string)>
         {
-            ["anthropic"] = (new[] { "claude-sonnet-5", "claude-opus-4.8", "claude-haiku-5" }, "claude-sonnet-5"),
+            ["anthropic"] = (new[] { "claude-sonnet-5", "claude-opus-5", "claude-opus-4.8", "claude-haiku-5", "claude-haiku-4-5-20251001" }, "claude-sonnet-5"),
             ["deepseek"] = (new[] { "deepseek-v4-pro", "deepseek-v4-flash" }, "deepseek-v4-pro"),
             ["stepfun"] = (new[] { "step-3.7-flash", "step-3.5-flash" }, "step-3.7-flash"),
             ["openai"] = (new[] { "gpt-5.5", "gpt-5.5-pro", "gpt-5" }, "gpt-5.5"),
@@ -491,40 +557,66 @@ namespace DeepExcel.AddIn.Config
                 changed = true;
             }
 
-            // 5. ★ 模型目录升级：强制更新各 provider 的 Models 和 DefaultModel 到最新列表
-            //    保留用户的 ApiKey/BaseUrl/SupportsVision 等配置，只更新模型名称
-            //    如果当前选中的模型不在新列表中，迁移到对应 provider 的 DefaultModel
+            // 5. ★ 模型目录升级：只做"补充"，不做"覆盖"。
+            //    修复的两个历史问题：
+            //      a) 以前每次启动都无条件覆盖 Models，用户从厂商拉到的最新模型、
+            //         手工排好的优先级顺序，下次打开 Excel 就被内置列表冲掉；
+            //      b) 内置目录一旦精简，用户原本能用的模型名会凭空消失。
+            //    现在的规则：
+            //      - ModelsCustomized=true（用户自己导入/排序过）→ 完全不碰；
+            //      - 其余 provider → 把内置目录里缺的模型追加到末尾，已有的一个都不删；
+            //      - 版本号只用来控制"每次目录更新最多补充一次"，避免反复追加用户删掉的条目。
             var catalogUpdates = GetLatestModelCatalog();
+            bool catalogOutdated = config.ModelCatalogVersion < AppConfig.CurrentModelCatalogVersion;
             foreach (var kvp in catalogUpdates)
             {
                 if (!config.Providers.ContainsKey(kvp.Key)) continue;
                 var p = config.Providers[kvp.Key];
-                var newModels = kvp.Value.Models;
-                var newDefault = kvp.Value.DefaultModel;
+                var catalogModels = kvp.Value.Models;
 
-                // 检查是否需要更新（模型列表不同）
-                bool needsUpdate = p.Models == null || p.Models.Length != newModels.Length;
-                if (!needsUpdate)
+                bool isEmpty = p.Models == null || p.Models.Length == 0;
+                if (isEmpty)
                 {
-                    for (int i = 0; i < newModels.Length; i++)
-                    {
-                        if (p.Models[i] != newModels[i]) { needsUpdate = true; break; }
-                    }
+                    // 列表为空：直接用内置目录兜底，避免下拉框空白
+                    p.Models = catalogModels;
+                    if (string.IsNullOrEmpty(p.DefaultModel) ||
+                        Array.IndexOf(p.Models, p.DefaultModel) < 0)
+                        p.DefaultModel = kvp.Value.DefaultModel;
+                    changed = true;
+                    continue;
                 }
 
-                if (needsUpdate)
+                // 用户自己整理过的列表不碰；目录版本没更新也不补
+                if (p.ModelsCustomized || !catalogOutdated) continue;
+
+                var merged = AppConfig.MergeModels(p.Models, catalogModels);
+                if (merged.Length != p.Models.Length)
                 {
-                    // 记录旧模型用于日志
-                    var oldModels = p.Models == null ? "" : string.Join(",", p.Models);
-                    p.Models = newModels;
-                    p.DefaultModel = newDefault;
-                    // 如果当前正在用这个 provider 且 currentModel 不在新列表中，迁移到新默认模型
-                    if (config.CurrentProvider == kvp.Key &&
-                        !string.IsNullOrEmpty(config.CurrentModel) &&
-                        Array.IndexOf(newModels, config.CurrentModel) < 0)
-                    {
-                        config.CurrentModel = newDefault;
-                    }
+                    p.Models = merged;
+                    changed = true;
+                }
+                if (string.IsNullOrEmpty(p.DefaultModel) ||
+                    Array.IndexOf(p.Models, p.DefaultModel) < 0)
+                {
+                    p.DefaultModel = p.Models[0];
+                    changed = true;
+                }
+            }
+            if (catalogOutdated)
+            {
+                config.ModelCatalogVersion = AppConfig.CurrentModelCatalogVersion;
+                changed = true;
+            }
+
+            // CurrentModel 落在列表外时回落到该 provider 的主模型（不因目录变动而失效）
+            if (config.Providers.ContainsKey(config.CurrentProvider))
+            {
+                var currentProviderConfig = config.Providers[config.CurrentProvider];
+                if (currentProviderConfig.Models != null && currentProviderConfig.Models.Length > 0 &&
+                    (string.IsNullOrEmpty(config.CurrentModel) ||
+                     Array.IndexOf(currentProviderConfig.Models, config.CurrentModel) < 0))
+                {
+                    config.CurrentModel = currentProviderConfig.DefaultModel ?? currentProviderConfig.Models[0];
                     changed = true;
                 }
             }

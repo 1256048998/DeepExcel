@@ -1,28 +1,63 @@
+param([string]$OutputDir)
+
 $ErrorActionPreference = 'Stop'
 $baseDir = Resolve-Path "$PSScriptRoot\.."
 $addinDir = Join-Path $baseDir 'src\DeepExcel.AddIn'
-$outDir = Join-Path $addinDir 'bin\Release'
+$outDir = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $addinDir 'bin\Release' }
 $packages = Join-Path $baseDir 'packages'
 $csc = Join-Path $packages 'Microsoft.Net.Compilers.3.8.0\tools\csc.exe'
 
-# Collect .cs files, excluding:
-# - bin/obj directories
-# - DeepExcelRibbon.cs (VSTO dependency)
-# - OfficeInterop.cs (conflicts with referenced OFFICE.dll PIA)
-# Extensibility.cs MUST be inlined (not referenced as external PIA) because:
-#   1. PIA only exists in GAC on machines with VS installed, user machines don't have it
-#   2. CLR needs IDTExtensibility2 type resolved BEFORE static constructor runs, so
-#      AssemblyResolve fallback is too late (timing issue)
-#   3. Inline definition with matching GUID + InterfaceType has consistent COM vtable layout
+if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
+
+# Keep bin\Release reproducible.  WebView2's managed AnyCPU loader resolves the
+# native DLL from runtimes\win-<arch>\native.  A root-level x86 loader shadows
+# that mechanism and makes the pane fail in 64-bit Excel.
+$webViewPackage = Join-Path $packages 'Microsoft.Web.WebView2.1.0.2420.47'
+$dependencyCopies = @{
+    (Join-Path $webViewPackage 'lib\net45\Microsoft.Web.WebView2.WinForms.dll') = (Join-Path $outDir 'Microsoft.Web.WebView2.WinForms.dll')
+    (Join-Path $webViewPackage 'lib\net45\Microsoft.Web.WebView2.Core.dll') = (Join-Path $outDir 'Microsoft.Web.WebView2.Core.dll')
+    (Join-Path $packages 'System.Text.Json.8.0.0\lib\net462\System.Text.Json.dll') = (Join-Path $outDir 'System.Text.Json.dll')
+    (Join-Path $packages 'System.Text.Encodings.Web.8.0.0\lib\net462\System.Text.Encodings.Web.dll') = (Join-Path $outDir 'System.Text.Encodings.Web.dll')
+    (Join-Path $packages 'Microsoft.Bcl.AsyncInterfaces.8.0.0\lib\net462\Microsoft.Bcl.AsyncInterfaces.dll') = (Join-Path $outDir 'Microsoft.Bcl.AsyncInterfaces.dll')
+    (Join-Path $packages 'System.Buffers.4.5.1\lib\net461\System.Buffers.dll') = (Join-Path $outDir 'System.Buffers.dll')
+    (Join-Path $packages 'System.Memory.4.5.5\lib\net461\System.Memory.dll') = (Join-Path $outDir 'System.Memory.dll')
+    (Join-Path $packages 'System.Numerics.Vectors.4.5.0\lib\net46\System.Numerics.Vectors.dll') = (Join-Path $outDir 'System.Numerics.Vectors.dll')
+    (Join-Path $packages 'System.Runtime.CompilerServices.Unsafe.6.0.0\lib\net461\System.Runtime.CompilerServices.Unsafe.dll') = (Join-Path $outDir 'System.Runtime.CompilerServices.Unsafe.dll')
+    (Join-Path $packages 'System.Threading.Tasks.Extensions.4.5.4\lib\portable-net45+win8+wp8+wpa81\System.Threading.Tasks.Extensions.dll') = (Join-Path $outDir 'System.Threading.Tasks.Extensions.dll')
+    (Join-Path $packages 'System.ValueTuple.4.5.0\lib\net47\System.ValueTuple.dll') = (Join-Path $outDir 'System.ValueTuple.dll')
+    'C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll' = (Join-Path $outDir 'Extensibility.dll')
+    'C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll' = (Join-Path $outDir 'Microsoft.Office.Interop.Excel.dll')
+    'C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll' = (Join-Path $outDir 'OFFICE.dll')
+    'C:\Windows\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll' = (Join-Path $outDir 'Microsoft.Vbe.Interop.dll')
+}
+foreach ($source in $dependencyCopies.Keys) {
+    if (-not (Test-Path $source)) { throw "Required build dependency not found: $source" }
+    Copy-Item -LiteralPath $source -Destination $dependencyCopies[$source] -Force
+}
+
+foreach ($arch in @('x86', 'x64', 'arm64')) {
+    $nativeSource = Join-Path $webViewPackage "runtimes\win-$arch\native\WebView2Loader.dll"
+    $nativeDest = Join-Path $outDir "runtimes\win-$arch\native"
+    if (-not (Test-Path $nativeSource)) { throw "Missing WebView2 $arch loader: $nativeSource" }
+    New-Item -ItemType Directory -Path $nativeDest -Force | Out-Null
+    Copy-Item -LiteralPath $nativeSource -Destination (Join-Path $nativeDest 'WebView2Loader.dll') -Force
+}
+$legacyRootLoader = Join-Path $outDir 'WebView2Loader.dll'
+if (Test-Path $legacyRootLoader) { Remove-Item -LiteralPath $legacyRootLoader -Force }
+
+# 收集 .cs 文件，排除：
+# - bin/obj 目录
+# - DeepExcelRibbon.cs（VSTO 依赖）
+# - Interop 目录（自定义 interop 会与引用的 Extensibility.dll/OFFICE.dll 冲突，导致 CS0436 和 QueryInterface 失败）
 $csFiles = Get-ChildItem -Path $addinDir -Recurse -Filter '*.cs' -ErrorAction SilentlyContinue |
     Where-Object {
         $_.FullName -notmatch '\\(obj|bin)\\' -and
         $_.Name -ne 'DeepExcelRibbon.cs' -and
-        $_.Name -ne 'OfficeInterop.cs'
+        $_.FullName -notmatch '\\Interop\\'
     } |
     ForEach-Object { $_.FullName }
 
-Write-Host "Compiling $($csFiles.Count) files (excluded OfficeInterop.cs, DeepExcelRibbon.cs; inlined Extensibility.cs)..."
+Write-Host "Compiling $($csFiles.Count) files (excluded Interop/, DeepExcelRibbon.cs)..."
 
 # 构建参数
 $args = @(
@@ -48,6 +83,7 @@ $args = @(
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll"',
+    '/reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll"',
     '/reference:"C:\Windows\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll"',
     "/reference:`"$outDir\Microsoft.Web.WebView2.WinForms.dll`"",
     "/reference:`"$outDir\Microsoft.Web.WebView2.Core.dll`"",
@@ -84,6 +120,18 @@ Get-Item "$outDir\DeepExcel.AddIn.dll" | Select-Object Name, Length, LastWriteTi
 
 # 复制 sidecar 文件
 $srcSidecar = Join-Path $baseDir 'src\DeepExcel.Sidecar'
+$sidecarOutput = [IO.Path]::GetFullPath((Join-Path $outDir 'sidecar'))
+$expectedOutputParent = [IO.Path]::GetFullPath($outDir).TrimEnd('\')
+if ((Split-Path -Parent $sidecarOutput).TrimEnd('\') -ne $expectedOutputParent) {
+    throw "Refusing to recreate unexpected sidecar output: $sidecarOutput"
+}
+if (Test-Path -LiteralPath $sidecarOutput) {
+    if ((Get-Item -LiteralPath $sidecarOutput -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "Refusing to recreate reparse-point sidecar output: $sidecarOutput"
+    }
+    Remove-Item -LiteralPath $sidecarOutput -Recurse -Force
+}
+New-Item -ItemType Directory -Path $sidecarOutput -Force | Out-Null
 Copy-Item (Join-Path $srcSidecar 'sidecar.py') (Join-Path $outDir 'sidecar') -Force
 Copy-Item (Join-Path $srcSidecar 'ipc.py') (Join-Path $outDir 'sidecar') -Force
 Copy-Item (Join-Path $srcSidecar 'excel_tools.py') (Join-Path $outDir 'sidecar') -Force
@@ -93,11 +141,22 @@ Write-Host "Sidecar files copied"
 # ★ 复制 WebViewAssets 前端构建产物到 bin\Release
 # csc.exe 直接编译不执行 msbuild AfterBuild target，必须手动复制
 $srcAssets = Join-Path $addinDir 'WebViewAssets'
-$dstAssets = Join-Path $outDir 'WebViewAssets'
+$dstAssets = [IO.Path]::GetFullPath((Join-Path $outDir 'WebViewAssets'))
 if (Test-Path $srcAssets) {
-    if (-not (Test-Path $dstAssets)) { New-Item -ItemType Directory -Path $dstAssets -Force | Out-Null }
+    if ((Split-Path -Parent $dstAssets).TrimEnd('\') -ne $expectedOutputParent) {
+        throw "Refusing to recreate unexpected WebViewAssets output: $dstAssets"
+    }
+    if (Test-Path -LiteralPath $dstAssets) {
+        if ((Get-Item -LiteralPath $dstAssets -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Refusing to recreate reparse-point WebViewAssets output: $dstAssets"
+        }
+        Remove-Item -LiteralPath $dstAssets -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $dstAssets -Force | Out-Null
     Copy-Item (Join-Path $srcAssets '*') $dstAssets -Recurse -Force
     Write-Host "WebViewAssets copied to bin\Release"
 } else {
-    Write-Host "WARNING: WebViewAssets source not found at $srcAssets"
+    throw "WebViewAssets source not found at $srcAssets"
 }
+
+Copy-Item (Join-Path $addinDir 'App.config') (Join-Path $outDir 'DeepExcel.AddIn.dll.config') -Force

@@ -1,14 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
 import { sendToHost, sendToHostWithResponse, onHostMessage } from './bridge'
 import { MessageList } from './components/MessageList'
-import { InputArea } from './components/InputArea'
+import { InputArea, ModelOption } from './components/InputArea'
 import { HistoryPanel } from './components/HistoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
 import { PermissionDrawer } from './components/PermissionDrawer'
 import { PromptManager } from './components/PromptManager'
-import type { Message } from './types'
+import type { Message, ModelConfig } from './types'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 
@@ -43,6 +43,15 @@ export default function App() {
   const [conversationsOpen, setConversationsOpen] = useState(false)
   // ★ 模型配置弹窗（Ribbon 按钮触发）
   const [modelConfigOpen, setModelConfigOpen] = useState(false)
+  // ★ 输入框模型选择下拉：modelConfig（已连接 provider 列表）+ selectedModel（用户当前选择）
+  // 挂载时加载一次，ModelConfigPanel 关闭时刷新（用户可能在面板里测试连接/切换默认厂商）
+  const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
+  const [selectedModel, setSelectedModel] = useState<string>('')  // `${provider}::${model}` 格式
+  // ★ 待切换模型：用户在下拉选择新模型后，等当前对话输出结束（stream_end）后才真正切换。
+  // 避免在对话进行中切换导致上下文丢失或 sidecar 状态不一致。
+  const pendingModelSwitchRef = useRef<{ provider: string; model: string } | null>(null)
+  // ★ 用户是否在对话区下拉里手动选过模型：没选过就一直跟随"主模型"
+  const userPickedModelRef = useRef(false)
   // ★ AI Native 权限确认抽屉（PreToolUse hook 请求时显示）
   const [permission, setPermission] = useState<PermissionState>({ visible: false })
   // ★ 提示词/技能：localStorage 持久化（用户级，跨工作簿保留），/ 触发下拉 + 管理面板
@@ -88,6 +97,136 @@ export default function App() {
   useEffect(() => {
     setPrompts(loadPrompts())
   }, [])
+
+  // ★ 加载模型配置：构建输入框下拉的 modelOptions，初始化 selectedModel
+  // 挂载时加载一次；ModelConfigPanel 关闭后刷新（用户可能测试了新连接/切换默认厂商）
+  const loadModelConfig = async () => {
+    try {
+      const resp = await sendToHostWithResponse(
+        { type: 'get_model_config', payload: {} },
+        'model_config'
+      )
+      if (resp?.type === 'model_config' && resp.payload?.providers) {
+        const cfg = resp.payload as ModelConfig
+        setModelConfig(cfg)
+
+        // ★ 对话区默认模型 = 默认厂商的主模型（模型优先级列表第 1 项）。
+        // 修复：以前只在 selectedModel 为空时才初始化，用户在模型配置里调整了
+        // 优先级顺序后，对话区下拉仍停留在旧模型，看起来就是"默认用的不是主模型"。
+        // 现在的规则：
+        //   - 用户没在对话区下拉里手动选过 → 始终跟随主模型（面板里拖完就生效）
+        //   - 手动选过 → 尊重他的选择，但该模型被删/厂商被移除时回落到主模型
+        const defaultProvider = cfg.defaultProvider || cfg.currentProvider
+        const p = cfg.providers?.[defaultProvider]
+        if (p) {
+          const primaryModel = p.defaultModel || p.models[0] || ''
+          const primaryKey = primaryModel ? `${defaultProvider}::${primaryModel}` : ''
+
+          const sep = selectedModel ? selectedModel.indexOf('::') : -1
+          const pickedProvider = sep > 0 ? selectedModel.slice(0, sep) : ''
+          const pickedModel = sep > 0 ? selectedModel.slice(sep + 2) : ''
+          const stillValid = !!pickedProvider &&
+            !!cfg.providers?.[pickedProvider]?.models?.includes(pickedModel)
+
+          if (primaryKey && (!userPickedModelRef.current || !stillValid)) {
+            setSelectedModel(primaryKey)
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[DeepExcel] loadModelConfig failed', e)
+    }
+  }
+
+  useEffect(() => {
+    loadModelConfig()
+  }, [])
+
+  // ★ ModelConfigPanel 关闭后刷新（用户可能测试连接/切换默认厂商/编辑 key）
+  useEffect(() => {
+    if (!modelConfigOpen) {
+      loadModelConfig()
+    }
+  }, [modelConfigOpen])
+
+  // ★ 从 modelConfig 构造下拉选项：列出已配置 API Key 的 provider 的所有模型。
+  // 注意：圆点仍按 connected（LastTestSuccess && hasApiKey）显示，但下拉只要求 hasApiKey——
+  // 否则默认厂商若未点测试连接就会被隐藏，与"默认厂商低成本模型为默认值"需求冲突。
+  // 顺序：默认厂商在前，其余按 providers 字典序
+  const modelOptions: ModelOption[] = (() => {
+    if (!modelConfig) return []
+    const defaultProvider = modelConfig.defaultProvider || modelConfig.currentProvider
+    const entries = Object.entries(modelConfig.providers)
+    // 默认厂商置顶
+    entries.sort((a, b) => {
+      if (a[0] === defaultProvider) return -1
+      if (b[0] === defaultProvider) return 1
+      return 0
+    })
+    const opts: ModelOption[] = []
+    for (const [key, p] of entries) {
+      if (!p.hasApiKey) continue  // ★ 只列已配 key 的（不强制要求测试通过）
+      for (const m of p.models) {
+        opts.push({
+          provider: key,
+          providerDisplayName: p.displayName,
+          model: m,
+          // 该厂商的主模型（模型优先级列表第 1 项）
+          isPrimary: m === p.defaultModel
+        })
+      }
+    }
+    return opts
+  })()
+
+  // ★ 兜底：selectedModel 指向的模型可能不在选项里（比如该厂商 key 被删了）。
+  // 这时 <select> 会自己显示第一个选项，但 state 还是旧值——显示和实际用的模型不一致。
+  // 统一回落到第一个可用选项，保证"看到什么就是用什么"。
+  const selectedModelInOptions = modelOptions.some(
+    o => `${o.provider}::${o.model}` === selectedModel
+  )
+  const effectiveSelectedModel = selectedModelInOptions
+    ? selectedModel
+    : (modelOptions[0] ? `${modelOptions[0].provider}::${modelOptions[0].model}` : '')
+
+  // ★ 用户在下拉选择新模型：记录到 pendingModelSwitchRef，等 stream_end 后切换。
+  // 不立即发送 switch_model，避免对话进行中切换导致 sidecar 状态不一致。
+  const handleModelChange = (provider: string, model: string) => {
+    const newKey = `${provider}::${model}`
+    userPickedModelRef.current = true  // 之后刷新配置不再强制跟随主模型
+    setSelectedModel(newKey)
+    // 如果选的就是当前已激活的 provider+model，无需切换
+    if (modelConfig && provider === modelConfig.currentProvider && model === modelConfig.currentModel) {
+      pendingModelSwitchRef.current = null
+      return
+    }
+    pendingModelSwitchRef.current = { provider, model }
+  }
+
+  // ★ stream_end 后处理待切换模型：发送 switch_model 给后端真正切换。
+  // 切换成功后刷新 modelConfig（currentProvider/CurrentModel 会更新）
+  const flushPendingModelSwitch = async () => {
+    const pending = pendingModelSwitchRef.current
+    if (!pending) return
+    pendingModelSwitchRef.current = null
+    try {
+      await sendToHostWithResponse(
+        { type: 'switch_model', payload: { provider: pending.provider, model: pending.model } },
+        'model_switched'
+      )
+      // 刷新 modelConfig（currentProvider/currentModel 会同步）
+      await loadModelConfig()
+    } catch (e) {
+      console.warn('[DeepExcel] switch_model failed', e)
+    }
+  }
+
+  // ★ 把 flushPendingModelSwitch 暴露到 ref，避免 onHostMessage useEffect 闭包陷阱
+  // （useEffect 空依赖数组会捕获首次渲染的函数版本，但 ref 始终指向最新版本）
+  const flushPendingModelSwitchRef = useRef(flushPendingModelSwitch)
+  useEffect(() => {
+    flushPendingModelSwitchRef.current = flushPendingModelSwitch
+  })
 
   // ★ 从历史消息保存为提示词/技能：预填 content 并打开管理面板（默认 prompt 类型）
   const handleSaveAsPrompt = (content: string) => {
@@ -142,6 +281,9 @@ export default function App() {
           m.streaming ? { ...m, streaming: false } : m
         ))
         setLoading(false)
+        // ★ 用户在输入框下拉选了新模型：对话输出结束后真正切换。
+        // 切换会在下一条 user_message 时生效，避免当前对话中途切换导致上下文丢失。
+        flushPendingModelSwitchRef.current()
       } else if (data.type === 'tool_call') {
         // Agent 调用工具：合并连续 tool 消息为单个折叠组
         const toolName = data.payload.name
@@ -543,6 +685,9 @@ export default function App() {
         permissionPending={permission.visible}
         prompts={prompts}
         onCreatePrompt={handleCreatePrompt}
+        modelOptions={modelOptions}
+        selectedModel={effectiveSelectedModel}
+        onModelChange={handleModelChange}
       />
 
       <HistoryPanel

@@ -2,26 +2,13 @@
 # Registers the AddIn for the current user only (no admin required)
 
 param(
-    [switch]$Unregister = $false
+    [switch]$Unregister = $false,
+    [switch]$RepairOnly = $false,
+    [switch]$ActivationOnly = $false
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
-
-# Path compliance check: Chinese/space/parenthesis paths break .NET CLR CodeBase loading
-if ($scriptDir -match '[\u4e00-\u9fff]') {
-    Write-Host "ERROR: Path contains Chinese characters. .NET CLR cannot load assemblies from such paths." -ForegroundColor Red
-    Write-Host "  Current path: $scriptDir" -ForegroundColor Yellow
-    Write-Host "  Please move this folder to an ASCII-only path (e.g. C:\DeepExcel) and rerun." -ForegroundColor Yellow
-    exit 1
-}
-if ($scriptDir -match '[\(\)]') {
-    Write-Host "WARN: Path contains parentheses. This may cause CodeBase parsing issues." -ForegroundColor Yellow
-    Write-Host "  Current path: $scriptDir" -ForegroundColor Gray
-}
-if ($scriptDir -like '*Desktop*' -or $scriptDir -like '*Downloads*') {
-    Write-Host "WARN: Running from Desktop/Downloads is not recommended. Consider C:\DeepExcel." -ForegroundColor Yellow
-}
 
 # Find DLL next to this script first (release package layout),
 # then fall back to the dev folder structure.
@@ -55,8 +42,7 @@ try {
     $assemblyValue = "DeepExcel.AddIn, Version=$asmVersion, Culture=neutral, PublicKeyToken=null"
     Write-Host "Assembly version: $asmVersion" -ForegroundColor Cyan
 } catch {
-    Write-Host "WARN: Cannot read assembly version from DLL, using fallback 0.2.4.0" -ForegroundColor Yellow
-    $assemblyValue = "DeepExcel.AddIn, Version=0.2.4.0, Culture=neutral, PublicKeyToken=null"
+    throw "Cannot read the DeepExcel assembly version from '$dllPath': $($_.Exception.Message)"
 }
 
 # Remove Mark of the Web (MOTW) from downloaded files.
@@ -90,93 +76,80 @@ $addinName = "DeepExcel.AddIn"
 function Register-ComClass {
     param([string]$clsid, [string]$progId, [string]$dllPath, [string]$className, [string]$assemblyValue)
 
-    # Write both 64-bit and 32-bit (WOW6432Node) registry views.
-    # The AnyCPU managed DLL loads in both 32/64-bit Excel, but 32-bit Excel
-    # reads HKCU\Software\Classes\WOW6432Node\CLSID while 64-bit reads CLSID.
-    # Writing only one view makes the add-in invisible in the other Excel's
-    # COM Add-ins list.
-    $clsidViews = @(
-        "HKCU:\Software\Classes\CLSID\$clsid",
-        "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
+    # Open the actual registry views. A literal WOW6432Node path written by a
+    # 64-bit process is not equivalent to Registry32 for HKCU\Software\Classes;
+    # 32-bit Office then reports REGDB_E_CLASSNOTREG.
+    $views = @(
+        [Microsoft.Win32.RegistryView]::Registry64,
+        [Microsoft.Win32.RegistryView]::Registry32
     )
-    $progIdViews = @(
-        "HKCU:\Software\Classes\$progId",
-        "HKCU:\Software\Classes\WOW6432Node\$progId"
-    )
-
-    # .NET Component Category GUID - RegAsm writes this; without it some Excel
-    # builds refuse to enumerate the CLSID as a valid .NET COM component.
     $dotNetCat = "{62C8FE65-4EBB-45E7-B440-6E39B2CDBF29}"
+    $codeBase = ([Uri]$dllPath).AbsoluteUri
+    $versionKeyName = ([System.Reflection.AssemblyName]::GetAssemblyName($dllPath)).Version.ToString()
 
-    foreach ($hkcuClsid in $clsidViews) {
-        if (-not (Test-Path $hkcuClsid)) {
-            New-Item -Path $hkcuClsid -Force | Out-Null
-        }
-        Set-ItemProperty -Path $hkcuClsid -Name "(default)" -Value $className -Force
+    foreach ($view in $views) {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+        try {
+            $clsidPath = "Software\Classes\CLSID\$clsid"
+            $inprocPath = "$clsidPath\InprocServer32"
+            try { $base.DeleteSubKeyTree($inprocPath, $false) } catch { }
 
-        $inproc32 = Join-Path $hkcuClsid "InprocServer32"
-        if (-not (Test-Path $inproc32)) {
-            New-Item -Path $inproc32 -Force | Out-Null
-        }
-        Set-ItemProperty -Path $inproc32 -Name "(default)" -Value "mscoree.dll" -Force
-        Set-ItemProperty -Path $inproc32 -Name "Assembly" -Value $assemblyValue -Force
-        Set-ItemProperty -Path $inproc32 -Name "Class" -Value $className -Force
-        Set-ItemProperty -Path $inproc32 -Name "CodeBase" -Value $dllPath -Force
-        Set-ItemProperty -Path $inproc32 -Name "RuntimeVersion" -Value "v4.0.30319" -Force
-        Set-ItemProperty -Path $inproc32 -Name "ThreadingModel" -Value "Both" -Force
+            $key = $base.CreateSubKey($clsidPath, $true)
+            try { $key.SetValue('', $className, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
 
-        # Implemented Categories (.NET) - missing on fresh systems breaks COM visibility
-        $catPath = Join-Path $hkcuClsid "Implemented Categories\$dotNetCat"
-        if (-not (Test-Path $catPath)) {
-            New-Item -Path $catPath -Force | Out-Null
-        }
+            $key = $base.CreateSubKey($inprocPath, $true)
+            try {
+                $key.SetValue('', 'mscoree.dll', [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('Assembly', $assemblyValue, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('Class', $className, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('CodeBase', $codeBase, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('RuntimeVersion', 'v4.0.30319', [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('ThreadingModel', 'Both', [Microsoft.Win32.RegistryValueKind]::String)
+            } finally { $key.Dispose() }
 
-        # ProgId reverse mapping (CLSID -> ProgID) - RegAsm writes this, manual reg must add it
-        $progIdSubPath = Join-Path $hkcuClsid "ProgId"
-        if (-not (Test-Path $progIdSubPath)) {
-            New-Item -Path $progIdSubPath -Force | Out-Null
-        }
-        Set-ItemProperty -Path $progIdSubPath -Name "(default)" -Value $progId -Force
-    }
+            $key = $base.CreateSubKey("$inprocPath\$versionKeyName", $true)
+            try {
+                $key.SetValue('Assembly', $assemblyValue, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('Class', $className, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('CodeBase', $codeBase, [Microsoft.Win32.RegistryValueKind]::String)
+                $key.SetValue('RuntimeVersion', 'v4.0.30319', [Microsoft.Win32.RegistryValueKind]::String)
+            } finally { $key.Dispose() }
 
-    foreach ($hkcuProgId in $progIdViews) {
-        if (-not (Test-Path $hkcuProgId)) {
-            New-Item -Path $hkcuProgId -Force | Out-Null
-        }
-        Set-ItemProperty -Path $hkcuProgId -Name "(default)" -Value $className -Force
+            $key = $base.CreateSubKey("$clsidPath\Implemented Categories\$dotNetCat", $true)
+            $key.Dispose()
+            $key = $base.CreateSubKey("$clsidPath\ProgId", $true)
+            try { $key.SetValue('', $progId, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
 
-        $clsIdKey = Join-Path $hkcuProgId "CLSID"
-        if (-not (Test-Path $clsIdKey)) {
-            New-Item -Path $clsIdKey -Force | Out-Null
+            $progIdPath = "Software\Classes\$progId"
+            $key = $base.CreateSubKey($progIdPath, $true)
+            try { $key.SetValue('', $className, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+            $key = $base.CreateSubKey("$progIdPath\CLSID", $true)
+            try { $key.SetValue('', $clsid, [Microsoft.Win32.RegistryValueKind]::String) } finally { $key.Dispose() }
+        } finally {
+            $base.Dispose()
         }
-        Set-ItemProperty -Path $clsIdKey -Name "(default)" -Value $clsid -Force
     }
 }
 
 function Unregister-ComClass {
     param([string]$clsid, [string]$progId)
 
-    $clsidViews = @(
-        "HKCU:\Software\Classes\CLSID\$clsid",
-        "HKCU:\Software\Classes\WOW6432Node\CLSID\$clsid"
-    )
-    $progIdViews = @(
-        "HKCU:\Software\Classes\$progId",
-        "HKCU:\Software\Classes\WOW6432Node\$progId"
-    )
-    foreach ($p in $clsidViews) {
-        if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
-    }
-    foreach ($p in $progIdViews) {
-        if (Test-Path $p) { Remove-Item -Path $p -Recurse -Force }
+    foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, $view)
+        try {
+            try { $base.DeleteSubKeyTree("Software\Classes\CLSID\$clsid", $false) } catch { }
+            try { $base.DeleteSubKeyTree("Software\Classes\$progId", $false) } catch { }
+        } finally { $base.Dispose() }
     }
 }
 
 function Register-ExcelAddIn {
     param([string]$progId, [string]$friendlyName, [string]$dllPath)
 
-    # Excel 16.0 (2016/2019/365) uses versioned path
-    $addinKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
+    # Office COM add-ins use the application-scoped, unversioned path.
+    # Microsoft documents HKCU\Software\Microsoft\Office\Excel\Addins\<ProgID>.
+    $addinKey = "HKCU:\Software\Microsoft\Office\Excel\Addins\$progId"
 
     if (-not (Test-Path $addinKey)) {
         New-Item -Path $addinKey -Force | Out-Null
@@ -213,21 +186,22 @@ function Register-ExcelAddIn {
         } catch { }
     }
 
-    # Clean DisabledItems (Excel's main blocklist, binary entries, scan and remove DeepExcel refs)
+    # Clean only DisabledItems values that mention DeepExcel. DisabledItems stores
+    # opaque binary registry values, not child keys; deleting the whole key would
+    # re-enable unrelated add-ins and is therefore unsafe.
     $disabledKey = "$resiliencyKey\DisabledItems"
     if (Test-Path $disabledKey) {
         try {
-            $items = Get-ChildItem $disabledKey -ErrorAction Stop
-            foreach ($item in $items) {
-                try {
-                    $data = (Get-ItemProperty $item.PSPath -ErrorAction SilentlyContinue)
-                    $allVals = $data.PSObject.Properties | Where-Object { $_.Name -notmatch "^PS" } | ForEach-Object { "$($_.Name)=$($_.Value)" }
-                    $joined = $allVals -join " "
-                    if ($joined -match "DeepExcel|DeepExcel\.AddIn") {
-                        Remove-Item -Path $item.PSPath -Force -ErrorAction Stop
-                        Write-Host "  Cleaned DisabledItems entry (matched DeepExcel)" -ForegroundColor Gray
-                    }
-                } catch { }
+            $values = Get-ItemProperty -Path $disabledKey -ErrorAction Stop
+            foreach ($property in $values.PSObject.Properties | Where-Object { $_.Name -notmatch '^PS' }) {
+                $bytes = $property.Value
+                if ($bytes -isnot [byte[]]) { continue }
+                $unicode = [Text.Encoding]::Unicode.GetString($bytes)
+                $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+                if (($unicode + ' ' + $ascii) -match 'DeepExcel(\.AddIn)?') {
+                    Remove-ItemProperty -Path $disabledKey -Name $property.Name -Force -ErrorAction Stop
+                    Write-Host "  Cleaned DisabledItems value: $($property.Name)" -ForegroundColor Gray
+                }
             }
         } catch { }
     }
@@ -236,10 +210,29 @@ function Register-ExcelAddIn {
 function Unregister-ExcelAddIn {
     param([string]$progId)
 
-    $addinKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
+    $addinKey = "HKCU:\Software\Microsoft\Office\Excel\Addins\$progId"
 
     if (Test-Path $addinKey) {
         Remove-Item -Path $addinKey -Recurse -Force
+    }
+    $legacyAddinKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
+    if (Test-Path $legacyAddinKey) {
+        Remove-Item -Path $legacyAddinKey -Recurse -Force
+    }
+    $doNotDisableKey = "HKCU:\Software\Microsoft\Office\16.0\Excel\Resiliency\DoNotDisableAddinList"
+    if (Test-Path $doNotDisableKey) {
+        Remove-ItemProperty -Path $doNotDisableKey -Name $progId -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-ComActivation {
+    param([string]$progId)
+    try {
+        $type = [Type]::GetTypeFromProgID($progId, $true)
+        $obj = [Activator]::CreateInstance($type)
+        try { [Runtime.InteropServices.Marshal]::ReleaseComObject($obj) | Out-Null } catch { }
+    } catch {
+        throw "DeepExcel COM activation failed in $([IntPtr]::Size * 8)-bit process: $($_.Exception.Message)"
     }
 }
 
@@ -247,6 +240,21 @@ $clsid = "{A1B2C3D4-E5F6-4F4B-9A5F-9B3C1D2E3F4A}"
 $taskPaneClsid = "{B2C3D4E5-F6A7-404B-9A5F-9B3C1D2E3F4B}"
 $taskPaneProgId = "DeepExcel.AddIn.TaskPaneControl"
 $taskPaneClass = "DeepExcel.AddIn.TaskPaneControl"
+
+if ($ActivationOnly) {
+    Test-ComActivation -progId $progId
+    Write-Host "DeepExcel COM activation verified in $([IntPtr]::Size * 8)-bit process." -ForegroundColor Green
+    exit 0
+}
+
+if ($RepairOnly) {
+    Register-ComClass -clsid $clsid -progId $progId -dllPath $dllPath -className $addInClass -assemblyValue $assemblyValue
+    Register-ComClass -clsid $taskPaneClsid -progId $taskPaneProgId -dllPath $dllPath -className $taskPaneClass -assemblyValue $assemblyValue
+    Register-ExcelAddIn -progId $progId -friendlyName "DeepExcel AI AddIn" -dllPath $dllPath
+    Test-ComActivation -progId $progId
+    Write-Host "Excel COM registration, activation, and resiliency state verified." -ForegroundColor Green
+    exit 0
+}
 
 if ($Unregister) {
     Write-Host "[Unregister] DeepExcel.AddIn..." -ForegroundColor Yellow
@@ -322,7 +330,7 @@ if ($Unregister) {
     Write-Host ""
     Write-Host "=== Verification ===" -ForegroundColor Yellow
     $verifyOk = $true
-    $addinKeyCheck = "HKCU:\Software\Microsoft\Office\16.0\Excel\Addins\$progId"
+    $addinKeyCheck = "HKCU:\Software\Microsoft\Office\Excel\Addins\$progId"
     if (Test-Path $addinKeyCheck) {
         $lb = (Get-ItemProperty $addinKeyCheck -Name LoadBehavior -ErrorAction SilentlyContinue).LoadBehavior
         Write-Host "  [OK] Excel Addin key (LoadBehavior=$lb)" -ForegroundColor Green
@@ -356,7 +364,7 @@ if ($Unregister) {
     try {
         $ndpKey = "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full"
         $release = (Get-ItemProperty $ndpKey -Name Release -ErrorAction Stop).Release
-        if ($release -ge 462834) {
+        if ($release -ge 528040) {
             Write-Host "  [OK] .NET Framework 4.8+ (release=$release)" -ForegroundColor Green
         } else {
             Write-Host "  [FAIL] .NET Framework 4.8 required (found release=$release)" -ForegroundColor Red

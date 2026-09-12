@@ -23,17 +23,19 @@ let listeners: ((msg: HostMessage) => void)[] = []
 const isInWebView = typeof (window as any).chrome !== 'undefined' &&
   (window as any).chrome.webview
 
-/** WPS taskpane 环境（taskpane 在 iframe 中，parent 是 main.js 的窗口） */
+/** WPS taskpane environment. Current WPS exposes Application inside panes. */
 const isInWpsTaskpane = !isInWebView &&
   typeof window !== 'undefined' &&
-  window.parent !== window &&
-  typeof (window as any).wps === 'undefined'  // taskpane 内部没有 wps 全局对象
+  (typeof (window as any).Application !== 'undefined' ||
+   typeof (window as any).wps !== 'undefined' ||
+   window.parent !== window)
 
 /** 开发环境（Vite dev server，无宿主） */
 const isDev = !isInWebView && !isInWpsTaskpane
 
 // ★ 防止重复注册 listener
 let listenerInitialized = false
+let wpsChannel: BroadcastChannel | null = null
 
 function ensureListener() {
   if (listenerInitialized) return
@@ -52,8 +54,20 @@ function ensureListener() {
       }
     })
   } else if (isInWpsTaskpane) {
-    // ★ WPS taskpane: window.addEventListener('message', ...)
-    // main.js 通过 taskpane.postMessage(json) 发送，前端用 window.message 事件接收
+    // WPS task panes are separate browser surfaces, not guaranteed iframes.
+    // BroadcastChannel provides a same-origin bridge to the hidden add-in page.
+    if (typeof BroadcastChannel === 'function') {
+      wpsChannel = new BroadcastChannel('deepexcel-wps')
+      wpsChannel.addEventListener('message', (e: MessageEvent) => {
+        try {
+          const raw = e.data
+          _dispatch(typeof raw === 'string' ? JSON.parse(raw) : raw)
+        } catch (err) {
+          console.error('Parse WPS channel message error:', err, 'raw:', e.data)
+        }
+      })
+    }
+    // Compatibility fallback for WPS builds that embed the pane as an iframe.
     window.addEventListener('message', (e: MessageEvent) => {
       try {
         const raw = e.data
@@ -82,9 +96,13 @@ export async function sendToHost(message: HostMessage): Promise<void> {
     // ★ Excel WebView2: chrome.webview.postMessage
     ;(window as any).chrome.webview.postMessage(message)
   } else if (isInWpsTaskpane) {
-    // ★ WPS taskpane: window.parent.postMessage
-    // main.js 的 _setupTaskpaneMessageListener 接收
-    window.parent.postMessage(message, '*')
+    if (wpsChannel) {
+      wpsChannel.postMessage(message)
+    } else if (window.parent !== window) {
+      window.parent.postMessage(message, '*')
+    } else {
+      _dispatch({ type: 'error', payload: { message: 'WPS 消息桥接不可用，请升级 WPS 后重试。' } })
+    }
   } else {
     // ★ 开发环境：模拟响应
     console.log('[Bridge→Host]', message)
@@ -156,7 +174,62 @@ export const hostType: 'excel' | 'wps' | 'dev' = isInWebView ? 'excel' : isInWps
 
 // ============= 开发环境模拟响应 =============
 
+// ★ 开发环境的模型配置假数据：让"模型配置"弹窗（模型优先级 / 导入模型）在 vite dev 下可调试
+const mockProviders: Record<string, any> = {
+  deepseek: {
+    displayName: 'DeepSeek', type: 'anthropic', baseUrl: 'https://api.deepseek.com/anthropic',
+    defaultModel: 'deepseek-v4-pro', supportsVision: false,
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-flash'],
+    hasApiKey: true, apiKeyPreview: 'sk-5***...cee', connected: true
+  },
+  anthropic: {
+    displayName: 'Claude (Anthropic)', type: 'anthropic', baseUrl: 'https://api.anthropic.com',
+    defaultModel: 'claude-sonnet-5', supportsVision: true,
+    models: ['claude-sonnet-5', 'claude-opus-5', 'claude-opus-4.8', 'claude-haiku-5', 'claude-haiku-4-5-20251001'],
+    hasApiKey: false, apiKeyPreview: '', connected: false
+  }
+}
+
 function mockHostResponse(message: HostMessage) {
+  const emit = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
+
+  switch (message.type) {
+    case 'get_model_config':
+      emit('model_config', {
+        currentProvider: 'deepseek', currentModel: 'deepseek-v4-pro', defaultProvider: 'deepseek',
+        providers: mockProviders,
+        general: { maxRetries: 2, requestTimeoutSeconds: 60, autoCreateSnapshot: true, requireConfirmation: true, maxConversationHistory: 10, maxTurns: 20 },
+        ui: { theme: 'light', language: 'zh-CN', showTokenUsage: true, streamOutput: true }
+      })
+      return
+    case 'set_provider_models': {
+      const { provider, models } = message.payload
+      if (mockProviders[provider]) {
+        mockProviders[provider].models = models
+        mockProviders[provider].defaultModel = models[0]
+      }
+      emit('provider_models_saved', { success: true, models, defaultModel: models[0], currentModel: models[0] })
+      return
+    }
+    case 'refresh_models':
+      emit('models_refreshed', {
+        success: true,
+        models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-flash', 'deepseek-v3.2', 'deepseek-reasoner', 'deepseek-chat'],
+        selected: mockProviders[message.payload.provider]?.models || [],
+        currentModel: 'deepseek-v4-pro'
+      })
+      return
+    case 'test_api_key':
+      emit('api_test_result', { success: true, latencyMs: 420, error: null })
+      return
+    case 'get_api_key':
+      emit('api_key', { apiKey: 'sk-5xxxxxxxxxxxxxxxxxxxxxcee' })
+      return
+    case 'save_model_config':
+      emit('config_saved', { success: true })
+      return
+  }
+
   if (message.type === 'user_message') {
     const content = message.payload.content
 

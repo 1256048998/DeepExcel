@@ -1,249 +1,273 @@
 # DeepExcel
 
-> Excel AI 智能助手 — 让 AI 帮你处理表格数据、生成图表、写公式、做数据分析。
+> 在 Microsoft Excel 和 WPS 表格中使用自然语言读取数据、生成公式、调整格式、制作图表并执行分析任务。
 
-DeepExcel 是一款 Excel / WPS 表格 AI 智能助手加载项，在表格中直接集成 AI 对话能力。选中数据范围，告诉 AI 你想做什么，它会自动操作表格，无需切换窗口。同时支持 Microsoft Excel（COM 加载项）与 WPS Office 表格（JS 加载项）。
+DeepExcel 是一款 Windows 表格 AI 加载项。它把模型对话、表格上下文和可审计的工具调用放在同一个侧边面板中，用户不需要在表格与聊天网页之间反复切换。
 
----
+> [!IMPORTANT]
+> 当前测试包使用自签名证书，仅适合受邀内测，不应公开分发。Microsoft Excel 端已完成真实安装和运行验证；WPS 端仍处于兼容性验证阶段，不同 WPS 版本的 JS 加载项能力可能存在差异。
 
-## ✨ 功能特性
+## 快速开始
 
-- **💬 自然语言操作表格**：用中文描述需求，AI 自动读写单元格、设置格式、生成公式
-- **📊 智能图表**：一句话生成柱状图、折线图、饼图、甘特图等多种图表
-- **🧹 数据清洗**：自动去重、填充缺失值、格式转换、拆分/合并列
-- **🔢 公式助手**：根据需求生成 Excel 公式，解释已有公式
-- **📋 多工作簿隔离**：每个工作簿有独立的 AI 对话上下文，互不干扰
-- **💾 操作快照**：AI 修改前自动创建快照，随时一键回滚
-- **🔐 安全可控**：所有 API Key 使用 DPAPI 加密本地存储，不上传第三方服务器
-- **🌓 亮/暗主题**：支持浅色/深色主题切换
-- **📎 附件支持**：支持上传图片、文档等附件，AI 可识别图片内容
-- **⚡ 常用提示词模板（Slash Commands）**：输入 `/` 快速调用已保存的提示词，支持从历史消息一键保存为常用模板
-- **🧠 提示词与技能管理**：面板右上角统一管理常用提示词和技能模板，数据跨工作簿保留
-- **🐧 WPS Office 兼容**：除 Microsoft Excel 外，同时支持 WPS 表格（ET），共享同一套 AI Agent 与前端 UI
+### 安装内测版
 
----
+1. 获取 `DeepExcel-Internal-v0.4.17.zip`，删除旧的同名 ZIP 和旧解压目录。
+2. 完全退出 Excel、WPS及其后台进程。
+3. 解压 ZIP，首次使用时运行 `Install-Internal-Certificate.cmd`。
+4. 运行 `DeepExcel.Setup.INTERNAL.exe`。
+5. 重新打开 Excel 或 WPS，在功能区选择 **DeepExcel → 打开面板**。
 
-## 🖥️ 系统要求
+安装器按当前 Windows 用户安装，会：
+
+- 注册 32 位和 64 位 Excel COM 加载项；
+- 检查 .NET Framework 4.8 与 WebView2 Runtime；
+- 安装内置 Python 3.11 和 AI Sidecar；
+- 写入 WPS `publish.xml` 节点，并保留其他 WPS 插件配置。
+
+### 配置模型
+
+1. 打开 DeepExcel 面板，点击右上角的模型设置按钮。
+2. 选择模型供应商。
+3. 填写 API Key；需要时修改 Base URL。
+4. 点击 **刷新模型列表**，从供应商接口获取当前可用模型。
+5. 选择模型并点击 **测试连接**。
+6. 点击 **保存并应用**。
+
+如果供应商不提供模型枚举接口，DeepExcel 会保留内置模型列表并显示提示，不会清空原有配置。
+
+> [!NOTE]
+> API Key 使用 Windows DPAPI 按当前用户加密，`config.json` 不保存明文密钥。模型请求仍会发送给用户选择的第三方模型供应商。
+
+### 执行表格任务
+
+在输入框中直接描述目标，例如：
+
+```text
+把 A1:F200 按销售额降序排列，并把前 10 名标成浅绿色。
+```
+
+```text
+根据 Sheet2 的产品编号，用公式补齐当前表的产品名称。
+```
+
+```text
+汇总各地区销售额，并生成一张柱状图。
+```
+
+DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA、Python 或 WPS JSA。高风险操作会请求用户确认。
+
+## 主要能力
+
+| 能力 | Microsoft Excel | WPS 表格 |
+| --- | --- | --- |
+| AI 对话侧边面板 | 支持 | 兼容性验证中 |
+| 读写单元格与区域 | 支持 | 支持的 WPS 版本可用 |
+| 公式、排序、筛选、格式化 | 支持 | 支持的 WPS 版本可用 |
+| 图表与复杂批量操作 | 支持 | 部分能力使用 JSA |
+| VBA | 支持，需要 VBA 工程访问权限 | 不使用 VBA |
+| 操作前快照 | 支持 | 能力受 WPS 宿主限制 |
+| 多工作簿对话隔离 | 支持 | 逐步适配 |
+| 模型列表刷新 | 支持 | 逐步适配 |
+
+其他功能包括流式回复、工具调用状态、操作快照、手动回滚、对话历史、附件、提示词模板、VBA 中文字符串处理和 Sidecar 冷启动诊断。
+
+## 系统要求
 
 | 项目 | 要求 |
-|------|------|
-| 操作系统 | Windows 10 / Windows 11（x64） |
-| 表格软件 | **Microsoft Excel** 2016 或更高版本（推荐 Office 365 / 2021）<br>**或** WPS Office 表格（专业版/企业版推荐，个人版需手动加白名单） |
-| .NET Framework | 4.8 或更高版本（仅 Excel 端需要，Win10/11 通常已预装） |
-| WebView2 Runtime | 仅 Excel 端需要；Win11 自带，Win10 需[手动安装](https://developer.microsoft.com/microsoft-edge/webview2/) |
-| Python | 3.8 或更高版本（用于 AI sidecar，安装包已内置） |
-| 网络连接 | 需要（用于调用 AI 模型 API） |
+| --- | --- |
+| 操作系统 | Windows 10 / Windows 11，x64 |
+| Microsoft Office | Excel 2016 或更高版本，支持 32 位或 64 位 Office |
+| WPS | 支持 `publish.xml` 和 JS 加载项的 WPS 表格版本 |
+| .NET Framework | 4.8 或更高版本，Excel 端需要 |
+| WebView2 Runtime | Excel 端需要，安装器会检测 |
+| 网络 | 调用模型 API 时需要 |
+| Python | 无需用户安装，安装包内置 Python 3.11 |
 
-> 💡 **WPS 用户**：WPS 端采用 JS 加载项架构，无需 .NET Framework 与 WebView2，部署方式见 [docs/README-WPS.md](docs/README-WPS.md)。
+## 模型供应商
 
----
+项目预置 Anthropic、DeepSeek、OpenAI、Kimi、通义千问、智谱、MiniMax、豆包和阶跃星辰等配置，并支持自定义兼容端点。
 
-## 📥 下载与安装
+预置模型名称是发布时的默认目录，不代表供应商实时可用性。建议安装后使用 **刷新模型列表** 获取当前账号可访问的模型；最终可用模型、计费和限额以供应商返回结果为准。
 
-### 第一步：下载安装包
+## 安全与数据
 
-从 [GitHub Releases](https://github.com/1256048998/DeepExcel/releases) 下载最新版本的 ZIP 包（如 `DeepExcel-v0.3.3.zip`）。
+| 路径 | 内容 |
+| --- | --- |
+| `%APPDATA%\DeepExcel\config.json` | 模型、界面和运行配置，不含明文 API Key |
+| `%APPDATA%\DeepExcel\credentials\` | DPAPI 加密的 API Key |
+| `%APPDATA%\DeepExcel\logs\` | 加载项和 Sidecar 日志 |
+| `%LOCALAPPDATA%\DeepExcel\Snapshots\` | 操作快照 |
+| `%LOCALAPPDATA%\DeepExcel\history\` | 工作簿对话历史 |
+| `%LOCALAPPDATA%\DeepExcel\Attachments\` | 会话附件 |
+| `%APPDATA%\kingsoft\wps\jsaddons\` | WPS 加载项文件和 `publish.xml` |
 
-### 第二步：解压
+安全边界：
 
-将 ZIP 包解压到任意目录，例如：
+- API Key 只允许当前 Windows 用户通过 DPAPI 解密；
+- VBA 和 Python 执行经过权限确认与受限操作检查；
+- WPS 清单更新只修改 DeepExcel 节点；
+- 内测自签名证书不等同于公共 CA 代码签名；
+- 使用 AI 修改重要工作簿前，仍建议保留独立备份。
 
-```
-C:\Program Files\DeepExcel\
-```
+## 项目结构
 
-> 建议解压到非系统盘或用户目录，避免权限问题。
-
-### 第三步：注册加载项
-
-1. 进入解压后的目录，找到 `register-user.ps1` 文件
-2. **右键 → 使用 PowerShell 运行**，或在 PowerShell 中执行：
-
-```powershell
-cd "解压后的目录路径"
-powershell -ExecutionPolicy Bypass -File register-user.ps1
-```
-
-3. 看到 `Registration successful!` 即表示注册成功
-
-> 💡 **无需管理员权限**：`register-user.ps1` 使用 HKCU 注册表项，只为当前用户注册。
-
-### 第四步：启动 Excel
-
-打开 Excel，在顶部功能区找到 **DeepExcel** 选项卡，点击 **打开面板** 按钮即可开始使用。
-
----
-
-## 🚀 快速开始
-
-### 1. 配置 AI 模型
-
-首次使用需要配置 API Key：
-
-1. 点击 Excel 功能区的 **模型配置** 按钮
-2. 在左侧选择你的模型提供商（Anthropic / DeepSeek / 智谱 / 通义千问 / Kimi / 豆包 / Stepfun / OpenAI / Minimax / 自定义）
-3. 输入 API Key 和 Base URL（部分提供商已预置默认地址）
-4. 选择模型版本
-5. 点击 **测试连接** 验证配置
-6. 点击 **保存并应用**
-
-> 🔒 **安全提示**：API Key 使用 Windows DPAPI 加密存储在本地，仅当前用户可解密，不会明文保存。
-
-### 2. 开始对话
-
-1. 在 Excel 中打开或创建一个工作簿
-2. 选中你想操作的数据范围（可选）
-3. 点击 **DeepExcel → 打开面板**
-4. 在底部输入框输入你的需求，例如：
-   - "把销售额按降序排列"
-   - "生成一张各地区销售额对比的柱状图"
-   - "用 VLOOKUP 把 Sheet2 的产品名称匹配过来"
-   - "删除重复行，缺失值用 0 填充"
-5. 按回车发送，AI 会自动操作表格
-
-> 💡 **小技巧**：在输入框输入 `/` 可快速调用已保存的常用提示词；鼠标悬停在历史消息上可点击书签图标将其保存为模板，方便下次复用。点击面板右上角的书签图标可统一管理提示词与技能。
-
-### 3. 回滚操作
-
-如果 AI 修改的结果不满意：
-
-- 点击面板顶部的 **📷 快照** 按钮查看历史快照
-- 选择对应快照点击 **回滚** 即可恢复
-
-> ⚠️ AI 每次操作前会自动创建快照，但建议重要数据先手动备份。
-
----
-
-## 🤖 支持的模型提供商
-
-| 提供商 | 预置模型 | 支持视觉 | 备注 |
-|--------|----------|----------|------|
-| Anthropic (Claude) | claude-sonnet-5 / claude-opus-4.8 / claude-haiku-5 | ✅ | 官方接口 |
-| DeepSeek | deepseek-v4-pro / deepseek-v4-flash | ❌ | Anthropic 兼容 |
-| 阶跃星辰 Stepfun | step-3.7-flash / step-3.5-flash | ✅ | 视觉能力强 |
-| OpenAI | gpt-5.5 / gpt-5.5-pro / gpt-5 | ✅ | 官方接口 |
-| Kimi (月之暗面) | kimi-k2.7-code / kimi-k2.6 / kimi-k2-thinking | ✅ | Anthropic 兼容 |
-| 通义千问 (阿里) | qwen3.7-max / qwen3-max / qwen3-coder-plus | ✅ | Anthropic 兼容 |
-| 智谱 GLM | glm-5.2 / glm-5.1 / glm-4.7-flash | ✅ | Anthropic 兼容 |
-| Minimax | MiniMax-M2.5 / MiniMax-M2 | ❌ | Anthropic 兼容 |
-| 豆包 (火山引擎) | doubao-seed-2.1-pro / doubao-seed-2.1 / doubao-seed-1.6 | ✅ | Anthropic 兼容 |
-| 自定义 | 自定义模型 | ❌ | OpenAI 兼容格式 |
-
-> 💡 上传图片附件时，如果当前模型不支持视觉，会自动切换到支持视觉的模型。
-
----
-
-## ⚙️ 配置与数据位置
-
-所有配置和数据都存储在用户目录下，卸载时不会残留系统文件：
-
-```
-%APPDATA%\DeepExcel\
-├── config.json              # 配置文件（不含 API Key 明文）
-├── credentials\             # 加密的 API Key（DPAPI）
-│   └── key_{provider}.crypt
-├── logs\                    # 运行日志
-│   └── deepexcel-YYYYMMDD.log
-├── snapshots\               # 操作快照（用于回滚）
-└── conversations\           # 对话历史
-```
-
----
-
-## 🔧 常见问题
-
-### Q: Excel 里找不到 DeepExcel 选项卡？
-
-**A:** 注册显示成功但选项卡不出现，按以下顺序排查：
-
-1. **重新运行一次 `register-user.ps1`**：最新版脚本会自动解除从互联网下载文件的"Mark of the Web"阻止标记（旧版本脚本无此功能）。这是从 GitHub 下载安装包后选项卡不出现的最常见原因。
-2. 检查是否被禁用：`文件 → 选项 → 加载项 → 管理: 禁用项目 → 转到 → 取消禁用 DeepExcel.AddIn`
-3. 检查 COM 加载项是否勾选：`文件 → 选项 → 加载项 → 管理: COM 加载项 → 转到 → 勾选 DeepExcel.AddIn`
-4. 确认 .NET Framework 4.8 已安装（Win10/11 通常已预装，可在"设置 → 应用"中搜索验证）
-5. **运行诊断脚本**：在解压目录执行 `powershell -ExecutionPolicy Bypass -File diagnose.ps1`，把输出截图发回给开发者，可一次性定位根因（COM 实例化是否成功、Excel 策略是否阻止、是否被加入禁用列表等）
-6. 手动解除阻止：右键 ZIP 包 → 属性 → 勾选"解除阻止" → 确定，然后重新解压并运行 `register-user.ps1`
-7. 查看日志 `%APPDATA%\DeepExcel\logs\` 确认加载项是否启动
-
-### Q: 面板打开是空白/白屏？
-
-**A:** 安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。Win11 已自带，Win10 可能需要手动安装。
-
-### Q: AI 回复很慢或一直转圈？
-
-**A:**
-
-1. 检查网络连接和代理设置
-2. 确认 API Key 正确（点击 **模型配置 → 测试连接**）
-3. 查看日志文件 `%APPDATA%\DeepExcel\logs\` 获取详细错误信息
-
-### Q: 如何卸载？
-
-**A:**
-
-1. 运行 `register-user.ps1 -Unregister` 注销加载项
-2. 删除解压的文件夹
-3. （可选）删除 `%APPDATA%\DeepExcel\` 目录清除所有配置和数据
-
-### Q: API Key 安全吗？
-
-**A:** 安全。API Key 使用 Windows DPAPI（Data Protection API）加密存储，加密密钥绑定当前 Windows 用户账户，只有登录用户才能解密。配置文件中不保存明文密钥。
-
----
-
-## 🛠️ 开发指南
-
-### 项目结构
-
-```
+```text
 DeepExcel/
 ├── src/
-│   ├── DeepExcel.AddIn/        # C# Excel 加载项（COM 互操作 + WebView2）
-│   ├── DeepExcel.Wps/          # WPS 表格 JS 加载项
-│   ├── DeepExcel.Sidecar/      # Python sidecar（AI 对话 + 工具调用）
-│   ├── DeepExcel.UI/           # React + TypeScript 前端界面
-│   └── DeepExcel.Tests/        # C# 单元测试
-├── scripts/                    # 构建、打包、注册脚本
-├── docs/                       # 设计文档
-├── test-data/                  # 测试数据
-└── DeepExcel.sln               # Visual Studio 解决方案
+│   ├── DeepExcel.AddIn/       # Excel COM 加载项、WebView2、表格工具
+│   ├── DeepExcel.UI/          # React + TypeScript 侧边面板
+│   ├── DeepExcel.Sidecar/     # Python AI Agent 与 IPC
+│   ├── DeepExcel.Wps/         # WPS Ribbon、任务窗格与 JSA 工具
+│   └── DeepExcel.Tests/       # 单元测试
+├── scripts/                   # 编译、注册、签名和打包脚本
+├── deploy/                    # Inno Setup 安装器定义
+├── docs/                      # 部署、设计与审计文档
+└── DeepExcel.sln
 ```
 
-### 本地开发
+运行链路：
+
+```text
+用户输入
+  → React 任务窗格
+  → Excel C# Bridge / WPS JS Bridge
+  → Python Sidecar
+  → 模型供应商 API
+  → 结构化工具调用
+  → Excel 或 WPS 表格对象模型
+```
+
+## 本地开发
+
+### 构建前端
 
 ```powershell
-# 1. 前端依赖安装与开发
 cd src\DeepExcel.UI
 npm install
-npm run dev
-
-# 2. C# 编译
-cd ..\..\scripts
-powershell -ExecutionPolicy Bypass -File _compile_only.ps1
-powershell -ExecutionPolicy Bypass -File register-user.ps1
-
-# 3. 运行 Python sidecar（自动启动，无需手动运行）
+npm run build
 ```
 
-### 构建发布包
+### 编译并注册 Excel 加载项
 
 ```powershell
-python scripts\package_release.py --version 0.3.3
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\_compile_only.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\register-user.ps1
 ```
 
-输出目录：`dist\DeepExcel-v0.3.3.zip`
+运行 `_compile_only.ps1` 前应关闭 Excel，避免开发 DLL 被正在运行的 Excel 进程锁定。
 
----
+### 构建 WPS 资源
 
-## 📄 许可证
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-wps.ps1
+```
 
-MIT License
+该命令会构建共享前端、复制 WPS Sidecar，并运行 Ribbon/任务窗格回调冒烟测试。
 
----
+### 构建内置 Python
 
-## 🤝 贡献
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package-python.ps1
+```
 
-欢迎提交 Issue 和 Pull Request！
+Python、pip 和依赖版本由脚本及 `scripts/python-requirements.lock.txt` 固定，并在构建时校验哈希。
 
----
+## 构建安装包
 
-**Enjoy using DeepExcel! 🎉**
+### 内部自签名测试包
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\new-internal-signing-cert.ps1
+python scripts\package_release.py --version 0.4.17 --internal
+```
+
+输出：
+
+```text
+dist\DeepExcel-Internal-v0.4.17.zip
+dist\DeepExcel.Setup.INTERNAL.exe
+```
+
+### 生产签名包
+
+生产构建需要有效的 Authenticode PFX 或 Azure Trusted Signing：
+
+```powershell
+$env:DEEPEXCEL_PFX = 'C:\secure\deepexcel-code-signing.pfx'
+$env:DEEPEXCEL_PFX_PASS = '<由安全环境提供>'
+python scripts\package_release.py --version 0.4.17
+```
+
+没有生产证书时，只允许生成本机验证版本：
+
+```powershell
+python scripts\package_release.py --version 0.4.17 --allow-unsigned
+```
+
+无签名产物禁止发送给用户。完整流程见 [部署文档](docs/DEPLOYMENT.md)。
+
+## 发布前验证
+
+至少完成：
+
+1. C# 加载项编译；
+2. React 前端构建；
+3. VBA 与模型列表解析测试；
+4. Sidecar 自然冷启动导入；
+5. Excel 32 位和 64 位 COM 激活检查；
+6. WPS Ribbon/任务窗格回调测试；
+7. 安装、升级、卸载及开发注册恢复；
+8. 安装包 Authenticode 与 SHA-256 校验。
+
+## 常见问题
+
+### Excel 中没有 DeepExcel 选项卡
+
+1. 完全退出所有 Excel 进程；
+2. 重新运行安装器；
+3. 在 `文件 → 选项 → 加载项` 中检查“禁用项目”和“COM 加载项”；
+4. 确认 `DeepExcel.AddIn` 已启用；
+5. 查看 `%APPDATA%\DeepExcel\logs\DeepExcel_Load.log`。
+
+### Sidecar 显示 `code=1`
+
+最新版本会附带启动错误摘要。请查看 `%APPDATA%\DeepExcel\logs\`，并确认以下文件存在：
+
+```text
+%LOCALAPPDATA%\DeepExcel\python\python.exe
+%LOCALAPPDATA%\DeepExcel\sidecar\sidecar.py
+```
+
+### VBA 执行失败
+
+- 入口必须是无参数 `Sub`；
+- 过程名和变量名使用英文、数字和下划线；
+- 中文可以出现在字符串和注释中；
+- 不要使用 `MsgBox`、`InputBox` 或独立 `End`；
+- 如果提示 VBA 工程未授权，只需启用“信任对 VBA 工程对象模型的访问”，不建议启用所有宏。
+
+### WPS 没有图标或任务窗格打不开
+
+1. 确认使用最新安装包并完全重启 WPS；
+2. 检查 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 是否包含 DeepExcel；
+3. 检查同目录下是否存在 `DeepExcel_<版本>` 文件夹；
+4. 按 `Alt+F12` 打开 WPS 加载项调试器，查看第一条红色 Console 错误；
+5. 将 WPS 版本号、错误截图和 Console 错误一起反馈。
+
+### 如何卸载
+
+在 Windows“已安装的应用”中卸载 DeepExcel。卸载器会移除程序文件、Excel 注册和 WPS DeepExcel 节点，但会保留用户配置、日志、快照和对话历史。
+
+如需彻底清除个人数据，请确认不再需要后手动删除：
+
+```text
+%APPDATA%\DeepExcel\
+%LOCALAPPDATA%\DeepExcel\
+```
+
+## 文档
+
+- [部署与签名](docs/DEPLOYMENT.md)
+- [WPS 说明](docs/README-WPS.md)
+- [架构设计](docs/superpowers/specs/2026-06-25-DeepExcel-architecture-design.md)
+- [经验总结](docs/lessons-learned.md)

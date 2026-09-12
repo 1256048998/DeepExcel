@@ -554,13 +554,9 @@ async def quick_summary(args):
     })
 
 
-@tool("smart_chart", "智能创建图表：自动分析数据类型并选择最合适的图表类型。data_range 为数据范围，title 为图表标题。", {"data_range": str, "title": str})
-async def smart_chart(args):
-    result = await call_csharp("smart_chart", {
-        "data_range": args["data_range"],
-        "title": args.get("title", ""),
-    })
-    return _wrap_result(result)
+# ★ smart_chart 已移除：宿主端没有对应实现（调用必然失败），
+# 且"自动选图表类型"本就该由 agent 结合数据自己判断，不需要宿主用规则替它决定。
+# agent 用 create_chart 显式传 chart_type 即可。
 
 
 @tool("create_plan", "创建执行计划，用于复杂任务的分步执行。tasks 为任务列表（字符串数组），按顺序排列。description 为计划描述（可选）。", {"tasks": list, "description": str})
@@ -621,7 +617,7 @@ def register_all_tools() -> list:
         delete_blank_rows, split_text_to_columns, fill_blank_cells,
         highlight_duplicates, remove_special_chars, clean_amount,
         merge_columns, rename_columns, collapse_spaces,
-        create_chart, create_combo_chart, smart_chart,
+        create_chart, create_combo_chart,
         add_data_labels, set_chart_title, set_chart_colors, export_chart,
         create_pivot_table,
         refresh_pivot, group_pivot_date,

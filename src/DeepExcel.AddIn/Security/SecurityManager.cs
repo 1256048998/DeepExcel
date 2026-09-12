@@ -186,6 +186,8 @@ namespace DeepExcel.AddIn.Security
             {
                 CurrentProvider = config.CurrentProvider,
                 CurrentModel = config.CurrentModel,
+                // ★ DefaultProvider 为 null 时回退到 CurrentProvider，前端无需处理 null
+                DefaultProvider = string.IsNullOrEmpty(config.DefaultProvider) ? config.CurrentProvider : config.DefaultProvider,
                 Providers = new Dictionary<string, SafeProvider>(config.Providers.Count),
                 General = config.General,
                 UI = config.UI
@@ -203,7 +205,10 @@ namespace DeepExcel.AddIn.Security
                     SupportsVision = p.SupportsVision,
                     Models = p.Models,
                     HasApiKey = !string.IsNullOrEmpty(key),
-                    ApiKeyPreview = MaskApiKey(key)
+                    ApiKeyPreview = MaskApiKey(key),
+                    // ★ Connected 必须同时满足：最近一次测试成功 + key 仍然存在
+                    // 删除 key 后即使 LastTestSuccess=true 也不算 connected
+                    Connected = p.LastTestSuccess && !string.IsNullOrEmpty(key)
                 };
             }
             return safe;
@@ -230,6 +235,8 @@ namespace DeepExcel.AddIn.Security
     {
         public string CurrentProvider { get; set; }
         public string CurrentModel { get; set; }
+        /// <summary>★ 全局默认厂商（前端 provider 列表排序最前，输入框下拉默认值）</summary>
+        public string DefaultProvider { get; set; }
         public Dictionary<string, SafeProvider> Providers { get; set; }
         public Config.GeneralSettings General { get; set; }
         public Config.UISettings UI { get; set; }
@@ -245,5 +252,7 @@ namespace DeepExcel.AddIn.Security
         public string[] Models { get; set; }
         public bool HasApiKey { get; set; }
         public string ApiKeyPreview { get; set; }
+        /// <summary>★ 最近一次测试连接是否成功。前端圆点据此显示，而非 hasApiKey。</summary>
+        public bool Connected { get; set; }
     }
 }

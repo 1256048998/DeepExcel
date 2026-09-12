@@ -103,7 +103,10 @@ namespace DeepExcel.Tests
             Assert.True(result.Success);
             Assert.NotNull(result.Data);
             Assert.NotNull(result.Context);
-            Assert.True(fake.GetSelectionCalls >= 2);
+            // ★ 只会调用一次 IExcelActions.GetSelection()：
+            // BuildExcelSnapshot 里的 selection 走的是 COM Application.Selection（本测试传 null），
+            // 不再经过 IExcelActions，所以这里不能像 read_workbook 那样断言 >= 2。
+            Assert.Equal(1, fake.GetSelectionCalls);
         }
 
         [Fact]
@@ -191,79 +194,6 @@ namespace DeepExcel.Tests
             Assert.False(result.Success);
         }
 
-        /// <summary>
-        /// 手写可配置 IExcelActions mock —— 不引入 Moq 依赖（环境无 Moq 包）。
-        /// 方法签名严格匹配 IExcelActions 接口；Func 字段可被测试内联配置，
-        /// 未配置的方法走默认实现（success / 空对象），不会抛异常。
-        /// </summary>
-        private class FakeExcelActions : IExcelActions
-        {
-            public Func<string, object> ReadRangeFn { get; set; } = _ => new { };
-            public Func<string, string, ToolResult> WriteFormulaFn { get; set; } = (a, f) => new ToolResult { Success = true };
-            public Func<object> GetSelectionFn { get; set; } = () => null;
-            public Func<object> ReadWorkbookFn { get; set; } = () => new { };
-            public Func<string, object> ReadWorksheetFn { get; set; } = _ => new { };
-            public Func<string, string, ToolResult> ExecuteVBAFn { get; set; } = (c, m) => new ToolResult { Success = true };
-            public Func<string, ToolResult> ExecutePythonFn { get; set; } = _ => new ToolResult { Success = true };
-            public Func<string, object, ToolResult> WriteValueFn { get; set; } = (a, v) => new ToolResult { Success = true };
-            public Func<string> CreateSnapshotFn { get; set; } = () => "snap-1";
-            public Func<string, bool> RollbackFn { get; set; } = _ => true;
-
-            public List<(string, string)> WriteFormulaCalls { get; } = new List<(string, string)>();
-            public int ReadWorkbookCalls { get; private set; }
-            public int GetSelectionCalls { get; private set; }
-            public List<(string, string)> ExecuteVBACalls { get; } = new List<(string, string)>();
-            public List<string> ExecutePythonCalls { get; } = new List<string>();
-            public int CreateSnapshotCalls { get; private set; }
-            public List<string> RollbackCalls { get; } = new List<string>();
-
-            public object GetSelection()
-            {
-                GetSelectionCalls++;
-                return GetSelectionFn();
-            }
-
-            public object ReadRange(string address) => ReadRangeFn(address);
-
-            public object ReadWorkbook()
-            {
-                ReadWorkbookCalls++;
-                return ReadWorkbookFn();
-            }
-
-            public object ReadWorksheet(string name) => ReadWorksheetFn(name);
-
-            public ToolResult ExecuteVBA(string code, string macroName = null)
-            {
-                ExecuteVBACalls.Add((code, macroName));
-                return ExecuteVBAFn(code, macroName);
-            }
-
-            public ToolResult ExecutePython(string code)
-            {
-                ExecutePythonCalls.Add(code);
-                return ExecutePythonFn(code);
-            }
-
-            public ToolResult WriteFormula(string address, string formula)
-            {
-                WriteFormulaCalls.Add((address, formula));
-                return WriteFormulaFn(address, formula);
-            }
-
-            public ToolResult WriteValue(string address, object value) => WriteValueFn(address, value);
-
-            public string CreateSnapshot()
-            {
-                CreateSnapshotCalls++;
-                return CreateSnapshotFn();
-            }
-
-            public bool Rollback(string snapshotId)
-            {
-                RollbackCalls.Add(snapshotId);
-                return RollbackFn(snapshotId);
-            }
-        }
+        // ★ IExcelActions mock 已抽到共享的 FakeExcelActions.cs
     }
 }

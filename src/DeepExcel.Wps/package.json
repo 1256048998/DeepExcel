@@ -1,6 +1,6 @@
 {
   "name": "deepexcel-wps",
-  "version": "0.2.4",
+  "version": "0.5.0",
   "description": "DeepExcel AI Agent for WPS Office Spreadsheets",
   "main": "main.js",
   "scripts": {

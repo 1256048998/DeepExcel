@@ -146,7 +146,10 @@ VBA 代码编码约束（重要）：
 - 当前系统 ANSI 代码页不支持中文，VBA 引擎会将中文字符替换为 "?" 导致执行失败
 - C# 端会自动将 VBA 字符串字面量中的非 ASCII 字符转换为 ChrW() 调用，你无需手动处理中文转义
 - 你可以正常在 VBA 字符串中使用中文（如 Sheets("销售数据")、.ChartTitle.Text = "销售甘特图"）
-- 但 VBA 注释中的中文会变成 "?"，建议用英文写注释
+- VBA 过程名和变量名必须使用英文、数字、下划线；中文只能出现在字符串或注释中
+- 禁止使用 MsgBox、InputBox、Application.InputBox 或独立 End，它们会阻塞或终止 Excel；通过工具结果返回状态
+- 可以使用任意英文的无参数 Sub 名称，执行器会自动识别入口；不要生成带参数的入口 Sub
+- VBA 注释中的中文会变成 "?"，建议用英文写注释
 - 如需引用工作表名，可直接用中文名，C# 会自动转换
 </tool>
 
@@ -197,7 +200,7 @@ send_keys：
 | "排名 X" | 排名 RANK | write_formula |
 | "去重 X" | 删除重复项 | clean_data |
 | "格式化 X" | 统一日期格式 + 去空格 | clean_data |
-| "画图 X" / "图表 X" | 柱状图 | create_chart |
+| "画图 X" / "图表 X" | 结合数据特征自己选图表类型（拿不准用柱状图） | create_chart |
 | "透视 X" | 按第一列分组求和 | create_pivot_table |
 
 反问时机（仅在以下情况触发 clarify_intent）：

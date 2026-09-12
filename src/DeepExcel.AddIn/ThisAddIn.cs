@@ -45,104 +45,11 @@ namespace DeepExcel.AddIn
         private int? _originalAccessVbom;
         private bool _vbaSecurityModified;
 
-        // ★ 静态构造函数：在实例构造函数之前运行，用于诊断类型加载阶段的问题
-        static ThisAddIn()
-        {
-            LogStatic("Static constructor started");
-            try
-            {
-                // 验证 IDTExtensibility2 接口是否可解析
-                var idtType = typeof(IDTExtensibility2);
-                LogStatic("IDTExtensibility2 type resolved: " + idtType.AssemblyQualifiedName);
-                LogStatic("IDTExtensibility2 GUID: " + idtType.GUID);
-
-                // 验证 ThisAddIn 实现的接口列表
-                var implType = typeof(ThisAddIn);
-                var ifaces = implType.GetInterfaces();
-                foreach (var iface in ifaces)
-                {
-                    var guidAttr = iface.GetCustomAttributes(typeof(GuidAttribute), false);
-                    string guid = guidAttr.Length > 0 ? ((GuidAttribute)guidAttr[0]).Value : "(no Guid)";
-                    LogStatic("Interface: " + iface.FullName + " GUID={" + guid + "} Assembly=" + iface.Assembly.GetName().Name);
-                }
-            }
-            catch (Exception ex)
-            {
-                LogStatic("Static constructor FAILED: " + ex.GetType().Name + " - " + ex.Message);
-                LogStatic("Stack: " + ex.StackTrace);
-            }
-            LogStatic("Static constructor completed");
-        }
-
         public ThisAddIn()
         {
-            // ★ 记录调用进程名，区分 Excel vs PowerShell vs 其他
-            string procName = "unknown";
-            try
-            {
-                procName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
-            } catch { }
-            Log("Constructor called - COM object being created (Process=" + procName + ", PID=" + System.Diagnostics.Process.GetCurrentProcess().Id + ")");
-
-            // ★ 关键诊断：自 QI 测试 - 在构造函数中测试 CLR 能否获取 IDTExtensibility2 接口
-            try
-            {
-                Type idtType = typeof(IDTExtensibility2);
-                Log("  [QI-Diag] IDTExtensibility2 type: " + idtType.AssemblyQualifiedName);
-                Log("  [QI-Diag] IDTExtensibility2 GUID: " + idtType.GUID);
-                Log("  [QI-Diag] IDTExtensibility2 Assembly: " + idtType.Assembly.FullName);
-
-                // 列出 ThisAddIn 实现的所有接口
-                Type thisType = typeof(ThisAddIn);
-                Type[] ifaces = thisType.GetInterfaces();
-                Log("  [QI-Diag] ThisAddIn implements " + ifaces.Length + " interfaces:");
-                foreach (Type iface in ifaces)
-                {
-                    object[] guidAttrs = iface.GetCustomAttributes(typeof(GuidAttribute), false);
-                    string guidStr = guidAttrs.Length > 0 ? ((GuidAttribute)guidAttrs[0]).Value : "(no Guid)";
-                    Log("    - " + iface.FullName + " GUID={" + guidStr + "} Assembly=" + iface.Assembly.GetName().Name);
-                }
-
-                // 尝试通过 COM 方式 QI 自己
-                IntPtr punk = Marshal.GetIUnknownForObject(this);
-                try
-                {
-                    Guid iid = idtType.GUID;
-                    IntPtr pExt;
-                    int hr = Marshal.QueryInterface(punk, ref iid, out pExt);
-                    Log("  [QI-Diag] Marshal.QueryInterface(IDTExtensibility2) hr=0x" + hr.ToString("X8"));
-                    if (hr == 0)
-                    {
-                        Log("  [QI-Diag] QI SUCCEEDED - Excel should be able to get IDTExtensibility2");
-                        Marshal.Release(pExt);
-                    }
-                    else
-                    {
-                        Log("  [QI-Diag] QI FAILED! This is the root cause - Excel cannot get IDTExtensibility2");
-                    }
-                }
-                finally
-                {
-                    Marshal.Release(punk);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("  [QI-Diag] Diagnostic failed: " + ex.GetType().Name + " - " + ex.Message);
-            }
-
+            Log("Constructor called - COM object being created");
             // COM 加载项不读取 .dll.config，需手动处理 binding redirect
             AppDomain.CurrentDomain.AssemblyResolve += OnAssemblyResolve;
-            // ★ 诊断：捕获所有 first-chance 异常，防止静默崩溃导致 OnConnection 不被调用
-            AppDomain.CurrentDomain.FirstChanceException += (sender, e) =>
-            {
-                try
-                {
-                    var ex = e.Exception;
-                    Log("FirstChanceException: " + ex.GetType().Name + " - " + ex.Message);
-                }
-                catch { }
-            };
         }
 
         private static Assembly OnAssemblyResolve(object sender, ResolveEventArgs args)
@@ -208,37 +115,7 @@ namespace DeepExcel.AddIn
 
                 // ★ H-2 修复：对日志内容做基本转义，防止日志注入（移除换行符）
                 string safeMessage = (message ?? "").Replace("\r", " ").Replace("\n", " ");
-                string line = "[" + DateTime.Now + "] " + safeMessage + Environment.NewLine;
-                File.AppendAllText(logPath, line);
-                // ★ 诊断 fallback：同时写入 %TEMP%，防止 %APPDATA% 权限问题导致日志丢失
-                try
-                {
-                    string tempLog = Path.Combine(Path.GetTempPath(), "DeepExcel_Load.log");
-                    File.AppendAllText(tempLog, line);
-                }
-                catch { }
-            }
-            catch { }
-        }
-
-        // ★ 静态日志方法：静态构造函数中使用，独立于实例 Log 方法
-        private static void LogStatic(string message)
-        {
-            string line = "[" + DateTime.Now + "] [STATIC] " + (message ?? "").Replace("\r", " ").Replace("\n", " ") + Environment.NewLine;
-            // 写入 %APPDATA%
-            try
-            {
-                string logDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "DeepExcel", "logs");
-                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
-                File.AppendAllText(Path.Combine(logDir, "DeepExcel_Load.log"), line);
-            }
-            catch { }
-            // 写入 %TEMP% (fallback)
-            try
-            {
-                File.AppendAllText(Path.Combine(Path.GetTempPath(), "DeepExcel_Load.log"), line);
+                File.AppendAllText(logPath, "[" + DateTime.Now + "] " + safeMessage + Environment.NewLine);
             }
             catch { }
         }
@@ -930,8 +807,27 @@ namespace DeepExcel.AddIn
                 Path.GetDirectoryName(assetsPath),
                 Microsoft.Web.WebView2.Core.CoreWebView2HostResourceAccessKind.Allow);
 
+            // ★ 强制不走缓存：index.html 靠时间戳查询参数绕过，但它引用的
+            // assets/index.js / index.css 文件名固定，URL 不变就可能命中 WebView2 的
+            // HTTP 缓存，表现为"更新了前端但界面没变"。这里给虚拟主机下的所有请求
+            // 加 no-store，保证每次都读磁盘上的最新构建产物。
+            try
+            {
+                pane.WebView.CoreWebView2.AddWebResourceRequestedFilter(
+                    "https://deepexcel.local/*",
+                    Microsoft.Web.WebView2.Core.CoreWebView2WebResourceContext.All);
+                pane.WebView.CoreWebView2.WebResourceRequested += (s, e) =>
+                {
+                    try { e.Request.Headers.SetHeader("Cache-Control", "no-cache, no-store, must-revalidate"); }
+                    catch { }
+                };
+            }
+            catch (Exception ex)
+            {
+                Log("WebResourceRequested filter failed (non-fatal): " + ex.Message);
+            }
+
             // ★ 加时间戳查询参数绕过缓存：每次 Excel 启动都加载最新页面
-            // 否则 WebView2 会缓存 index.html 和 JS/CSS，导致前端更新不生效
             string cacheBuster = DateTime.Now.ToString("yyyyMMddHHmmss");
             pane.WebView.CoreWebView2.Navigate($"https://deepexcel.local/index.html?v={cacheBuster}");
             Log("WebView navigated for pane (cache-buster=" + cacheBuster + ")");

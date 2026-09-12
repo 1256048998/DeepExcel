@@ -35,11 +35,16 @@ export type ProviderInfo = {
   models: string[]
   hasApiKey: boolean
   apiKeyPreview: string
+  /** ★ 最近一次测试连接是否成功（前端圆点据此显示，而非 hasApiKey） */
+  connected: boolean
 }
 
 export type ModelConfig = {
   currentProvider: string
   currentModel: string
+  /** ★ 全局默认厂商（前端 provider 列表排序最前，输入框下拉默认值取其 DefaultModel）。
+   * 后端 Guaranteed non-null（SafeConfig 中 DefaultProvider 为空时回退到 CurrentProvider） */
+  defaultProvider: string
   providers: Record<string, ProviderInfo>
   general: {
     maxRetries: number

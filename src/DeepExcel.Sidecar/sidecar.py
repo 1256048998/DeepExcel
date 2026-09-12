@@ -26,8 +26,10 @@ except Exception:
     sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', line_buffering=True)
 
 import anyio
+import base64
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -43,6 +45,40 @@ from excel_tools import register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
 from ipc import _init_buffer, request_permission
 from system_prompt import SYSTEM_PROMPT
+
+
+def _load_wps_local_config():
+    """Load the current Excel configuration for the WPS host.
+
+    WPS starts the same per-user sidecar without the C# bridge that normally
+    sends a config message. API keys remain DPAPI-protected and are decrypted
+    only in memory for the current Windows user.
+    """
+    try:
+        appdata = os.environ.get("APPDATA", "")
+        config_path = os.path.join(appdata, "DeepExcel", "config.json")
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = json.load(stream)
+        provider = config.get("CurrentProvider") or config.get("currentProvider") or "anthropic"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", provider):
+            raise ValueError("invalid provider key")
+        providers = config.get("Providers") or config.get("providers") or {}
+        provider_config = providers.get(provider) or {}
+        model = config.get("CurrentModel") or config.get("currentModel") or provider_config.get("DefaultModel")
+        base_url = provider_config.get("BaseUrl") or provider_config.get("baseUrl") or "https://api.anthropic.com"
+
+        credential_path = os.path.join(appdata, "DeepExcel", "credentials", f"key_{provider}.crypt")
+        with open(credential_path, "r", encoding="utf-8") as stream:
+            protected = base64.b64decode(stream.read().strip(), validate=True)
+        import win32crypt
+        api_key = win32crypt.CryptUnprotectData(protected, None, None, None, 0)[1].decode("utf-8")
+        if not api_key:
+            raise ValueError("empty API key")
+        return {"base_url": base_url, "model": model, "api_key": api_key}
+    except Exception as exc:
+        sys.stderr.write(f"[sidecar] WPS local config unavailable: {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
+        return None
 
 
 # ★ 高风险工具集合：需要用户在面板内抽屉式确认才能执行
@@ -784,16 +820,18 @@ async def main():
         sys.stderr.write("[sidecar] stdin_reader_loop started, waiting for config...\n")
         sys.stderr.flush()
 
-        # 等待 config 消息（最多等 30 秒）
-        cfg = None
-        try:
-            with anyio.fail_after(30.0):
-                cfg = await _message_buffer["config"].get()
-            sys.stderr.write(f"[sidecar] config received: base_url={cfg.get('base_url')}, model={cfg.get('model')}, hasKey={bool(cfg.get('api_key'))}\n")
-            sys.stderr.flush()
-        except TimeoutError:
-            sys.stderr.write("[sidecar] WARNING: config timeout (30s), falling back to env vars\n")
-            sys.stderr.flush()
+        # Excel sends config over stdin. WPS has no C# bridge, so it reuses the
+        # same current-user config and DPAPI credential written by Excel.
+        cfg = _load_wps_local_config() if os.environ.get("DEEPEXCEL_HOST") == "wps" else None
+        if cfg is None and os.environ.get("DEEPEXCEL_HOST") != "wps":
+            try:
+                with anyio.fail_after(30.0):
+                    cfg = await _message_buffer["config"].get()
+                sys.stderr.write(f"[sidecar] config received: base_url={cfg.get('base_url')}, model={cfg.get('model')}, hasKey={bool(cfg.get('api_key'))}\n")
+                sys.stderr.flush()
+            except TimeoutError:
+                sys.stderr.write("[sidecar] WARNING: config timeout (30s), falling back to env vars\n")
+                sys.stderr.flush()
 
         # 构建 env 配置（DeepSeek 必须通过 env 传给 SDK，os.environ 不生效）
         if cfg:
@@ -808,6 +846,34 @@ async def main():
                 "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
             }
             model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4")
+
+        # ★ 关键修复：显式同步到 os.environ，覆盖 ~/.claude/settings.json 的 env 配置。
+        # SDK 在 ClaudeSDKClient 创建时会读 settings.json 的 env 字段并 merge 进 process env，
+        # 优先级高于 ClaudeAgentOptions.env。如果不显式 set os.environ，settings.json 中的
+        # ANTHROPIC_BASE_URL（如 deepseek）会覆盖我们传的 stepfun base_url，导致请求发到错误端点。
+        # 现象：sidecar 日志显示 base_url=stepfun，但实际请求打到 deepseek，model=step-3.7-flash
+        # 被 deepseek 拒绝（400 "supported: deepseek-v4-pro/flash, but you passed step-3.7-flash"）。
+        for k, v in env_config.items():
+            os.environ[k] = v
+        # 清掉可能从 settings.json 继承的 model 默认值，避免覆盖我们传的 model 参数
+        for k in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+                  "ANTHROPIC_AUTH_TOKEN"):
+            os.environ.pop(k, None)
+
+        # ★ 诊断日志：打印 os.environ 实际值（脱敏 api_key），验证 settings.json 是否被覆盖
+        _diag_env_base = os.environ.get("ANTHROPIC_BASE_URL", "<unset>")
+        _diag_env_model = os.environ.get("ANTHROPIC_MODEL", "<unset>")
+        _diag_env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "<unset>")
+        _diag_env_sonnet = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "<unset>")
+        _diag_has_key = "ANTHROPIC_API_KEY" in os.environ
+        sys.stderr.write(f"[sidecar][diag] os.environ after override: "
+                         f"ANTHROPIC_BASE_URL={_diag_env_base}, "
+                         f"ANTHROPIC_MODEL={_diag_env_model}, "
+                         f"ANTHROPIC_AUTH_TOKEN={_diag_env_token}, "
+                         f"ANTHROPIC_DEFAULT_SONNET_MODEL={_diag_env_sonnet}, "
+                         f"ANTHROPIC_API_KEY_present={_diag_has_key}\n")
+        sys.stderr.flush()
 
         # ★ KV Cache 优化：保持原始模型名称（model 参数会被 SDK 直接发送给 API，
         # 修改它会导致 DeepSeek/Kimi 等提供商拒绝请求）。
@@ -836,7 +902,7 @@ async def main():
                 "freeze_panes",
                 "apply_conditional_format", "write_table",
                 "clarify_intent",
-                "auto_analyze", "quick_summary", "smart_chart",
+                "auto_analyze", "quick_summary",
                 "create_plan", "update_plan",
                 # ★ Computer Use 工具
                 "screenshot_excel", "send_keys",
@@ -844,6 +910,12 @@ async def main():
             system_prompt=SYSTEM_PROMPT,
             max_turns=20,
             env=env_config,  # ★ DeepSeek 配置必须在这里传
+            # ★ 关键修复：setting_sources=[] 禁用 SDK 读取 ~/.claude/settings.json 等
+            # 文件系统 settings。否则 SDK CLI 子进程会读 settings.json 的 env 字段
+            # 并 merge 到自己的 process env（优先级高于父进程传来的 env），
+            # 导致我们传的 stepfun base_url/key 被 settings.json 里的 deepseek 配置覆盖。
+            # 现象：os.environ 显示 stepfun，但实际请求打到 deepseek（400 错误）。
+            setting_sources=[],
             # ★ 禁用 thinking：DeepSeek anthropic 兼容端点不返回 thinking block 的 signature 字段，
             # SDK 在 message_parser.py:104 硬编码 block["signature"] 会抛 MessageParseError，
             # 导致 tool_use 后第二轮 API 响应解析崩溃，最终文本永不返回。
@@ -866,6 +938,19 @@ async def main():
         sys.stderr.write(f"[sidecar] creating ClaudeSDKClient, model={model}, base_url={base_url_for_check}, supports_vision={vision_ok}\n")
         sys.stderr.flush()
         async with ClaudeSDKClient(options=options) as client:
+            # ★ 诊断日志：SDK 创建 client 后再次打印 os.environ，确认 SDK 是否把
+            # settings.json 的 env 重新 merge 回 os.environ（如果是，run_agent_loop 期间
+            # 这些值会被 SDK 实际使用，覆盖我们的 env_config）
+            _post_base = os.environ.get("ANTHROPIC_BASE_URL", "<unset>")
+            _post_model = os.environ.get("ANTHROPIC_MODEL", "<unset>")
+            _post_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "<unset>")
+            _post_sonnet = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "<unset>")
+            sys.stderr.write(f"[sidecar][diag] os.environ AFTER client created: "
+                             f"ANTHROPIC_BASE_URL={_post_base}, "
+                             f"ANTHROPIC_MODEL={_post_model}, "
+                             f"ANTHROPIC_AUTH_TOKEN={_post_token}, "
+                             f"ANTHROPIC_DEFAULT_SONNET_MODEL={_post_sonnet}\n")
+            sys.stderr.flush()
             sys.stderr.write("[sidecar] ClaudeSDKClient connected, entering agent loop\n")
             sys.stderr.flush()
             # 在 task_group 里跑主循环，reader 继续在后台跑

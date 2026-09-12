@@ -32,22 +32,7 @@ namespace DeepExcel.Tests
             Assert.False(string.IsNullOrEmpty(py));
         }
 
-        /// <summary>
-        /// 手写 IExcelActions mock —— 不引入 Moq 依赖。
-        /// 方法签名严格匹配 IExcelActions 接口。
-        /// </summary>
-        private class FakeExcelActions : IExcelActions
-        {
-            public object GetSelection() => null;
-            public object ReadRange(string address) => new { };
-            public object ReadWorkbook() => new { };
-            public object ReadWorksheet(string name) => new { };
-            public ToolResult ExecuteVBA(string code, string macroName = null) => new ToolResult { Success = true };
-            public ToolResult ExecutePython(string code) => new ToolResult { Success = true };
-            public ToolResult WriteFormula(string address, string formula) => new ToolResult { Success = true };
-            public ToolResult WriteValue(string address, object value) => new ToolResult { Success = true };
-            public string CreateSnapshot() => "snap-1";
-            public bool Rollback(string snapshotId) => true;
-        }
+        // ★ IExcelActions mock 已抽到共享的 FakeExcelActions.cs，
+        // 避免接口增加方法时每个测试文件都要各自补一遍 stub
     }
 }

@@ -42,6 +42,7 @@ class SidecarHost {
       // ★ 强制 Python 全局 UTF-8 模式（与 C# 端 PYTHONUTF8=1 一致）
       PYTHONUTF8: '1',
       PYTHONIOENCODING: 'utf-8',
+      DEEPEXCEL_HOST: 'wps',
     }
 
     this.process = spawn(this.pythonPath, args, {
@@ -229,14 +230,17 @@ class SidecarHost {
   }
 
   _detectPython() {
-    // 优先使用项目内置的 python embeddable
+    // Unified installer puts Python under %LOCALAPPDATA%\DeepExcel\python.
+    // Keep source-tree fallbacks for development.
     const projectRoot = path.resolve(__dirname, '..', '..')
     const candidates = [
+      process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'DeepExcel', 'python', 'python.exe'),
+      path.join(__dirname, 'python', 'python.exe'),
       path.join(projectRoot, 'python-3.11-embed-amd64', 'python.exe'),
       path.join(projectRoot, 'python', 'python.exe'),
       'python',
       'python3',
-    ]
+    ].filter(Boolean)
     for (const p of candidates) {
       if (p.startsWith('python') || fs.existsSync(p)) return p
     }
@@ -244,6 +248,14 @@ class SidecarHost {
   }
 
   _detectSidecarPath() {
+    // Use the shared LocalAppData sidecar installed beside embedded Python.
+    // Embedded Python _pth isolation includes ..\sidecar; the WPS plugin's
+    // AppData directory is not on sys.path and crashes on `import excel_tools`.
+    const sharedSidecar = process.env.LOCALAPPDATA &&
+      path.join(process.env.LOCALAPPDATA, 'DeepExcel', 'sidecar', 'sidecar.py')
+    if (sharedSidecar && fs.existsSync(sharedSidecar)) return sharedSidecar
+    const installedSidecar = path.join(__dirname, 'sidecar', 'sidecar.py')
+    if (fs.existsSync(installedSidecar)) return installedSidecar
     const projectRoot = path.resolve(__dirname, '..', '..')
     return path.join(projectRoot, 'src', 'DeepExcel.Sidecar', 'sidecar.py')
   }

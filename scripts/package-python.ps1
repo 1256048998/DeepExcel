@@ -1,132 +1,119 @@
-# scripts/package-python.ps1
-# 下载 Python embeddable 并安装 claude-agent-sdk + 依赖
-# 用法: powershell -ExecutionPolicy Bypass -File scripts\package-python.ps1
-
+#requires -Version 5.1
+[CmdletBinding()]
 param(
-    [string]$PythonVersion = "3.11.9",
-    [string]$OutputDir = "$PSScriptRoot\..\src\DeepExcel.AddIn\bin\Release\python",
-    [string]$TempDir = "$env:TEMP\deepexcel-python-packaging"
+    [string]$PythonVersion = '3.11.9',
+    [string]$OutputDir,
+    [string]$TempDir
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
+if (-not $OutputDir) { $OutputDir = Join-Path $PSScriptRoot '..\src\DeepExcel.AddIn\bin\Release\python' }
+if (-not $TempDir) { $TempDir = Join-Path $env:TEMP 'deepexcel-python-packaging' }
+$OutputDir = [IO.Path]::GetFullPath($OutputDir)
+$TempDir = [IO.Path]::GetFullPath($TempDir)
 
-# --- 1. 准备目录 ---
-if (Test-Path $TempDir) { Remove-Item $TempDir -Recurse -Force }
+if (Test-Path -LiteralPath $TempDir) {
+    Remove-Item -LiteralPath $TempDir -Recurse -Force
+}
 New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
 
-if (Test-Path $OutputDir) { Remove-Item $OutputDir -Recurse -Force }
+if (Test-Path -LiteralPath $OutputDir) {
+    Remove-Item -LiteralPath $OutputDir -Recurse -Force
+}
 New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-# --- 2. 下载 Python embeddable zip（使用淘宝 npmmirror 镜像加速） ---
-$arch = "amd64"
-$zipName = "python-$PythonVersion-embed-$arch.zip"
-$mirrors = @(
-    "https://registry.npmmirror.com/-/binary/python/$PythonVersion/$zipName",
-    "https://www.python.org/ftp/python/$PythonVersion/$zipName"
+$archiveName = "python-$PythonVersion-embed-amd64.zip"
+$archivePath = Join-Path $TempDir $archiveName
+$expectedPythonHashes = @{
+    '3.11.9' = '009D6BF7E3B2DDCA3D784FA09F90FE54336D5B60F0E0F305C37F400BF83CFD3B'
+}
+if (-not $expectedPythonHashes.ContainsKey($PythonVersion)) {
+    throw "No audited Python archive hash is configured for version $PythonVersion."
+}
+$pythonUrls = @(
+    "https://registry.npmmirror.com/-/binary/python/$PythonVersion/$archiveName",
+    "https://www.python.org/ftp/python/$PythonVersion/$archiveName"
 )
-$zipPath = Join-Path $TempDir $zipName
 
 $downloaded = $false
-foreach ($url in $mirrors) {
-    Write-Host "尝试下载 Python embeddable: $url"
+foreach ($url in $pythonUrls) {
     try {
-        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing -TimeoutSec 120
+        Write-Host "Downloading embedded Python from $url"
+        Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing -TimeoutSec 180
         $downloaded = $true
-        Write-Host "下载成功（来源: $url）"
         break
     } catch {
-        Write-Host "下载失败，尝试下一个镜像: $_"
+        Write-Warning "Download failed: $($_.Exception.Message)"
     }
 }
-if (-not $downloaded) { throw "所有镜像均下载失败" }
+if (-not $downloaded) { throw 'Unable to download embedded Python.' }
 
-# --- 3. 解压到输出目录 ---
-Write-Host "解压到 $OutputDir"
-Expand-Archive -Path $zipPath -DestinationPath $OutputDir -Force
-
-# --- 4. 启用 pip (取消 _pth 中的 site-packages 注释, 下载 get-pip.py) ---
-$pythonExe = Join-Path $OutputDir "python.exe"
-$pthFile = Get-ChildItem -Path $OutputDir -Filter "python*._pth" | Select-Object -First 1
-
-if ($pthFile) {
-    Write-Host "启用 site-packages: $($pthFile.FullName)"
-    $content = Get-Content $pthFile.FullName
-    $content = $content | ForEach-Object {
-        if ($_ -match "^#import site") { "import site" } else { $_ }
-    }
-    Set-Content -Path $pthFile.FullName -Value $content
+$pythonArchiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+if ($pythonArchiveHash -ne $expectedPythonHashes[$PythonVersion]) {
+    throw "Embedded Python archive SHA-256 mismatch: $pythonArchiveHash"
 }
 
-# get-pip.py
-$getPipMirrors = @(
-    "https://bootstrap.pypa.io/get-pip.py",
-    "https://pypi.tuna.tsinghua.edu.cn/packages/source/g/get-pip/get-pip-24.0.tar.gz"
-)
-$getPipPath = Join-Path $TempDir "get-pip.py"
-$gpDownloaded = $false
-foreach ($url in $getPipMirrors) {
-    Write-Host "尝试下载 get-pip: $url"
-    try {
-        Invoke-WebRequest -Uri $url -OutFile $getPipPath -UseBasicParsing -TimeoutSec 60
-        $gpDownloaded = $true
-        break
-    } catch {
-        Write-Host "下载失败: $_"
-    }
-}
-if (-not $gpDownloaded) { throw "get-pip.py 下载失败" }
-
-Write-Host "安装 pip（使用清华镜像）"
-& $pythonExe $getPipPath --no-warn-script-location --index-url https://pypi.tuna.tsinghua.edu.cn/simple
-if ($LASTEXITCODE -ne 0) { throw "pip 安装失败" }
-
-# --- 5. 安装 claude-agent-sdk 及依赖（使用清华镜像） ---
-$tsinghuaIndex = "https://pypi.tuna.tsinghua.edu.cn/simple"
-Write-Host "安装 claude-agent-sdk==0.2.109（清华镜像）"
-& $pythonExe -m pip install --no-warn-script-location -i $tsinghuaIndex `
-    "claude-agent-sdk==0.2.109" `
-    "anyio>=4.0" `
-    "httpx>=0.27" `
-    "pydantic>=2.0"
-if ($LASTEXITCODE -ne 0) { throw "claude-agent-sdk 安装失败" }
-
-# --- 6. 复制 sidecar 业务代码 ---
-$sidecarSrc = "$PSScriptRoot\..\src\DeepExcel.Sidecar"
-$sidecarDest = Join-Path $OutputDir "sidecar"
-Write-Host "复制 sidecar 代码到 $sidecarDest"
-
-New-Item -ItemType Directory -Path $sidecarDest -Force | Out-Null
-Copy-Item -Path "$sidecarSrc\*.py" -Destination $sidecarDest -Force
-if (Test-Path "$sidecarSrc\tests") {
-    Copy-Item -Path "$sidecarSrc\tests" -Destination $sidecarDest -Recurse -Force
+Expand-Archive -LiteralPath $archivePath -DestinationPath $OutputDir -Force
+$pythonExe = Join-Path $OutputDir 'python.exe'
+if (-not (Test-Path -LiteralPath $pythonExe)) { throw "python.exe missing from $OutputDir" }
+$pythonSignature = Get-AuthenticodeSignature -LiteralPath $pythonExe
+if ($pythonSignature.Status -ne 'Valid' -or
+    $pythonSignature.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
+    throw "Embedded python.exe has an invalid publisher signature: $($pythonSignature.Status)"
 }
 
-# --- 7. 清理 pip 缓存与 __pycache__ ---
-Write-Host "清理缓存"
-Get-ChildItem -Path $OutputDir -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+$pthFile = Get-ChildItem -LiteralPath $OutputDir -Filter 'python*._pth' | Select-Object -First 1
+if (-not $pthFile) { throw 'Embedded Python _pth file was not found.' }
+$pthContent = Get-Content -LiteralPath $pthFile.FullName
+$pthContent = $pthContent | ForEach-Object {
+    if ($_ -match '^#import site') { 'import site' } else { $_ }
+}
+# Embedded Python's _pth mode ignores the script directory. DeepExcel starts
+# <install>\sidecar\sidecar.py from <install>\python\python.exe, so add the
+# sibling directory explicitly or imports such as excel_tools fail at startup.
+if ($pthContent -notcontains '..\sidecar') {
+    $pthContent = @($pthContent[0], '..\sidecar') + @($pthContent[1..($pthContent.Count - 1)])
+}
+Set-Content -LiteralPath $pthFile.FullName -Value $pthContent -Encoding ASCII
+
+$pipVersion = '26.2.1'
+$pipWheelName = "pip-$pipVersion-py3-none-any.whl"
+$pipWheelPath = Join-Path $TempDir $pipWheelName
+$pipWheelUrl = 'https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl'
+$pipWheelHash = '71138ADF1F4CA900CDB7D289C21B7494329F2332B6D85F0E1C42108C0384ED3E'
+Invoke-WebRequest -Uri $pipWheelUrl -OutFile $pipWheelPath -UseBasicParsing -TimeoutSec 180
+if ((Get-FileHash -LiteralPath $pipWheelPath -Algorithm SHA256).Hash -ne $pipWheelHash) {
+    throw 'Pinned pip wheel SHA-256 mismatch.'
+}
+$pipBootstrap = 'import sys; wheel=sys.argv[1]; sys.argv=sys.argv[1:]; sys.path.insert(0,wheel); from pip._internal.cli.main import main; sys.exit(main())'
+& $pythonExe -c $pipBootstrap $pipWheelPath install --no-index --no-warn-script-location $pipWheelPath
+if ($LASTEXITCODE -ne 0) { throw 'Pinned pip wheel bootstrap failed.' }
+
+$requirementsLock = Join-Path $PSScriptRoot 'python-requirements.lock.txt'
+if (-not (Test-Path -LiteralPath $requirementsLock -PathType Leaf)) {
+    throw "Python dependency lock is missing: $requirementsLock"
+}
+& $pythonExe -m pip install --require-hashes --only-binary=:all: --no-warn-script-location `
+    --requirement $requirementsLock
+if ($LASTEXITCODE -ne 0) { throw 'Python dependencies failed to install.' }
+
+$sidecarSource = Join-Path $PSScriptRoot '..\src\DeepExcel.Sidecar'
+$sidecarDestination = Join-Path $OutputDir 'sidecar'
+New-Item -ItemType Directory -Path $sidecarDestination -Force | Out-Null
+Copy-Item -Path (Join-Path $sidecarSource '*.py') -Destination $sidecarDestination -Force
+
+Get-ChildItem -LiteralPath $OutputDir -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
-Get-ChildItem -Path $OutputDir -Recurse -Directory -Filter "*.dist-info" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match "^pip-" } |
+Get-ChildItem -LiteralPath $OutputDir -Recurse -Directory -Filter 'pip-*.dist-info' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force
 
-# --- 8. 验证 ---
-Write-Host "验证安装"
-$verifyCmd = 'import claude_agent_sdk; print("claude-agent-sdk:", claude_agent_sdk.__version__)'
-& $pythonExe -c $verifyCmd
-if ($LASTEXITCODE -ne 0) { throw "claude-agent-sdk 导入验证失败" }
+& $pythonExe -c 'import claude_agent_sdk'
+if ($LASTEXITCODE -ne 0) { throw 'claude-agent-sdk import validation failed.' }
 
-$sidecarVerifyPath = $sidecarDest.Replace("'", "''")
-$verifySidecarCmd = "import sys; sys.path.insert(0, r'$sidecarVerifyPath'); import sidecar; print('sidecar OK')"
-& $pythonExe -c $verifySidecarCmd
-if ($LASTEXITCODE -ne 0) { throw "sidecar 导入验证失败" }
+# Validate the natural runtime import path. Do not insert sys.path here: doing
+# so previously hid a package that always crashed for end users.
+& $pythonExe -c 'import sidecar'
+if ($LASTEXITCODE -ne 0) { throw 'Sidecar import validation failed.' }
 
-# --- 9. 清理临时目录 ---
-Remove-Item $TempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-Write-Host ""
-Write-Host "=== Python 打包完成 ==="
-Write-Host "输出目录: $OutputDir"
-Write-Host "Python exe: $pythonExe"
-Write-Host "Sidecar: $sidecarDest"
-Write-Host ""
-Write-Host "DeepExcel 加载项将通过 python.exe sidecar\sidecar.py 启动"
+Remove-Item -LiteralPath $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+Write-Host "Embedded Python package ready: $OutputDir"

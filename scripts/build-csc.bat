@@ -21,7 +21,13 @@ if not exist "%OUTDIR%\runtimes\win-x86\native" mkdir "%OUTDIR%\runtimes\win-x86
 if not exist "%OUTDIR%\runtimes\win-x64\native" mkdir "%OUTDIR%\runtimes\win-x64\native" >nul
 copy /Y "%PACKAGES%\Microsoft.Web.WebView2.1.0.2420.47\runtimes\win-x86\native\WebView2Loader.dll" "%OUTDIR%\runtimes\win-x86\native\" >nul
 copy /Y "%PACKAGES%\Microsoft.Web.WebView2.1.0.2420.47\runtimes\win-x64\native\WebView2Loader.dll" "%OUTDIR%\runtimes\win-x64\native\" >nul
-copy /Y "%PACKAGES%\Microsoft.Web.WebView2.1.0.2420.47\runtimes\win-x86\native\WebView2Loader.dll" "%OUTDIR%\" >nul
+if not exist "%OUTDIR%\runtimes\win-arm64\native" mkdir "%OUTDIR%\runtimes\win-arm64\native" >nul
+copy /Y "%PACKAGES%\Microsoft.Web.WebView2.1.0.2420.47\runtimes\win-arm64\native\WebView2Loader.dll" "%OUTDIR%\runtimes\win-arm64\native\" >nul
+if exist "%OUTDIR%\WebView2Loader.dll" del /Q "%OUTDIR%\WebView2Loader.dll"
+copy /Y "C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll" "%OUTDIR%\" >nul
+copy /Y "C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll" "%OUTDIR%\" >nul
+copy /Y "C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll" "%OUTDIR%\" >nul
+copy /Y "%WINDIR%\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll" "%OUTDIR%\" >nul
 copy /Y "%PACKAGES%\System.Text.Json.8.0.0\lib\net462\System.Text.Json.dll" "%OUTDIR%\" >nul
 copy /Y "%PACKAGES%\System.Text.Encodings.Web.8.0.0\lib\net462\System.Text.Encodings.Web.dll" "%OUTDIR%\" >nul
 copy /Y "%PACKAGES%\Microsoft.Bcl.AsyncInterfaces.8.0.0\lib\net462\Microsoft.Bcl.AsyncInterfaces.dll" "%OUTDIR%\" >nul
@@ -66,6 +72,7 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   /reference:"%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll" ^
   /reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll" ^
   /reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\OFFICE.dll" ^
+  /reference:"C:\Program Files (x86)\Common Files\Microsoft Shared\MSEnv\PublicAssemblies\Extensibility.dll" ^
   /reference:"%WINDIR%\assembly\GAC_MSIL\Microsoft.Vbe.Interop\15.0.0.0__71e9bce111e9429c\Microsoft.Vbe.Interop.dll" ^
   /reference:"%OUTDIR%\Microsoft.Web.WebView2.WinForms.dll" ^
   /reference:"%OUTDIR%\Microsoft.Web.WebView2.Core.dll" ^
@@ -79,7 +86,6 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   /reference:"%OUTDIR%\System.Threading.Tasks.Extensions.dll" ^
   /reference:"%OUTDIR%\System.ValueTuple.dll" ^
   /resource:"%ADDINDIR%\Resources\DeepExcelRibbon.xml",DeepExcel.AddIn.Resources.DeepExcelRibbon.xml ^
-  "%ADDINDIR%\Advanced\ChartSpecEngine.cs" ^
   "%ADDINDIR%\Bridge\IExcelActions.cs" ^
   "%ADDINDIR%\Bridge\MessageBridge.cs" ^
   "%ADDINDIR%\Bridge\Messages.cs" ^
@@ -107,7 +113,6 @@ echo [3/3] Compiling DeepExcel.AddIn.dll...
   "%ADDINDIR%\Sidecar\JsonConverters.cs" ^
   "%ADDINDIR%\TaskPaneControl.cs" ^
   "%ADDINDIR%\IRibbonCallbacks.cs" ^
-  "%ADDINDIR%\Interop\Extensibility.cs" ^
   "%ADDINDIR%\ThisAddIn.cs" ^
   "%ADDINDIR%\Tools\ChartTool.cs" ^
   "%ADDINDIR%\Tools\DataCleaner.cs" ^

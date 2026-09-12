@@ -332,6 +332,20 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleSaveModelConfig(msg);
                     case "test_api_key":
                         return HandleTestApiKey(msg);
+                    case "refresh_models":
+                        return HandleRefreshModels(msg);
+                    case "set_provider_models":
+                        return HandleSetProviderModels(msg);
+                    case "get_api_key":
+                        return HandleGetApiKey(msg);
+                    case "delete_api_key":
+                        return HandleDeleteApiKey(msg);
+                    case "set_default_model":
+                        return HandleSetDefaultModel(msg);
+                    case "set_default_provider":
+                        return HandleSetDefaultProvider(msg);
+                    case "switch_model":
+                        return HandleSwitchModel(msg);
                 }
 
                 // 以下消息需要 session 上下文
@@ -462,11 +476,25 @@ namespace DeepExcel.AddIn.Bridge
                 // 5. 持久化
                 ConfigManager.Instance.Save();
 
-                // 6. 立即对所有 session 生效
+                // 6. ★ 重启活动 session 的 sidecar，让新 sidecar 基于新 config 创建 client。
+                //    sidecar 启动时 ClaudeSDKClient 的 base_url/model/api_key 固定，运行时无法变更。
+                //    若不重启，旧 sidecar 仍用旧 base_url，但 model 名已变 → API 报 400 model not supported。
+                var session = GetOrCreateActiveSession();
+                bool sidecarRestarted = false;
+                if (session != null)
+                {
+                    Logger.Instance.Info("MessageBridge",
+                        $"HandleSaveModelConfig: restarting sidecar for workbook={session.WorkbookName}");
+                    session.Sidecar.Restart();
+                    SendConfigToSession(session);
+                    sidecarRestarted = true;
+                }
+
+                // 7. 其他非活动 session 也刷新（下次发消息时新建 session 会用新 config）
                 RefreshConfigForAllSessions();
 
                 Logger.Instance.Info("MessageBridge",
-                    $"HandleSaveModelConfig: provider={provider}, model={model}, maxTurns={maxTurns}, apiKeyChanged={apiKey != "***keep***" && !string.IsNullOrEmpty(apiKey)}");
+                    $"HandleSaveModelConfig: provider={provider}, model={model}, maxTurns={maxTurns}, apiKeyChanged={apiKey != "***keep***" && !string.IsNullOrEmpty(apiKey)}, sidecarRestarted={sidecarRestarted}");
 
                 return MakeResponse("config_saved", new { success = true });
             }
@@ -555,6 +583,346 @@ namespace DeepExcel.AddIn.Bridge
         }
 
         /// <summary>
+        /// ★ 从厂商拉取"可用模型列表"，只读不写：结果交给前端"导入模型"弹窗勾选，
+        /// 用户确认后再通过 set_provider_models 落盘。
+        /// 这样刷新不会把用户排好序的模型优先级冲掉。
+        /// </summary>
+        private string HandleRefreshModels(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var apiKey = payload.GetProperty("apiKey").GetString();
+                var baseUrl = payload.GetProperty("baseUrl").GetString();
+                var cfg = ConfigManager.Instance.Current;
+                if (string.IsNullOrEmpty(provider) || !cfg.Providers.ContainsKey(provider))
+                    return MakeResponse("models_refreshed", new { success = false, error = "未知的模型供应商" });
+
+                if (string.IsNullOrEmpty(apiKey) || apiKey == "***keep***")
+                    apiKey = SecurityManager.Instance.GetApiKey(provider);
+                if (string.IsNullOrEmpty(apiKey))
+                    return MakeResponse("models_refreshed", new { success = false, error = "请先输入 API Key" });
+
+                var providerConfig = cfg.Providers[provider];
+                if (string.IsNullOrWhiteSpace(baseUrl)) baseUrl = providerConfig.BaseUrl;
+                if (!IsValidTestUrl(baseUrl))
+                    return MakeResponse("models_refreshed", new { success = false, error = "Base URL 不安全或格式无效" });
+
+                // ★ 修复：.NET Framework 4.8 默认不启用 TLS 1.2，之前这里没设置，
+                // 对只接受 TLS 1.2+ 的厂商（几乎全部）会直接握手失败，表现为"刷新失败"。
+                System.Net.ServicePointManager.SecurityProtocol =
+                    System.Net.SecurityProtocolType.Tls12 | System.Net.SecurityProtocolType.Tls13;
+
+                var endpointCandidates = BuildModelEndpointCandidates(provider, baseUrl);
+                string lastError = null;
+                using var client = new System.Net.Http.HttpClient();
+                // 单端点 8s × 最多 5 个候选，最坏 40s，在前端 45s 超时之内
+                client.Timeout = TimeSpan.FromSeconds(8);
+                foreach (var endpoint in endpointCandidates)
+                {
+                    if (!IsValidTestUrl(endpoint)) continue;
+                    var models = FetchModelIds(client, endpoint, apiKey, out var endpointError);
+                    if (models == null || models.Count == 0)
+                    {
+                        lastError = endpointError ?? "供应商返回成功，但响应中没有模型 ID";
+                        continue;
+                    }
+
+                    Logger.Instance.Info("MessageBridge",
+                        $"HandleRefreshModels: provider={provider}, count={models.Count}, endpoint={endpoint}");
+                    return MakeResponse("models_refreshed", new
+                    {
+                        success = true,
+                        // 厂商在线可用列表（保持接口返回顺序，多数厂商新模型在前）
+                        models = models,
+                        // 当前已选中的模型（有序，供弹窗回显勾选状态）
+                        selected = providerConfig.Models ?? new string[0],
+                        currentModel = cfg.CurrentModel
+                    });
+                }
+
+                return MakeResponse("models_refreshed", new
+                {
+                    success = false,
+                    error = string.IsNullOrEmpty(lastError)
+                        ? "该供应商暂不支持在线获取模型列表，请继续使用内置模型列表"
+                        : lastError
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleRefreshModels failed", ex);
+                return MakeResponse("models_refreshed",
+                    new { success = false, error = "刷新模型列表失败，请检查 Base URL 和网络连接" });
+            }
+        }
+
+        /// <summary>
+        /// ★ 请求单个模型列表端点，并跟随分页（Anthropic 的 /v1/models 默认只返回 20 条，
+        /// 靠 has_more + last_id 翻页；不翻页就永远看不到全部模型）。
+        /// 失败时返回 null 并通过 error 输出原因，让调用方继续尝试下一个候选端点。
+        /// </summary>
+        private static List<string> FetchModelIds(
+            System.Net.Http.HttpClient client, string endpoint, string apiKey, out string error)
+        {
+            error = null;
+            var all = new List<string>();
+            var url = endpoint;
+            for (int page = 0; page < 10 && !string.IsNullOrEmpty(url); page++)
+            {
+                try
+                {
+                    var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Get, url);
+                    request.Headers.TryAddWithoutValidation("Authorization", "Bearer " + apiKey);
+                    request.Headers.TryAddWithoutValidation("x-api-key", apiKey);
+                    request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+                    request.Headers.TryAddWithoutValidation("Accept", "application/json");
+                    var response = System.Threading.Tasks.Task.Run(async () => await client.SendAsync(request)).Result;
+                    var body = System.Threading.Tasks.Task.Run(async () => await response.Content.ReadAsStringAsync()).Result;
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        error = $"HTTP {(int)response.StatusCode}: {SanitizeErrBody(body)}";
+                        Logger.Instance.Warning("MessageBridge",
+                            $"FetchModelIds: endpoint={url}, status={(int)response.StatusCode}");
+                        return null;
+                    }
+
+                    foreach (var id in ParseModelIds(body))
+                    {
+                        if (!all.Exists(existing => string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)))
+                            all.Add(id);
+                    }
+                    if (all.Count >= 500) break;
+                    url = BuildNextPageUrl(endpoint, body);
+                }
+                catch (Exception ex)
+                {
+                    error = "模型列表请求失败";
+                    Logger.Instance.Warning("MessageBridge",
+                        $"FetchModelIds failed: {url}, {ex.GetType().Name}: {ex.Message}");
+                    return null;
+                }
+            }
+            if (all.Count == 0) error = error ?? "供应商返回成功，但响应中没有模型 ID";
+            return all;
+        }
+
+        /// <summary>
+        /// ★ 解析 Anthropic 风格分页游标（has_more + last_id），拼下一页 URL。
+        /// 没有分页信息时返回 null（单页接口，如 OpenAI 兼容的 /v1/models）。
+        /// </summary>
+        internal static string BuildNextPageUrl(string endpoint, string json)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object) return null;
+                if (!root.TryGetProperty("has_more", out var hasMore) ||
+                    hasMore.ValueKind != JsonValueKind.True) return null;
+                if (!root.TryGetProperty("last_id", out var lastId) ||
+                    lastId.ValueKind != JsonValueKind.String) return null;
+                var cursor = lastId.GetString();
+                if (string.IsNullOrEmpty(cursor)) return null;
+                var baseUrl = endpoint;
+                var queryStart = baseUrl.IndexOf('?');
+                if (queryStart >= 0) baseUrl = baseUrl.Substring(0, queryStart);
+                return baseUrl + "?limit=100&after_id=" + Uri.EscapeDataString(cursor);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// ★ 各厂商已知的模型列表端点。
+        /// 修复点：厂商的对话地址（Anthropic 兼容层）和模型列表地址（OpenAI 兼容层）往往不同域/不同路径，
+        /// 例如智谱对话走 /api/anthropic 但模型列表在 /api/paas/v4/models、
+        /// 豆包对话走 /api/compatible 但模型列表在 /api/v3/models，
+        /// 只靠 BaseUrl 拼 /v1/models 永远拿不到列表。
+        /// </summary>
+        private static readonly Dictionary<string, string[]> KnownModelEndpoints =
+            new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["anthropic"] = new[] { "https://api.anthropic.com/v1/models" },
+                ["deepseek"] = new[] { "https://api.deepseek.com/models" },
+                ["stepfun"] = new[] { "https://api.stepfun.com/v1/models" },
+                ["openai"] = new[] { "https://api.openai.com/v1/models" },
+                ["kimi"] = new[] { "https://api.moonshot.cn/v1/models" },
+                ["qwen"] = new[] { "https://dashscope.aliyuncs.com/compatible-mode/v1/models" },
+                ["zhipu"] = new[] { "https://api.z.ai/api/paas/v4/models", "https://open.bigmodel.cn/api/paas/v4/models" },
+                ["minimax"] = new[] { "https://api.minimax.io/v1/models" },
+                ["doubao"] = new[] { "https://ark.cn-beijing.volces.com/api/v3/models" },
+            };
+
+        /// <summary>★ BaseUrl 中可以安全剥离的兼容层路径段（剥离后再拼 /v1/models）。</summary>
+        private static readonly HashSet<string> StrippableUrlSegments =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "anthropic", "compatible", "compatible-mode", "step_plan", "openai", "v1" };
+
+        /// <summary>★ 一次刷新最多尝试的端点数：每个端点最长 8s，避免长时间阻塞 Excel UI 线程。</summary>
+        private const int MaxModelEndpointCandidates = 5;
+
+        internal static List<string> BuildModelEndpointCandidates(string provider, string baseUrl)
+        {
+            var result = new List<string>();
+            void Add(string value)
+            {
+                if (result.Count >= MaxModelEndpointCandidates) return;
+                if (!string.IsNullOrWhiteSpace(value) &&
+                    !result.Exists(item => string.Equals(item, value, StringComparison.OrdinalIgnoreCase)))
+                    result.Add(value);
+            }
+
+            var trimmed = (baseUrl ?? "").TrimEnd('/');
+            string[] known = null;
+            if (!string.IsNullOrEmpty(provider)) KnownModelEndpoints.TryGetValue(provider, out known);
+            var host = TryGetHost(trimmed);
+
+            // 1) 与用户 BaseUrl 同域的厂商已知端点最先试：
+            //    用户没改 BaseUrl 的常见情况下第一发就命中，不用把错误候选逐个超时试过去
+            if (known != null && !string.IsNullOrEmpty(host))
+            {
+                foreach (var url in known)
+                {
+                    if (string.Equals(TryGetHost(url), host, StringComparison.OrdinalIgnoreCase)) Add(url);
+                }
+            }
+
+            // 2) 由用户配置的 BaseUrl 推导（自建网关/中转站命中）：
+            //    逐层剥离 /anthropic、/compatible-mode 等兼容层后缀，每层都试 /v1/models 与 /models
+            var current = trimmed;
+            for (int depth = 0; depth < 3 && !string.IsNullOrEmpty(current); depth++)
+            {
+                if (current.EndsWith("/v1", StringComparison.OrdinalIgnoreCase))
+                    Add(current + "/models");
+                else
+                {
+                    Add(current + "/v1/models");
+                    Add(current + "/models");
+                }
+
+                var slash = current.LastIndexOf('/');
+                // 不要越过 host（https://host 的最后一个 '/' 位于 scheme 之后）
+                if (slash <= current.IndexOf("//", StringComparison.Ordinal) + 1) break;
+                var segment = current.Substring(slash + 1);
+                if (!StrippableUrlSegments.Contains(segment)) break;
+                current = current.Substring(0, slash);
+            }
+
+            // 3) 其余厂商已知端点兜底（如智谱的 open.bigmodel.cn 备用域名）
+            if (known != null)
+            {
+                foreach (var url in known) Add(url);
+            }
+            return result;
+        }
+
+        private static string TryGetHost(string url)
+        {
+            return Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host : null;
+        }
+
+        internal static List<string> ParseModelIds(string json)
+        {
+            var models = new List<string>();
+            using var document = JsonDocument.Parse(json);
+            JsonElement array = default;
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
+                array = document.RootElement;
+            else if (document.RootElement.TryGetProperty("data", out var data) &&
+                     data.ValueKind == JsonValueKind.Array)
+                array = data;
+            else if (document.RootElement.TryGetProperty("models", out var modelArray) &&
+                     modelArray.ValueKind == JsonValueKind.Array)
+                array = modelArray;
+            if (array.ValueKind != JsonValueKind.Array) return models;
+
+            foreach (var item in array.EnumerateArray())
+            {
+                string id = null;
+                if (item.ValueKind == JsonValueKind.String) id = item.GetString();
+                else if (item.ValueKind == JsonValueKind.Object &&
+                         item.TryGetProperty("id", out var idElement) &&
+                         idElement.ValueKind == JsonValueKind.String)
+                    id = idElement.GetString();
+                if (string.IsNullOrWhiteSpace(id) || id.Length > 200) continue;
+                if (!models.Exists(existing => string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)))
+                    models.Add(id);
+                if (models.Count >= 500) break;
+            }
+            // ★ 不再按字母排序：厂商接口普遍把最新模型排在最前，排序后新模型会沉到列表中间，
+            // 用户反馈"看不到最新模型"。保持接口原始顺序，排序交给前端"模型优先级"拖拽。
+            return models;
+        }
+
+        /// <summary>
+        /// ★ 保存某个 provider 的"已选模型"有序列表（数组顺序 = 优先级，第 0 个为主模型）。
+        /// 前端在导入 / 新增 / 删除 / 拖拽排序后调用。
+        /// </summary>
+        private string HandleSetProviderModels(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var cfg = ConfigManager.Instance.Current;
+                if (string.IsNullOrEmpty(provider) || !cfg.Providers.ContainsKey(provider))
+                    return MakeResponse("provider_models_saved", new { success = false, error = "未知的模型供应商" });
+
+                if (!payload.TryGetProperty("models", out var arr) || arr.ValueKind != JsonValueKind.Array)
+                    return MakeResponse("provider_models_saved", new { success = false, error = "models 必须是数组" });
+
+                var models = new List<string>();
+                foreach (var item in arr.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String) continue;
+                    var id = (item.GetString() ?? "").Trim();
+                    if (!IsValidModelName(id)) continue;
+                    if (models.Exists(existing => string.Equals(existing, id, StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    models.Add(id);
+                    if (models.Count >= 100) break;  // 优先级列表没必要超过 100 条
+                }
+
+                if (models.Count == 0)
+                    return MakeResponse("provider_models_saved",
+                        new { success = false, error = "至少需要保留一个模型" });
+
+                if (!ConfigManager.Instance.UpdateProviderModels(provider, models.ToArray()))
+                    return MakeResponse("provider_models_saved", new { success = false, error = "保存失败" });
+
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleSetProviderModels: provider={provider}, count={models.Count}, primary={models[0]}");
+                return MakeResponse("provider_models_saved", new
+                {
+                    success = true,
+                    models = models,
+                    defaultModel = models[0],
+                    currentModel = cfg.CurrentModel
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleSetProviderModels failed", ex);
+                return MakeResponse("provider_models_saved", new { success = false, error = "保存模型列表失败" });
+            }
+        }
+
+        /// <summary>★ 模型名合法性：非空、长度受限、不含控制字符/空白（防止脏数据写进 config.json）。</summary>
+        private static bool IsValidModelName(string id)
+        {
+            if (string.IsNullOrWhiteSpace(id) || id.Length > 200) return false;
+            foreach (var c in id)
+            {
+                if (char.IsControl(c) || char.IsWhiteSpace(c)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// ★ 测试 API Key 连接（不保存任何数据）
         /// 向 baseUrl 发一个 Anthropic Messages API 的 1-token 请求
         /// ★ C-3 修复：添加 URL 安全校验，防止 SSRF 探测内网服务
@@ -640,6 +1008,7 @@ namespace DeepExcel.AddIn.Bridge
                     if (response.IsSuccessStatusCode)
                     {
                         Logger.Instance.Info("MessageBridge", $"HandleTestApiKey: success, latency={sw.ElapsedMilliseconds}ms");
+                        UpdateProviderConnectionState(provider, true);
                         return MakeResponse("api_test_result", new { success = true, latencyMs = sw.ElapsedMilliseconds, error = (string)null });
                     }
                     else
@@ -648,6 +1017,7 @@ namespace DeepExcel.AddIn.Bridge
                         // ★ H-1 修复：对 errBody 脱敏后再记录日志和返回前端
                         var safeBody = SanitizeErrBody(errBody);
                         Logger.Instance.Warning("MessageBridge", $"HandleTestApiKey: HTTP {response.StatusCode}, body={safeBody}");
+                        UpdateProviderConnectionState(provider, false);
                         return MakeResponse("api_test_result", new
                         {
                             success = false,
@@ -661,6 +1031,7 @@ namespace DeepExcel.AddIn.Bridge
                     sw.Stop();
                     // ★ H-1 修复：网络错误不直接暴露 hex.Message，返回模糊消息
                     Logger.Instance.Warning("MessageBridge", "HandleTestApiKey network error: " + hex.Message);
+                    UpdateProviderConnectionState(provider, false);
                     return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "网络错误，请检查网络连接和代理设置" });
                 }
                 catch (AggregateException aex)
@@ -669,6 +1040,7 @@ namespace DeepExcel.AddIn.Bridge
                     var inner = aex.InnerException?.Message ?? aex.Message;
                     // ★ H-1 修复：不直接暴露 inner，返回模糊消息
                     Logger.Instance.Warning("MessageBridge", "HandleTestApiKey error: " + inner);
+                    UpdateProviderConnectionState(provider, false);
                     return MakeResponse("api_test_result", new { success = false, latencyMs = sw.ElapsedMilliseconds, error = "请求失败，请稍后重试" });
                 }
             }
@@ -677,6 +1049,261 @@ namespace DeepExcel.AddIn.Bridge
                 Logger.Instance.Error("MessageBridge", "HandleTestApiKey failed", ex);
                 // ★ H-1 修复：返回模糊错误，详情只写日志
                 return MakeError("测试连接失败，请稍后重试");
+            }
+        }
+
+        /// <summary>
+        /// ★ 更新指定 provider 的最近一次连接状态（LastTestSuccess）并持久化。
+        /// 前端 provider 列表的圆点据此显示，而非 hasApiKey。
+        /// 测试成功→true，测试失败/删除 key→false。
+        /// </summary>
+        private void UpdateProviderConnectionState(string provider, bool success)
+        {
+            try
+            {
+                var cfg = ConfigManager.Instance.Current;
+                if (cfg.Providers.ContainsKey(provider))
+                {
+                    cfg.Providers[provider].LastTestSuccess = success;
+                    ConfigManager.Instance.Save();
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("MessageBridge",
+                    $"UpdateProviderConnectionState failed for {provider}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// ★ 获取指定 provider 的完整 API Key（明文）。
+        /// 用于前端"显示"按钮：用户点击后拉取完整 key 显示在输入框中，支持编辑。
+        /// </summary>
+        private string HandleGetApiKey(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+
+                if (string.IsNullOrEmpty(provider))
+                {
+                    return MakeError("provider 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                var apiKey = SecurityManager.Instance.GetApiKey(provider);
+                return MakeResponse("api_key", new { apiKey, hasKey = !string.IsNullOrEmpty(apiKey) });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleGetApiKey failed", ex);
+                return MakeError("获取 API Key 失败");
+            }
+        }
+
+        /// <summary>
+        /// ★ 删除指定 provider 的 API Key（清空已配置的 key）。
+        /// 删除 .crypt 文件，前端会刷新 hasApiKey 状态。
+        /// </summary>
+        private string HandleDeleteApiKey(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+
+                if (string.IsNullOrEmpty(provider))
+                {
+                    return MakeError("provider 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                bool deleted = SecurityManager.Instance.DeleteApiKey(provider);
+                // ★ 删除 key 同时清除连接状态：删除后即使 LastTestSuccess=true 也不应显示圆点
+                UpdateProviderConnectionState(provider, false);
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleDeleteApiKey: provider={provider}, deleted={deleted}");
+
+                // 如果删除的是当前 provider 的 key，需要刷新所有 session 的 sidecar 配置
+                RefreshConfigForAllSessions();
+
+                return MakeResponse("api_key_deleted", new { success = deleted });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleDeleteApiKey failed", ex);
+                return MakeError("删除 API Key 失败");
+            }
+        }
+
+        /// <summary>
+        /// ★ 设置指定 provider 的默认模型（DefaultModel）。
+        /// 该 provider 被切换到时，自动使用此默认模型。
+        /// 同时如果该 provider 是当前激活的，也更新 CurrentModel。
+        /// </summary>
+        private string HandleSetDefaultModel(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var model = payload.GetProperty("model").GetString();
+
+                if (string.IsNullOrEmpty(provider) || string.IsNullOrEmpty(model))
+                {
+                    return MakeError("provider 和 model 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                // 校验 model 在该 provider 的 models 列表中
+                var p = cfg.Providers[provider];
+                if (Array.IndexOf(p.Models, model) < 0)
+                {
+                    return MakeError($"模型 {model} 不在 {provider} 的支持列表中");
+                }
+
+                // 更新 DefaultModel
+                p.DefaultModel = model;
+
+                // 如果是当前 provider，同步更新 CurrentModel
+                if (cfg.CurrentProvider == provider)
+                {
+                    cfg.CurrentModel = model;
+                }
+
+                ConfigManager.Instance.Save();
+                RefreshConfigForAllSessions();
+
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleSetDefaultModel: provider={provider}, defaultModel={model}, isCurrent={cfg.CurrentProvider == provider}");
+
+                return MakeResponse("default_model_set", new { success = true, provider, defaultModel = model });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleSetDefaultModel failed", ex);
+                return MakeError("设置默认模型失败");
+            }
+        }
+
+        /// <summary>
+        /// ★ 设置全局默认厂商（DefaultProvider）。全局唯一：只能有 1 家厂商为默认。
+        /// 前端 provider 列表会把默认厂商排在最前；输入框下拉默认值取该厂商的 DefaultModel。
+        /// </summary>
+        private string HandleSetDefaultProvider(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+
+                if (string.IsNullOrEmpty(provider))
+                {
+                    return MakeError("provider 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                // ★ 全局唯一：直接覆盖 DefaultProvider（旧值自动失效）
+                cfg.DefaultProvider = provider;
+
+                ConfigManager.Instance.Save();
+                RefreshConfigForAllSessions();
+
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleSetDefaultProvider: defaultProvider={provider}");
+
+                return MakeResponse("default_provider_set", new { success = true, defaultProvider = provider });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleSetDefaultProvider failed", ex);
+                return MakeError("设置默认厂商失败");
+            }
+        }
+
+        /// <summary>
+        /// ★ 切换当前会话使用的模型（输入框下拉选择后触发）。
+        /// 对话输出结束后由前端调用，切换到用户选择的 provider+model。
+        /// ★ 关键：sidecar 启动时基于第一个 config 创建 ClaudeSDKClient，client 的
+        /// base_url/model/api_key 在整个 sidecar 生命周期内固定。UpdateConfig 消息被
+        /// route_message 入队但 main() 不再消费——所以单纯发 config 无效。
+        /// 必须重启 sidecar 进程，让新 sidecar 基于新 config 创建新 client。
+        /// 重启会丢失 SDK 内部对话上下文，但 stream_end 后切换=下条消息开始新对话语义，可接受。
+        /// </summary>
+        private string HandleSwitchModel(Message msg)
+        {
+            try
+            {
+                var payload = msg.Payload.Value;
+                var provider = payload.GetProperty("provider").GetString();
+                var model = payload.GetProperty("model").GetString();
+
+                if (string.IsNullOrEmpty(provider) || string.IsNullOrEmpty(model))
+                {
+                    return MakeError("provider 和 model 不能为空");
+                }
+
+                var cfg = ConfigManager.Instance.Current;
+                if (!cfg.Providers.ContainsKey(provider))
+                {
+                    return MakeError($"未知的 provider: {provider}");
+                }
+
+                var p = cfg.Providers[provider];
+                if (Array.IndexOf(p.Models, model) < 0)
+                {
+                    return MakeError($"模型 {model} 不在 {provider} 的支持列表中");
+                }
+
+                // ★ 切换 provider + model，ConfigManager 会 Save 并触发 OnConfigChanged
+                bool ok = ConfigManager.Instance.SwitchProvider(provider, model);
+                if (!ok) return MakeError("切换模型失败");
+
+                // ★ 重启活动 session 的 sidecar，让新 sidecar 用新 config 创建 client。
+                // 不重启的话 base_url 仍是旧的，但 model 名变了 → API 报 400 model not supported。
+                var session = GetOrCreateActiveSession();
+                if (session != null)
+                {
+                    Logger.Instance.Info("MessageBridge",
+                        $"HandleSwitchModel: restarting sidecar for workbook={session.WorkbookName}");
+                    session.Sidecar.Restart();
+                    // 重启后发新 config，sidecar 启动时 await 第一个 config 创建 client
+                    SendConfigToSession(session);
+                }
+
+                // 其他非活动 session 也刷新（下次发消息时新建 session 会用新 config）
+                RefreshConfigForAllSessions();
+
+                Logger.Instance.Info("MessageBridge",
+                    $"HandleSwitchModel: provider={provider}, model={model}, sidecarRestarted={session != null}");
+
+                return MakeResponse("model_switched", new { success = true, provider, model });
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("MessageBridge", "HandleSwitchModel failed", ex);
+                return MakeError("切换模型失败");
             }
         }
 
@@ -1499,13 +2126,14 @@ namespace DeepExcel.AddIn.Bridge
 
         public ToolResult ExecuteVBA(string code, string macroName = null)
         {
-            var result = _vbaExecutor.Execute(code, macroName ?? "DeepExcel_TempMacro");
+            var result = _vbaExecutor.Execute(code, macroName);
             return new ToolResult
             {
                 Name = result.Name,
                 Success = result.Success,
                 Data = result.Data,
                 Error = result.Error,
+                Suggestion = result.Suggestion,
             };
         }
 

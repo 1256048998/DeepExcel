@@ -7,6 +7,18 @@ export interface AttachmentItem {
   size: number
 }
 
+/**
+ * ★ 模型选择下拉单选项：每个已连接 provider 的每个模型作为一个选项。
+ * 输入框底部工具栏渲染 select，按 provider 分组（optgroup）。
+ * value 用 `${provider}::${model}` 格式唯一标识。
+ */
+export interface ModelOption {
+  provider: string             // provider key, e.g. "anthropic"
+  providerDisplayName: string  // e.g. "Claude (Anthropic)"
+  model: string                // model name, e.g. "claude-sonnet-5"
+  isPrimary: boolean           // 是否该 provider 的主模型（模型优先级第 1 项 / DefaultModel）
+}
+
 interface Props {
   value: string
   onChange: (val: string) => void
@@ -30,6 +42,12 @@ interface Props {
   prompts?: PromptTemplate[]
   // ★ 从下拉新建提示词（打开管理面板）
   onCreatePrompt?: () => void
+  // ★ 模型选择下拉单：列出已连接 provider 的所有模型
+  modelOptions?: ModelOption[]
+  // ★ 当前选中的模型（`${provider}::${model}` 格式）
+  selectedModel?: string
+  // ★ 切换模型：用户选择后调用，App.tsx 会在 stream_end 后真正切换
+  onModelChange?: (provider: string, model: string) => void
 }
 
 export function InputArea({
@@ -38,6 +56,7 @@ export function InputArea({
   attachments = [], onDeleteAttachment,
   permissionPending = false,
   prompts = [], onCreatePrompt,
+  modelOptions = [], selectedModel, onModelChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -164,62 +183,106 @@ export function InputArea({
           disabled={disabled}
         />
       </div>
-      {/* ★ 底部工具栏：左上传 + 右发送/停止，无额外边框 */}
+      {/* ★ 底部工具栏：左上传 + 右模型选择+发送/停止，无额外边框 */}
       <div className="input-toolbar">
-        {onUploadAttachment && (
-          <button
-            className="toolbar-btn"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading || disabled}
-            title={uploading ? '上传中...' : '上传附件'}
-            type="button"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="17 8 12 3 7 8" />
-              <line x1="12" y1="3" x2="12" y2="15" />
-            </svg>
-            {attachmentCount > 0 && (
-              <span
-                className="attach-badge"
-                title={`${attachmentCount} 个附件，点击查看`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onViewAttachments?.()
-                }}
-              >
-                {attachmentCount}
-              </span>
-            )}
-            {uploading && <span className="attach-loading" />}
-          </button>
-        )}
-        {disabled && onStop && !permissionPending ? (
-          <button
-            onClick={onStop}
-            className="toolbar-btn stop"
-            title="停止生成"
-            type="button"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
-            <span>停止</span>
-          </button>
-        ) : (
-          <button
-            onClick={onSend}
-            disabled={disabled || !value.trim()}
-            className="toolbar-btn send"
-            title="发送（Enter）"
-            type="button"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="22" y1="2" x2="11" y2="13" />
-              <polygon points="22 2 15 22 11 13 2 9 22 2" />
-            </svg>
-          </button>
-        )}
+        {/* 左侧工具组：上传按钮 */}
+        <div className="toolbar-left">
+          {onUploadAttachment && (
+            <button
+              className="toolbar-btn"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading || disabled}
+              title={uploading ? '上传中...' : '上传附件'}
+              type="button"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              {attachmentCount > 0 && (
+                <span
+                  className="attach-badge"
+                  title={`${attachmentCount} 个附件，点击查看`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onViewAttachments?.()
+                  }}
+                >
+                  {attachmentCount}
+                </span>
+              )}
+              {uploading && <span className="attach-loading" />}
+            </button>
+          )}
+        </div>
+        {/* 右侧工具组：模型选择 + 发送/停止 */}
+        <div className="toolbar-right">
+          {/* ★ 模型选择下拉单：列出已连接 provider 的所有模型，按 provider 分组。
+              默认值 = 默认厂商的主模型（模型优先级第 1 项）。
+              选择后不立即切换，等当前对话输出结束（stream_end）后才切换。 */}
+          {onModelChange && modelOptions.length > 0 && (
+            <select
+              className="toolbar-model-select"
+              value={selectedModel}
+              onChange={e => {
+                const v = e.target.value
+                const sep = v.indexOf('::')
+                if (sep > 0) {
+                  const p = v.slice(0, sep)
+                  const m = v.slice(sep + 2)
+                  onModelChange(p, m)
+                }
+              }}
+              disabled={disabled}
+              title="选择对话使用的模型（对话输出结束后切换）"
+            >
+              {(() => {
+                // 按 provider 分组
+                const groups: Record<string, ModelOption[]> = {}
+                for (const opt of modelOptions) {
+                  if (!groups[opt.provider]) groups[opt.provider] = []
+                  groups[opt.provider].push(opt)
+                }
+                return Object.entries(groups).map(([provider, opts]) => (
+                  <optgroup key={provider} label={opts[0]?.providerDisplayName || provider}>
+                    {opts.map(o => (
+                      <option key={`${o.provider}::${o.model}`} value={`${o.provider}::${o.model}`}>
+                        {o.isPrimary ? `${o.model} · 主模型` : o.model}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))
+              })()}
+            </select>
+          )}
+          {disabled && onStop && !permissionPending ? (
+            <button
+              onClick={onStop}
+              className="toolbar-btn stop"
+              title="停止生成"
+              type="button"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+              <span>停止</span>
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={disabled || !value.trim()}
+              className="toolbar-btn send"
+              title="发送（Enter）"
+              type="button"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
       </div>
       </div>

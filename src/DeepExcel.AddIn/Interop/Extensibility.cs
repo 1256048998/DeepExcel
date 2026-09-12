@@ -3,7 +3,10 @@ using System.Runtime.InteropServices;
 
 namespace Extensibility
 {
-    [ComVisible(true)]
+    // ★ [ComImport] 必须有：声明这是"从 COM 导入的接口"，CLR 会按 COM vtable 布局生成 CCW。
+    // 若改用 [ComVisible(true)]，CLR 会将其视为"托管接口导出给 COM"，vtable 布局与 Excel 期望的
+    // IDTExtensibility2 不一致，导致 QI 成功但 OnConnection 调用时 vtable 偏移错误，静默失败。
+    [ComImport]
     [Guid("B65AD801-ABAF-11D0-BB8B-00A0C90F2744")]
     [InterfaceType(ComInterfaceType.InterfaceIsDual)]
     public interface IDTExtensibility2

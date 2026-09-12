@@ -1,4 +1,4 @@
-# DeepExcel WPS 加载项构建脚本
+﻿# DeepExcel WPS 加载项构建脚本
 # 构建 React 前端 + 复制到 WPS 加载项目录
 #
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\build-wps.ps1
@@ -46,7 +46,7 @@ Write-Host ""
 
 # 2. 复制构建产物到 WPS 加载项的 web/ 目录
 Write-Host "[2/3] Copying build artifacts to WPS addin..." -ForegroundColor Yellow
-$webSrcDir = Join-Path $uiDir "dist"
+$webSrcDir = Join-Path $projectRoot "src\DeepExcel.AddIn\WebViewAssets"
 if (-not (Test-Path $webSrcDir)) {
     Write-Host "ERROR: dist directory not found at $webSrcDir" -ForegroundColor Red
     exit 1
@@ -86,7 +86,17 @@ $requiredFiles = @(
     "sidecar-host.js",
     "tool-dispatcher.js",
     "wps-actions.js",
-    "jsa-executor.js"
+    "jsa-executor.js",
+    # ★ 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
+    "config-store.js",
+    "credential-store.js",
+    "model-service.js",
+    "dpapi-cli.py",
+    # ★ 对话历史 + 附件
+    "conversation-store.js",
+    "attachment-store.js",
+    "images\panel.svg",
+    "images\help.svg"
 )
 
 $allPresent = $true
@@ -101,12 +111,19 @@ foreach ($file in $requiredFiles) {
 }
 
 # 检查 web/ 目录
-$indexHtml = Join-Path $webDestDir "index.html"
-if (Test-Path $indexHtml) {
-    Write-Host "  [OK] web/index.html" -ForegroundColor Green
-} else {
-    Write-Host "  [MISSING] web/index.html" -ForegroundColor Red
-    $allPresent = $false
+$requiredWebFiles = @(
+    "index.html",
+    "assets\index.js",
+    "assets\index.css"
+)
+foreach ($file in $requiredWebFiles) {
+    $path = Join-Path $webDestDir $file
+    if ((Test-Path -LiteralPath $path -PathType Leaf) -and ((Get-Item -LiteralPath $path).Length -gt 0)) {
+        Write-Host "  [OK] web/$($file.Replace('\', '/'))" -ForegroundColor Green
+    } else {
+        Write-Host "  [MISSING/EMPTY] web/$($file.Replace('\', '/'))" -ForegroundColor Red
+        $allPresent = $false
+    }
 }
 
 # 检查 sidecar
@@ -123,6 +140,12 @@ if (-not $allPresent) {
     Write-Host "ERROR: Some files are missing. Build incomplete." -ForegroundColor Red
     exit 1
 }
+
+& node (Join-Path $scriptDir 'test-wps-main.js')
+if ($LASTEXITCODE -ne 0) { throw 'WPS main.js smoke test failed' }
+
+& node (Join-Path $scriptDir 'test-wps-model-service.js')
+if ($LASTEXITCODE -ne 0) { throw 'WPS model-service test failed' }
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green

@@ -32,6 +32,7 @@ QiTest.*
 
 # ===== 凭证与敏感数据 =====
 **/credentials/
+.local-signing/
 *.crypt
 key_*.crypt
 config.json
@@ -49,6 +50,9 @@ src/DeepExcel.AddIn/WebViewAssets/assets/
 
 # ===== 发布产物 =====
 dist/
+deploy/payload/
+deploy/DeepExcel.reg.iss
+deploy/Includes/MicrosoftEdgeWebview2Setup.exe
 
 # ===== Python =====
 __pycache__/
@@ -60,3 +64,14 @@ venv/
 # ===== 系统文件 =====
 Thumbs.db
 .DS_Store
+
+# ===== 本地产物 / 工具草稿（不入库） =====
+# WPS 加载项的构建产物（由 scripts/build-wps.ps1 从源目录复制生成）
+src/DeepExcel.Wps/web/
+src/DeepExcel.Wps/sidecar/
+
+release/
+.workbuddy/
+rd_git.json
+rd_tree.json
+_commit_msg.txt

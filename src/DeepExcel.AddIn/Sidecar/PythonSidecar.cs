@@ -23,6 +23,8 @@ namespace DeepExcel.AddIn.Sidecar
         private readonly Control _uiControl;
         private readonly ToolDispatcher _dispatcher;
         private readonly object _writeLock = new object();
+        private readonly object _stderrLock = new object();
+        private readonly Queue<string> _stderrTail = new Queue<string>();
 
         /// <summary>
         /// ★ 暴露 ToolDispatcher 供 MessageBridge 注入 Attachments 引用。
@@ -90,6 +92,7 @@ namespace DeepExcel.AddIn.Sidecar
             }
             _exited = 0;
             _stopping = false;
+            lock (_stderrLock) { _stderrTail.Clear(); }
 
             var psi = new ProcessStartInfo
             {
@@ -162,7 +165,10 @@ namespace DeepExcel.AddIn.Sidecar
                 {
                     try
                     {
-                        OnError?.Invoke(this, "AI 助手进程异常退出 (code=" + exitCode + ")，请重新发送消息");
+                        var detail = GetStderrSummary();
+                        var message = "AI 助手进程异常退出 (code=" + exitCode + ")";
+                        if (!string.IsNullOrEmpty(detail)) message += "：" + detail;
+                        OnError?.Invoke(this, message);
                         OnStreamEnd?.Invoke(this, 0, 0);
                     }
                     catch (Exception ex) { Logger.Instance.Warning("PythonSidecar", "OnProcessExited notify failed: " + ex.Message); }
@@ -407,6 +413,26 @@ namespace DeepExcel.AddIn.Sidecar
             // 不是真正的错误，不应转发给前端显示给用户。
             // 只记录到日志文件供开发诊断用。
             Logger.Instance.Info("PythonSidecar", "stderr: " + e.Data);
+            lock (_stderrLock)
+            {
+                _stderrTail.Enqueue(e.Data);
+                while (_stderrTail.Count > 12) _stderrTail.Dequeue();
+            }
+        }
+
+        private string GetStderrSummary()
+        {
+            lock (_stderrLock)
+            {
+                var line = _stderrTail.LastOrDefault(value =>
+                    value.IndexOf("Error", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    value.IndexOf("Exception", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    value.IndexOf("No module named", StringComparison.OrdinalIgnoreCase) >= 0);
+                if (string.IsNullOrWhiteSpace(line)) line = _stderrTail.LastOrDefault();
+                if (string.IsNullOrWhiteSpace(line)) return null;
+                line = line.Replace("\r", " ").Replace("\n", " ").Trim();
+                return line.Length <= 300 ? line : line.Substring(0, 300);
+            }
         }
 
         /// <summary>
