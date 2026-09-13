@@ -28,7 +28,27 @@
 | 16 | 工具调用重复显示 | `OnToolUse` 和 `OnToolCall` 都发 `tool_call` 给 UI | `OnToolCall` 只记日志，`OnToolUse` 去掉 `mcp__excel__` 前缀 |
 | 17 | 创建图表崩溃 | `Shapes.AddChart2` 在某些 Excel 版本抛 HRESULT | try-catch 回退到 `Shapes.AddChart` |
 | 18 | 无法重新编译 | DLL 被 Excel 进程锁定 | 编译前 `Stop-Process EXCEL -Force` |
-| 19 | git push 超时 | GitHub 连接慢 | `git config --global http.proxy http://127.0.0.1:7890` |
+| 19 | git push 超时 | GitHub 连接慢 | ~~`git config --global http.proxy http://127.0.0.1:7890`~~ **此建议已作废，见下方说明** |
+
+> **关于第 19 条（2026-09-12 更正）**
+>
+> 不要在全局配置里写死代理端口。7890 后来长期不开，而 git 仍按配置去连它，
+> 报的是 `Failed to connect to 127.0.0.1 port 443`——看起来像本地故障，
+> 实际只是代理没跑，排查方向会被带偏。
+>
+> 现已 `git config --global --unset http.proxy`（https.proxy 同）。直连
+> GitHub 实测可达。真需要代理时临时用环境变量，不要写回全局配置：
+>
+> ```bash
+> https_proxy=http://127.0.0.1:<当前端口> git push
+> ```
+>
+> 判断代理端口是否真的在监听：
+>
+> ```bash
+> (echo > /dev/tcp/127.0.0.1/7890) 2>/dev/null && echo listening || echo dead
+> ```
+
 
 ---
 
