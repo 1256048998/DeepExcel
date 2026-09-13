@@ -103,6 +103,10 @@ $args = @(
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Net.Http.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Windows.Forms.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Xml.dll"',
+    # JavaScriptSerializer, used only by Updates/ to parse the signed update
+    # manifest. In the GAC, so the same source also compiles into the standalone
+    # DeepExcel.Updater.exe with no files beside it.
+    '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Web.Extensions.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\System.Xml.Linq.dll"',
     '/reference:"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\Microsoft.CSharp.dll"',
     '/reference:"C:\Program Files\Microsoft Office\root\Office16\ADDINS\PowerPivot Excel Add-in\Microsoft.Office.Interop.Excel.dll"',

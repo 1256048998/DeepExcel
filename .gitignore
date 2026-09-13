@@ -36,6 +36,11 @@ QiTest.*
 *.crypt
 key_*.crypt
 config.json
+# 更新签名私钥。scripts/update_signing.py genkey 已经拒绝写进仓库内，
+# 这条是第二道防线：私钥一旦泄露，持有者可以向所有已安装客户端推送并
+# 执行任意代码，而且只能靠发新版客户端换公钥才能收回。
+*.pem
+*.key
 
 # ===== IDE =====
 .vs/

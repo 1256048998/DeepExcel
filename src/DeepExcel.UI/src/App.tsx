@@ -12,6 +12,7 @@ import type { AccountStatus } from './components/AccountPanel'
 import { PermissionDrawer } from './components/PermissionDrawer'
 import type { ChangePreviewData } from './components/ChangePreview'
 import { PromptManager } from './components/PromptManager'
+import { UpdateBanner } from './components/UpdateBanner'
 import type { Message, ModelConfig } from './types'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -688,6 +689,9 @@ export default function App() {
           </button>
         </div>
       </header>
+
+      {/* 只在新版本已下载并验签通过时出现，其余时间不占任何空间 */}
+      <UpdateBanner />
 
       <MessageList
         messages={messages}

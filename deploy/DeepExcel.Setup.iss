@@ -132,6 +132,11 @@ Name: "{group}\{#AppName} 诊断与修复"; Filename: "{app}\DeepExcel.Repair.ex
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userappdata}\kingsoft\wps\jsaddons\DeepExcel_{#AppVersion}"
+; Staged update packages. An installer is tens of megabytes, and leaving one
+; behind after an uninstall is the kind of thing users find months later.
+; Configuration and credentials under {userappdata}\DeepExcel are deliberately
+; left alone -- reinstalling should not mean setting up API keys again.
+Type: filesandordirs; Name: "{localappdata}\DeepExcel\updates"
 
 [Code]
 // ---------------------------------------------------------------------------

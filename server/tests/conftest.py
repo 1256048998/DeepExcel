@@ -32,6 +32,7 @@ def _reset(**env: str | None) -> None:
         "HOSTED_PROXY_BASE_URL", "BOOTSTRAP_ADMIN_EMAIL", "BOOTSTRAP_ADMIN_PASSWORD",
         "TELEMETRY_ENABLED", "TELEMETRY_MAX_BATCH", "ENDPOINT_CONFIG_TTL_SECONDS",
         "ACCESS_TOKEN_TTL_SECONDS", "REFRESH_TOKEN_TTL_SECONDS", "ADMIN_ORIGIN",
+        "UPDATE_MANIFEST_DIR",
     ]:
         os.environ.pop(key, None)
     for key, value in env.items():
@@ -39,6 +40,11 @@ def _reset(**env: str | None) -> None:
             os.environ[key] = value
     config.reset_settings_for_tests()
     db.reset_engine_for_tests()
+    # The feed caches by mtime, which cannot distinguish two writes inside one
+    # filesystem tick.
+    from app.routers import updates as updates_router
+
+    updates_router.reset_cache()
 
 
 @pytest.fixture

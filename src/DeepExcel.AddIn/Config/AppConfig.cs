@@ -46,6 +46,8 @@ namespace DeepExcel.AddIn.Config
         public Dictionary<string, ProviderConfig> Providers { get; set; } = new();
         public GeneralSettings General { get; set; } = new();
         public UISettings UI { get; set; } = new();
+        /// <summary>★ 自动更新。旧 config.json 无此字段时用默认值（开启，但 FeedUrl 为空即不生效）。</summary>
+        public UpdateSettings Update { get; set; } = new();
 
         public static AppConfig CreateDefault()
         {
@@ -188,6 +190,21 @@ namespace DeepExcel.AddIn.Config
         /// <summary>★ Claude Agent SDK 控制循环最大轮次（工具调用往返次数）。
         /// 达到限制后 SDK 返回 error_max_turns。默认 20，防止 AI 无限循环调用工具。</summary>
         public int MaxTurns { get; set; } = 20;
+    }
+
+    /// <summary>
+    /// ★ 自动更新设置。
+    ///
+    /// FeedUrl 默认为空：没人配置过的构建不应该去联系任何地址。加上客户端内嵌的
+    /// 更新签名公钥默认也是空的，整条更新链路"默认关闭、显式开启"，不存在一个
+    /// 写死的默认域名可以被抢注。
+    /// </summary>
+    public class UpdateSettings
+    {
+        public bool Enabled { get; set; } = true;
+        /// <summary>签名更新清单的 https 地址，例如 https://api.example.com/api/v1/updates/latest。</summary>
+        public string FeedUrl { get; set; } = "";
+        public string Channel { get; set; } = "stable";
     }
 
     public class UISettings

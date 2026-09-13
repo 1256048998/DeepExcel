@@ -15,6 +15,7 @@ only surface as a broken install on a user's machine:
 
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -175,12 +176,135 @@ def test_signing_rejects_self_signed_sources(module):
                 os.environ[name] = value
 
 
+def test_updater_is_packaged(module):
+    """The updater must reach the install directory, or nothing self-updates.
+
+    It is also on the required-files list, because a missing one produces an
+    install that looks perfect and can never upgrade itself -- the same class of
+    omission that shipped WPS without jsplugins.xml.
+    """
+    check("DeepExcel.Updater.exe is copied into the payload",
+          "DeepExcel.Updater.exe" in module.EXCEL_ITEMS)
+    check("DeepExcel.Updater.exe is a required file",
+          "DeepExcel.Updater.exe" in module.EXCEL_REQUIRED_FILES)
+
+
+def test_update_manifest_guards(module):
+    """The update manifest guards.
+
+    Every failure here is invisible: a client that stops upgrading looks exactly
+    like a client nobody has upgraded yet.
+    """
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import update_signing
+
+    try:
+        update_signing._require_cryptography()
+    except Exception as exc:
+        check("cryptography is available for update signing", False, str(exc)[:80])
+        return
+
+    workspace = tempfile.mkdtemp(prefix="deepexcel-update-guards-")
+    saved_dist = module.DIST
+    saved_reader = update_signing.read_embedded_key
+    saved_env = {
+        name: os.environ.get(name)
+        for name in ("DEEPEXCEL_UPDATE_KEY", "DEEPEXCEL_UPDATE_BASE_URL",
+                     "DEEPEXCEL_UPDATE_CHANNEL", "DEEPEXCEL_UPDATE_NOTES",
+                     "DEEPEXCEL_UPDATE_MINIMUM")
+    }
+    try:
+        module.DIST = workspace
+        for name in saved_env:
+            os.environ.pop(name, None)
+
+        setup = os.path.join(workspace, "DeepExcel.Setup.exe")
+        with open(setup, "wb") as stream:
+            stream.write(b"pretend installer")
+
+        def make_key(path):
+            hashes, serialization, padding, rsa = update_signing._require_cryptography()
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            with open(path, "wb") as stream:
+                stream.write(key.private_bytes(
+                    encoding=serialization.Encoding.PEM,
+                    format=serialization.PrivateFormat.PKCS8,
+                    encryption_algorithm=serialization.NoEncryption()))
+            return update_signing.describe_key(path)
+
+        release_key = os.path.join(workspace, "release.pem")
+        other_key = os.path.join(workspace, "other.pem")
+        release_info = make_key(release_key)
+        make_key(other_key)
+
+        # A client with no compiled-in public key cannot accept updates at all,
+        # so skipping the manifest is the consistent outcome, not an error.
+        update_signing.read_embedded_key = lambda *a, **k: None
+        check("no compiled-in key skips the manifest instead of failing",
+              module.write_update_manifest("0.6.0", setup) is None)
+
+        update_signing.read_embedded_key = lambda *a, **k: release_info
+        expect_failure(
+            "compiled-in key with no signing key is a hard failure",
+            lambda: module.write_update_manifest("0.6.0", setup),
+            "DEEPEXCEL_UPDATE_KEY is not set")
+
+        os.environ["DEEPEXCEL_UPDATE_KEY"] = release_key
+        expect_failure(
+            "a missing download base URL is a hard failure",
+            lambda: module.write_update_manifest("0.6.0", setup),
+            "DEEPEXCEL_UPDATE_BASE_URL is required")
+
+        os.environ["DEEPEXCEL_UPDATE_BASE_URL"] = "http://updates.example.com/v0.6.0"
+        expect_failure(
+            "a plain-http download URL is rejected",
+            lambda: module.write_update_manifest("0.6.0", setup),
+            "must be https")
+
+        os.environ["DEEPEXCEL_UPDATE_BASE_URL"] = "https://updates.example.com/v0.6.0"
+
+        # The one that matters: signing with a key the shipped client does not
+        # know breaks updating for everyone, all at once, with no symptom.
+        os.environ["DEEPEXCEL_UPDATE_KEY"] = other_key
+        expect_failure(
+            "signing with a key the client does not know is a hard failure",
+            lambda: module.write_update_manifest("0.6.0", setup),
+            "would reject this release")
+
+        os.environ["DEEPEXCEL_UPDATE_KEY"] = release_key
+        path = module.write_update_manifest("0.6.0", setup)
+        check("a matching key publishes a manifest", path is not None and os.path.isfile(path))
+
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        payload = update_signing.verify_manifest(
+            manifest, release_info["modulus_b64"], release_info["exponent_b64"])
+        check("the published manifest verifies under the client's key", True)
+        check("the manifest carries the installer's real digest",
+              payload["sha256"] == hashlib.sha256(b"pretend installer").hexdigest())
+        check("the manifest carries the installer's real size",
+              payload["size"] == len(b"pretend installer"))
+        check("the download URL is the published one",
+              payload["url"] == "https://updates.example.com/v0.6.0/DeepExcel.Setup.exe")
+    finally:
+        module.DIST = saved_dist
+        update_signing.read_embedded_key = saved_reader
+        for name, value in saved_env.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def main():
     module = load_module()
     print("=== package_release guards ===")
     test_probe_bitness_guard(module)
     test_write_checksums(module)
     test_signing_rejects_self_signed_sources(module)
+    test_updater_is_packaged(module)
+    test_update_manifest_guards(module)
 
     print()
     if FAILURES:

@@ -374,6 +374,12 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleAccountUsage();
                     case "account_sign_out":
                         return HandleAccountSignOut();
+                    case "update_status":
+                        return HandleUpdateStatus();
+                    case "update_check":
+                        return HandleUpdateCheck();
+                    case "update_install":
+                        return HandleUpdateInstall();
                     case "get_model_config":
                         return HandleGetModelConfig();
                     case "save_model_config":

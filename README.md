@@ -232,27 +232,92 @@ python scripts\package_release.py --version 0.5.0
 dist\DeepExcel.Setup.exe        # 面向用户的唯一交付物
 dist\DeepExcel-v0.5.0.zip      # 支持/诊断 payload
 dist\SHA256SUMS.txt             # 必须与安装包一起发布
+dist\update.json                # 签名更新清单，放到更新源上
 ```
 
 当前发布形态是**未签名安装包 + 公布 SHA-256**。签名链路完整保留：设置 `DEEPEXCEL_PFX`、`DEEPEXCEL_CERT_THUMBPRINT` 或 `USE_AZURE_TRUSTED_SIGNING` 任一即可自动签名，无需改代码。自签名证书会被打包脚本主动拒绝。
 
 完整流程见 [部署文档](docs/DEPLOYMENT.md)。
 
+## 自动更新
+
+**SmartScreen 只拦从浏览器下载、带"来源标记"（MOTW）的文件。**由已安装程序自己下载的更新包没有这个标记，所以首次安装痛一次，之后每个版本都静默完成——这是不买代码签名证书时摩擦降幅最大的一项。
+
+安全模型只有一句话：**服务端永远拿不到私钥，所以拿下服务端也推不了更新。**
+
+```
+私钥（离线保管）      签名 update.json
+   │
+   └─ 公钥 → 编译进客户端 → 客户端验签 → 校验 SHA-256 → 执行
+
+服务端只是原样转发已签名的清单，不签名、不持有私钥
+```
+
+### 一次性准备：生成签名密钥
+
+```bash
+python scripts/update_signing.py genkey --out D:/offline/deepexcel-update.pem
+```
+
+它会把公钥写进 `src/DeepExcel.AddIn/Updates/UpdateSigning.cs`，因此公钥和私钥不可能被手工改到不一致。**私钥生成后立刻挪到离线存储**：拿到它的人可以向所有已安装客户端推送并执行任意代码，而收回的唯一办法是发一个换了公钥的新客户端。脚本拒绝把私钥写进仓库内，`.gitignore` 再兜一层。
+
+改动公钥后必须重新编译并发布客户端——在此之前构建的客户端会拒绝新密钥签的清单。
+
+### 每次发版
+
+```bash
+export DEEPEXCEL_UPDATE_KEY=D:/offline/deepexcel-update.pem
+export DEEPEXCEL_UPDATE_BASE_URL=https://github.com/<owner>/<repo>/releases/download/v0.6.0
+python scripts/package_release.py --version 0.6.0
+```
+
+打包脚本会用客户端里那份公钥验证刚生成的 `update.json`，**签名密钥与客户端公钥不匹配时直接构建失败**。这条守卫的价值在于：不匹配不会有任何症状，所有客户端只会悄悄停止升级，看起来和"还没人升级"一模一样。
+
+可选：`DEEPEXCEL_UPDATE_CHANNEL`（默认 `stable`）、`DEEPEXCEL_UPDATE_NOTES`、`DEEPEXCEL_UPDATE_MINIMUM`（低于该版本的客户端不自动升级，提示手动重装）。
+
+发布时把 `DeepExcel.Setup.exe` 放到 `DEEPEXCEL_UPDATE_BASE_URL` 下，把 `update.json` 放到更新源上。
+
+### 服务端：更新源
+
+放文件即发布，无需重启：
+
+```bash
+UPDATE_MANIFEST_DIR=/srv/deepexcel/updates
+cp dist/update.json /srv/deepexcel/updates/stable.json
+```
+
+`GET /api/v1/updates/latest?channel=stable` 原样返回该文件（**刻意不鉴权**：登录过期或从未登录的用户同样需要拿到修复，清单的可信度来自签名而不是来自谁在请求）。
+
+### 客户端：指向更新源
+
+`%APPDATA%\DeepExcel\config.json`：
+
+```json
+{ "Update": { "Enabled": true, "FeedUrl": "https://api.example.com/api/v1/updates/latest", "Channel": "stable" } }
+```
+
+`FeedUrl` 默认为空，公钥默认也为空——**没人配置过的构建不会联系任何地址**，不存在一个写死的默认域名可以被抢注。
+
+流程：Excel 启动时后台检查（失败静默）→ 下载并验签、校验 SHA-256 → 面板出现一行"新版本已就绪"→ 用户点"重启安装"→ Excel 按正常流程关闭（未保存内容照常提示，用户取消也没关系，更新留到下次）→ `DeepExcel.Updater.exe` 重新验一遍签名和摘要 → 静默安装 → 重新打开 Excel。
+
+被拒绝的清单一律不安装，且每种拒绝都有独立原因：签名不符、未知密钥、版本不更新（防降级）、通道不符、非 https 地址、摘要或大小不符、低于最低可升级版本。
+
 ## 发布前验证
 
 至少完成：
 
 1. C# 加载项编译（`scripts\_compile_only.ps1`，需先关闭 Excel/WPS）；
-2. 诊断修复工具编译（`scripts\build-repair.ps1`）；
+2. 原生工具编译（`scripts\build-repair.ps1`：诊断修复 + 32 位探针 + 更新程序）；
 3. React 前端构建；
 4. C# 单元测试（`scripts\run-tests-csharp.ps1`）；
 5. 打包守卫测试（`python scripts\test_package_release.py`）；
-6. Sidecar 自然冷启动导入；
-7. WPS Ribbon/任务窗格回调测试；
-8. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
-9. `SHA256SUMS.txt` 与安装包一同发布。
+6. 更新链路端到端测试（`python scripts\test_updater_e2e.py`）；
+7. Sidecar 自然冷启动导入；
+8. WPS Ribbon/任务窗格回调测试；
+9. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
+10. `SHA256SUMS.txt` 与安装包一同发布；`update.json` 发布到更新源。
 
-第 8 步是硬性要求。开发机永远装得上——它已经有注册表项、有运行时、没有下载来源标记。v0.4.11 → v0.4.17 连续七个版本栽在这里，就是因为没有在干净机器上验证过。
+第 9 步是硬性要求。开发机永远装得上——它已经有注册表项、有运行时、没有下载来源标记。v0.4.11 → v0.4.17 连续七个版本栽在这里，就是因为没有在干净机器上验证过。
 
 ## 常见问题
 
@@ -324,7 +389,13 @@ dist\SHA256SUMS.txt             # 必须与安装包一起发布
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-tests-csharp.ps1
 python scripts\test_package_release.py
+python scripts\test_installer_script.py
+python scripts\test_sidecar_routing.py
+python scripts\test_sidecar_permissions.py
+python scripts\test_updater_e2e.py
 ```
+
+`test_updater_e2e.py` 用一次性密钥现编 `DeepExcel.Updater.exe`（编到临时目录，不碰仓库里那份刻意留空的公钥），再逐条验证被篡改的包、被伪造的签名、陌生密钥、降级、错通道各自的退出码。
 
 服务端测试：
 

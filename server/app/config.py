@@ -85,6 +85,14 @@ class Settings:
 
     admin_origin: str | None = field(default_factory=lambda: _env("ADMIN_ORIGIN"))
 
+    # ---- update feed -----------------------------------------------------
+    # Directory holding one already-signed manifest per channel, for example
+    # <dir>/stable.json. Publishing a release is a file drop; this server never
+    # signs anything and the signing key must never be present on it.
+    update_manifest_dir: str | None = field(
+        default_factory=lambda: _env("UPDATE_MANIFEST_DIR")
+    )
+
     telemetry_enabled: bool = field(
         default_factory=lambda: _env_bool("TELEMETRY_ENABLED", True)
     )

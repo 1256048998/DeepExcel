@@ -110,6 +110,13 @@ $compileArgs = @(
 & $csc $compileArgs 2>&1 | Where-Object { $_ -match 'error|warning CS' } | Select-Object -First 15
 if ($LASTEXITCODE -ne 0) { throw "Test compilation failed (exit $LASTEXITCODE)" }
 
+# Test data lives next to the test assembly, not in the repository tree, so the
+# tests do not have to guess where the repository root is at runtime.
+$fixtureSource = Join-Path $testDir 'fixtures'
+if (Test-Path $fixtureSource) {
+    Copy-Item $fixtureSource (Join-Path $outDir 'fixtures') -Recurse -Force
+}
+
 # Mirror the deployed layout: the add-in's binding redirects sit next to it.
 $appConfig = Join-Path $baseDir 'src\DeepExcel.AddIn\App.config'
 if (-not (Test-Path $appConfig)) { throw "Missing $appConfig" }

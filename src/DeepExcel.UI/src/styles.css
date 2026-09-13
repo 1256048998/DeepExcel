@@ -2925,3 +2925,47 @@ body {
   /* 分享码要能选中复制 */
   user-select: text;
 }
+
+/* ===== 更新提示条 =====
+   只在新版本就绪时渲染，固定一行。面板宽度常常只有 300px 左右，
+   所以版本文案可省略，按钮不可省略。 */
+.update-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+  color: #1e40af;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.update-banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-banner .header-btn {
+  flex-shrink: 0;
+  padding: 2px 8px;
+}
+
+.update-banner-close {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.update-banner-close:hover {
+  opacity: 1;
+}

@@ -13,7 +13,7 @@ from .config import get_settings
 from .db import create_all, get_session_factory
 from .models import Admin
 from .proxy import router as proxy_router
-from .routers import admin, auth, billing, session, skills, telemetry
+from .routers import admin, auth, billing, session, skills, telemetry, updates
 from .security import hash_password
 
 logger = logging.getLogger("deepexcel.server")
@@ -83,6 +83,9 @@ def create_app() -> FastAPI:
     app.include_router(admin.router)
     app.include_router(billing.router)
     app.include_router(skills.router)
+    # Unauthenticated on purpose: a signed-out client still needs to be able to
+    # pick up a fix, and the manifest's integrity comes from its signature.
+    app.include_router(updates.router)
     # Mounted unconditionally; the endpoint itself refuses to serve while
     # HOSTED_PROXY_BASE_URL is unset, so a deployment cannot start billing
     # traffic just because the route exists.
@@ -99,6 +102,7 @@ def create_app() -> FastAPI:
             "invite_required": settings.require_invite_code,
             "hosted_routing_available": bool(settings.hosted_proxy_base_url),
             "telemetry_enabled": settings.telemetry_enabled,
+            "update_feed_available": bool(settings.update_manifest_dir),
             "min_client_version": "0.5.0",
         }
 

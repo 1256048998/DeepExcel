@@ -11,6 +11,7 @@ release build must never silently produce a package that cannot load.
 """
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ PAYLOAD = os.path.join(DEPLOY, "payload")
 WEBVIEW_BOOTSTRAPPER = os.path.join(DEPLOY, "Includes", "MicrosoftEdgeWebview2Setup.exe")
 WEBVIEW_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
 CHECKSUM_FILE = "SHA256SUMS.txt"
+UPDATE_MANIFEST_FILE = "update.json"
 
 EXCEL_ITEMS = [
     "DeepExcel.AddIn.dll",
@@ -43,6 +45,10 @@ EXCEL_ITEMS = [
     # run when the ribbon tab does not appear.
     "DeepExcel.Repair.exe",
     "DeepExcel.Probe32.exe",
+    # Installs a staged, signature-verified update once Excel exits. Copied out
+    # of here into the staging directory at update time, because Inno Setup
+    # cannot overwrite a running executable.
+    "DeepExcel.Updater.exe",
     "Extensibility.dll",
     "Microsoft.Bcl.AsyncInterfaces.dll",
     "Microsoft.Office.Interop.Excel.dll",
@@ -69,6 +75,7 @@ EXCEL_REQUIRED_FILES = [
     "DeepExcel.AddIn.dll.config",
     "DeepExcel.Repair.exe",
     "DeepExcel.Probe32.exe",
+    "DeepExcel.Updater.exe",
     "Extensibility.dll",
     "Microsoft.Office.Interop.Excel.dll",
     "Microsoft.Vbe.Interop.dll",
@@ -525,6 +532,94 @@ def create_zip(version):
     return path
 
 
+def write_update_manifest(version, setup_path):
+    """Publishes dist/update.json so installed clients can upgrade themselves.
+
+    The policy is driven by what is compiled into the client, so the two can
+    never be inconsistent:
+
+      * no public key in the client -> the client cannot accept updates at all,
+        so skip the manifest and say so;
+      * public key present but no signing key here -> hard failure. This is the
+        dangerous combination: clients are waiting for a manifest and this build
+        would ship none, which looks exactly like "nobody has upgraded yet";
+      * both present -> sign, then verify the result against the client's own
+        public key before publishing.
+
+    That last check is the point of the whole function. A signing key that no
+    longer matches the compiled-in public key breaks updating for every user at
+    once, and nothing would report it -- clients would just quietly stop
+    upgrading. Catching it here costs milliseconds.
+    """
+    sys.path.insert(0, SCRIPTS)
+    import update_signing
+
+    embedded = update_signing.read_embedded_key()
+    private_key = os.environ.get("DEEPEXCEL_UPDATE_KEY")
+
+    if embedded is None:
+        print(
+            "[update] No update signing key is compiled into the client, so this\n"
+            "         build cannot self-update. Generate one with:\n"
+            "             python scripts/update_signing.py genkey --out <offline path>"
+        )
+        return None
+
+    if not private_key:
+        fail(
+            "This build has an update signing public key compiled in, so its clients\n"
+            "expect a signed update manifest, but DEEPEXCEL_UPDATE_KEY is not set.\n"
+            "Releasing without a manifest would silently stop every client from\n"
+            "upgrading. Set DEEPEXCEL_UPDATE_KEY to the private key, or pass\n"
+            "--no-update-manifest to publish this build deliberately without one."
+        )
+
+    base_url = os.environ.get("DEEPEXCEL_UPDATE_BASE_URL", "").rstrip("/")
+    if not base_url:
+        fail(
+            "DEEPEXCEL_UPDATE_BASE_URL is required to publish an update manifest.\n"
+            "It is the directory the installer will be downloaded from, for example\n"
+            "https://github.com/<owner>/<repo>/releases/download/v%s" % version
+        )
+    if not base_url.startswith("https://"):
+        fail("DEEPEXCEL_UPDATE_BASE_URL must be https: %s" % base_url)
+
+    signing_key = update_signing.describe_key(private_key)
+    if signing_key["key_id"] != embedded["key_id"]:
+        fail(
+            "The signing key does not match the public key compiled into this build "
+            "(signing %s, client expects %s). Every client would reject this release "
+            "as UnknownKey. Rebuild the client after running update_signing.py genkey, "
+            "or sign with the matching key."
+            % (signing_key["key_id"], embedded["key_id"])
+        )
+
+    payload = update_signing.build_payload(
+        version=version,
+        url="%s/%s" % (base_url, os.path.basename(setup_path)),
+        sha256=sha256_of_file(setup_path),
+        size=os.path.getsize(setup_path),
+        channel=os.environ.get("DEEPEXCEL_UPDATE_CHANNEL", "stable"),
+        released_at=dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        notes=os.environ.get("DEEPEXCEL_UPDATE_NOTES", ""),
+        minimum_upgradable_version=os.environ.get("DEEPEXCEL_UPDATE_MINIMUM") or None,
+    )
+    manifest = update_signing.sign_payload(private_key, payload)
+
+    # Prove the published artifact verifies under the client's key before it
+    # leaves this machine.
+    update_signing.verify_manifest(manifest, embedded["modulus_b64"], embedded["exponent_b64"])
+
+    path = os.path.join(DIST, UPDATE_MANIFEST_FILE)
+    with open(path, "w", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+    print("[update] Manifest: %s (key %s, channel %s)"
+          % (path, manifest["key_id"], payload["channel"]))
+    print("[update] Publish it at the URL the client's UpdateSettings.FeedUrl points to,")
+    print("[update] and put DeepExcel.Setup.exe at %s" % payload["url"])
+    return path
+
+
 def find_iscc():
     candidates = [
         os.environ.get("INNO_COMPILER"),
@@ -563,6 +658,12 @@ def main():
         "--force-unsigned",
         action="store_true",
         help="Ignore any signing credential in the shell and build an unsigned installer",
+    )
+    parser.add_argument(
+        "--no-update-manifest",
+        action="store_true",
+        help="Deliberately publish without dist/update.json; installed clients will not "
+             "see this release",
     )
     args = parser.parse_args()
 
@@ -617,6 +718,15 @@ def main():
 
         checksum_path = write_checksums([setup_path, zip_path])
         print("[package] Checksums: %s" % checksum_path)
+
+        if args.no_update_manifest:
+            print(
+                "[update] Skipped by --no-update-manifest. Installed clients will not\n"
+                "         see this release."
+            )
+        else:
+            write_update_manifest(args.version, setup_path)
+
         if signed:
             print("[package] Signed installer ready for distribution")
         else:

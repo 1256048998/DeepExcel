@@ -528,6 +528,15 @@ namespace DeepExcel.AddIn
                 }
                 catch (Exception acctEx) { Log("RestoreAccountSessionAsync failed: " + acctEx.Message); }
 
+                // 后台检查更新。与登录恢复同样刻意不阻塞：自动更新的全部价值就是
+                // 用户不参与它，所以它绝不能成为 Excel 启动变慢或失败的原因。
+                // 未配置更新源或未内置签名公钥时，这里立刻返回。
+                try
+                {
+                    _bridge.BeginBackgroundUpdateCheck();
+                }
+                catch (Exception updEx) { Log("BeginBackgroundUpdateCheck failed: " + updEx.Message); }
+
                 // 监听工作簿事件，实现会话生命周期管理
                 _excelApp.WorkbookBeforeClose += OnWorkbookBeforeClose;
                 _excelApp.WorkbookAfterSave += OnWorkbookAfterSave;
