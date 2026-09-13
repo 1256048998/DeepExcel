@@ -41,6 +41,15 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 - 发布 `jsplugins.xml` 到 `%APPDATA%\kingsoft\wps\jsplugins\`
 - 复制 JS 加载项文件到 WPS 加载项目录
 
+> ⚠ **这条是开发期路径，和发给用户的安装器走的不是同一套机制。**
+> `register-wps.ps1` 用的是 `jsplugins\jsplugins.xml`，而安装器用的是
+> `jsaddons\publish.xml`（见 [DEPLOYMENT.md](DEPLOYMENT.md) 「关键防退化约束」：
+> 新版 WPS 已限制 `jsplugins.xml/oem.ini` 部署路径）。
+>
+> 后果是：**在开发机上用本脚本验证通过，并不能说明用户装完能用。**
+> 已有现场反馈是 Excel 端正常而 WPS 端装了用不了。验证 WPS 必须用真实安装器，
+> 在一台干净机器上装完再看 Ribbon，见 DEPLOYMENT.md 的发布前检查第 4 条。
+
 ### 3. 启动 WPS 表格
 
 重启 WPS 表格，应能在 Ribbon 中看到 "DeepExcel" 选项卡。点击 "打开面板" 按钮即可启动 AI 面板。
@@ -61,7 +70,9 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 - **VBA 不可用**：WPS 个人版默认不含 VBA，DeepExcel 会自动改用 JSA（JS 宏）
 - **白名单限制**：WPS 12.0.1.17xx+ 需手动将 "DeepExcel" 加入信任的加载项列表
   - 路径：WPS → 选项 → 信任中心 → 加载项安全
-- **oem.ini 限制**：WPS 个人版 12.1.0.16910+ 限制 oem.ini 方式加载，本加载项用 jsplugins.xml 方式不受影响
+- **oem.ini / jsplugins.xml 限制**：WPS 个人版 12.1.0.16910+ 限制 oem.ini 方式加载。
+  新版对 `jsplugins.xml` 路径同样有限制，因此**安装器已改用 `jsaddons\publish.xml`**；
+  上面的 `register-wps.ps1` 仍走 jsplugins，只适用于开发调试
 
 ### 功能差异（vs Excel 端）
 
@@ -95,10 +106,17 @@ WPS 表格 (ET)
 
 ### 加载项不显示
 
+先确认你是**怎么装的**，两条路径查的地方不一样：
+
+- 用安装器装的（正式用户走这条）：检查 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`
+  里是否有 `url="DeepExcel_<版本>"` 的节点，且 `jsaddons\DeepExcel_<版本>\` 目录存在
+- 用 `register-wps.ps1` 装的（仅开发调试）：检查 `%APPDATA%\kingsoft\wps\jsplugins\jsplugins.xml`
+
+两条都适用的：
+
 1. 检查注册表：`HKCU\Software\kingsoft\office\ET\AddinsWL\DeepExcel` 是否存在
-2. 检查 jsplugins.xml 是否在 `%APPDATA%\kingsoft\wps\jsplugins\`
-3. WPS 个人版用户：检查信任中心是否已加白名单
-4. 重启 WPS 表格
+2. WPS 个人版用户：检查信任中心是否已加白名单
+3. 重启 WPS 表格
 
 ### Python sidecar 启动失败
 
