@@ -21,7 +21,12 @@
 param(
     [switch]$Launch,
     [switch]$Trace,
+    [switch]$WithWps,
     [string]$SetupPath,
+    # Path to a WPS installer on the host. Not downloaded automatically: the
+    # sandbox is disposable, so an automatic download would re-fetch several
+    # hundred MB on every run, and the download URL is not a stable contract.
+    [string]$WpsSetupPath,
     [string]$ResultPath = 'C:\DeepExcelVerify\result.txt'
 )
 
@@ -31,7 +36,7 @@ $ErrorActionPreference = 'Stop'
 # Host side: build the .wsb and launch
 # ---------------------------------------------------------------------------
 function Start-SandboxRun {
-    param([string]$Setup, [bool]$WithTrace)
+    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup)
 
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     if (-not $Setup) { $Setup = Join-Path $repoRoot 'dist\DeepExcel.Setup.exe' }
@@ -63,6 +68,14 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     $traceArg = ''
     if ($WithTrace) { $traceArg = ' -Trace' }
 
+    $wpsArg = ''
+    if ($WpsSetup) {
+        if (-not (Test-Path $WpsSetup)) { throw "WPS installer not found: $WpsSetup" }
+        Copy-Item $WpsSetup (Join-Path $stage 'WpsSetup.exe')
+        $wpsArg = ' -WithWps'
+        Write-Host "  WPS setup : $WpsSetup"
+    }
+
     $wsb = Join-Path $stage 'DeepExcelVerify.wsb'
     @"
 <Configuration>
@@ -80,7 +93,7 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg</Command>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg</Command>
   </LogonCommand>
 </Configuration>
 "@ | Set-Content -LiteralPath $wsb -Encoding UTF8
@@ -169,12 +182,60 @@ function Invoke-ActivationTrace {
     Write-Host "  (trace) $($miss.Count) miss events written to $summary"
 }
 
+# Installs WPS inside the sandbox so the WPS half of the acceptance test runs
+# against a real host application instead of just asserting on files.
+#
+# This is the only way to answer the open question: the installer writes
+# enable="enable_dev" into publish.xml, and whether a normal (non-developer)
+# WPS actually loads an enable_dev entry has never been verified. The ribbon
+# either shows the DeepExcel tab or it does not -- that needs a human looking
+# at the sandbox window, so this function ends by launching WPS.
+function Install-WpsInGuest {
+    $setup = 'C:\DeepExcelStage\WpsSetup.exe'
+    if (-not (Test-Path $setup)) {
+        Write-Host '  (wps) installer not staged; skipping'
+        return $false
+    }
+
+    Write-Host 'Installing WPS (silent attempt)...'
+    # /S is the usual NSIS silent switch. If this build does not honour it the
+    # wizard appears instead, which is fine -- a human is watching this window.
+    Start-Process -FilePath $setup -ArgumentList '/S' -PassThru | Out-Null
+
+    $deadline = (Get-Date).AddMinutes(10)
+    $found = $null
+    while ((Get-Date) -lt $deadline) {
+        $found = Get-ChildItem -Path 'C:\Program Files (x86)\Kingsoft','C:\Program Files\Kingsoft',
+                                     "$env:LOCALAPPDATA\Kingsoft" -Recurse -Filter 'et.exe' `
+                                     -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($found) { break }
+        Start-Sleep -Seconds 10
+    }
+
+    if (-not $found) {
+        Write-Host '  (wps) et.exe not found after 10 minutes.'
+        Write-Host '  (wps) If the WPS wizard is on screen, finish it, then re-run:'
+        Write-Host '        powershell -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe -WithWps'
+        return $false
+    }
+
+    Write-Host "  (wps) installed: $($found.FullName)"
+    Set-Content -LiteralPath 'C:\wps-et-path.txt' -Value $found.FullName -Encoding UTF8
+    return $true
+}
+
 function Invoke-GuestVerification {
-    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace)
+    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps)
 
     Write-Host '=== DeepExcel fresh-install verification ==='
     Write-Host "Setup: $Setup"
     Write-Host ''
+
+    # WPS goes first so DeepExcel installs into a machine that already has WPS,
+    # which is the real user's order. Installing it afterwards would let the
+    # DeepExcel installer create jsaddons itself and hide any ordering problem.
+    $wpsReady = $false
+    if ($WithWps) { $wpsReady = Install-WpsInGuest }
 
     # 1. Integrity, exactly the way a user is told to check it.
     $sums = Join-Path (Split-Path -Parent $Setup) 'SHA256SUMS.txt'
@@ -334,6 +395,10 @@ function Invoke-GuestVerification {
                     Remove-ItemProperty -Path $fusionKey -Name $n -ErrorAction SilentlyContinue
                 }
             }
+
+            # Opt-in: downloads Process Monitor into the VM. Off by default so a
+            # normal acceptance run stays offline and fast.
+            if ($WithTrace) { Invoke-ActivationTrace -Repair $repair -OutDir $outDir }
         }
     } else {
         Add-Check 'DeepExcel.Repair.exe --verify reports healthy' $false 'tool missing'
@@ -367,6 +432,34 @@ function Invoke-GuestVerification {
         }
     }
     Add-Check 'WPS add-in registered in publish.xml' $registered $detail
+
+    # 5c. The manifest check above proves the entry was written. It cannot prove
+    #     WPS will honour it -- the entry says enable="enable_dev", and whether a
+    #     normal WPS loads a developer-mode entry is exactly the open question.
+    #     Only the ribbon can answer that, so hand the window to a human here,
+    #     before the uninstall step tears everything down.
+    if ($wpsReady) {
+        $etPath = Get-Content -LiteralPath 'C:\wps-et-path.txt' -ErrorAction SilentlyContinue
+        if ($etPath) {
+            # Keep this file ASCII-only. It is UTF-8 without a BOM, and
+            # Windows PowerShell 5.1 decodes such .ps1 files with the system
+            # ANSI codepage -- on a CJK codepage the multi-byte sequences eat
+            # the closing quote and the whole script stops parsing.
+            Write-Host ''
+            Write-Host '--------------------------------------------------------------'
+            Write-Host ' Launching WPS Spreadsheets. Look at the ribbon:'
+            Write-Host ' is there a "DeepExcel" tab?'
+            Write-Host ''
+            Write-Host '   YES -> enable_dev is fine; WPS breakage is something else'
+            Write-Host '   NO  -> enable="enable_dev" is the culprit; retry with'
+            Write-Host '          enable="enable" in publish.xml'
+            Write-Host ''
+            Write-Host ' Close WPS, then press Enter here to continue (uninstall check).'
+            Write-Host '--------------------------------------------------------------'
+            Start-Process -FilePath $etPath | Out-Null
+            try { Read-Host 'Press Enter to continue' | Out-Null } catch { }
+        }
+    }
 
     # 6. Uninstall must leave no registration behind.
     $uninstaller = Get-ChildItem -Path $installDir -Filter 'unins*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -420,9 +513,11 @@ function Invoke-GuestVerification {
 }
 
 # ---------------------------------------------------------------------------
+    # Note: -Param:$switch.IsPresent does not parse (the member access is taken
+    # as a separate token). These targets are [bool], so cast explicitly.
 if ($Launch) {
-    Start-SandboxRun -Setup $SetupPath
+    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath
 } else {
     if (-not $SetupPath) { throw 'Specify -SetupPath, or use -Launch to run this inside Windows Sandbox.' }
-    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath
+    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps)
 }

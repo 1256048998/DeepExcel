@@ -182,6 +182,24 @@ def main():
     check("the failure exit happens after rollback, in ssDone",
           iss.index("PostInstallFailed := True") < iss.index("ExitProcess(4)"))
 
+    # ---- sandbox verification script stays parseable ----------------------
+    # verify-install-sandbox.ps1 is UTF-8 without a BOM, and Windows PowerShell
+    # 5.1 decodes such .ps1 files with the system ANSI codepage. On a CJK
+    # codepage a non-ASCII string literal eats its own closing quote and the
+    # whole script fails to parse -- inside the sandbox that means the
+    # LogonCommand dies and the run produces no result at all. Keep it ASCII.
+    sandbox_ps1 = os.path.join(ROOT, "scripts", "verify-install-sandbox.ps1")
+    with open(sandbox_ps1, "rb") as handle:
+        sandbox_bytes = handle.read()
+    non_ascii = [
+        number
+        for number, line in enumerate(sandbox_bytes.split(b"\n"), 1)
+        if any(byte > 127 for byte in line)
+    ]
+    check("sandbox verification script is ASCII-only",
+          not non_ascii,
+          f"non-ASCII on lines {non_ascii[:5]}" if non_ascii else "")
+
     # ---- balanced Pascal blocks (cheap syntax smoke test) -----------------
     code = iss[iss.index("[Code]"):] if "[Code]" in iss else ""
     begins = len(re.findall(r"\bbegin\b", code))
