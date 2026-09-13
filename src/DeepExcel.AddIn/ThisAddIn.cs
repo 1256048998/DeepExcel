@@ -131,13 +131,57 @@ namespace DeepExcel.AddIn
                 // addInInst 是 COMAddIn 对象，不实现 ICTPFactory
                 // ICTPFactory 需从 Excel Application 的 CTPFactory 属性获取（PIA 可能未暴露，用后期绑定）
                 Log("OnConnection completed successfully");
+                ClearLoadFailureBreadcrumb();
             }
             catch (Exception ex)
             {
                 Log("OnConnection FAILED: " + ex.GetType().Name + " - " + ex.Message);
                 Log("Stack: " + ex.StackTrace);
+                WriteLoadFailureBreadcrumb(ex);
                 throw;
             }
+        }
+
+        /// <summary>
+        /// 加载失败痕迹文件。
+        ///
+        /// OnConnection 抛出后 Excel 只会静默隐藏加载项，用户看到的是"功能区里什么都没有"，
+        /// 无从判断原因。这里把失败原因落到一个固定位置，DeepExcel.Repair.exe 会读取并
+        /// 直接展示给用户，把"不知道为什么"变成一条可操作的信息。
+        /// </summary>
+        private static string LoadFailureBreadcrumbPath
+        {
+            get
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "DeepExcel", "logs", "last-load-failure.txt");
+            }
+        }
+
+        private static void WriteLoadFailureBreadcrumb(Exception ex)
+        {
+            try
+            {
+                string path = LoadFailureBreadcrumbPath;
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                File.WriteAllText(
+                    path,
+                    DateTime.Now.ToString("u") + "\t" +
+                    ex.GetType().Name + "\t" +
+                    (ex.Message ?? "").Replace("\r", " ").Replace("\n", " "));
+            }
+            catch { }
+        }
+
+        private static void ClearLoadFailureBreadcrumb()
+        {
+            try
+            {
+                string path = LoadFailureBreadcrumbPath;
+                if (File.Exists(path)) { File.Delete(path); }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -248,6 +292,25 @@ namespace DeepExcel.AddIn
         ///   同步 MessageBox 阻塞，Excel 不会误触发 WorkbookBeforeClose，
         ///   因此不再需要 ExecutionGuard 跳过清理逻辑。
         /// </summary>
+        /// <summary>
+        /// 单元格改动 → 结构摘要标记为过期，下次请求时重建。
+        ///
+        /// 必须极轻：Excel 在批量写入时会为每个改动区域触发一次。这里只置标志，
+        /// 真正的重建发生在下一条用户消息，且有时间预算。
+        /// </summary>
+        private void OnSheetChangeInvalidateIndex(object sheet, Range target)
+        {
+            try
+            {
+                var workbook = (sheet as Worksheet)?.Parent as Workbook;
+                if (workbook != null && _bridge != null)
+                {
+                    _bridge.InvalidateSemanticIndex(GetWorkbookKey(workbook));
+                }
+            }
+            catch { }
+        }
+
         private void OnWorkbookBeforeClose(Workbook Wb, ref bool Cancel)
         {
             try
@@ -403,6 +466,7 @@ namespace DeepExcel.AddIn
                     {
                         _excelApp.WorkbookBeforeClose -= OnWorkbookBeforeClose;
                         _excelApp.WorkbookAfterSave -= OnWorkbookAfterSave;
+                        _excelApp.SheetChange -= OnSheetChangeInvalidateIndex;
                     }
                 }
                 catch { }
@@ -456,9 +520,20 @@ namespace DeepExcel.AddIn
                 _bridge = new MessageBridge(_excelApp, _sidecarUiControl);
                 Log("MessageBridge initialized with sidecar");
 
+                // 恢复上次的登录状态。刻意不阻塞启动：没有服务器、网络不通或
+                // 登录已失效，都只应导致"未登录"，不能拖慢或阻断加载项加载。
+                try
+                {
+                    _bridge.RestoreAccountSessionAsync();
+                }
+                catch (Exception acctEx) { Log("RestoreAccountSessionAsync failed: " + acctEx.Message); }
+
                 // 监听工作簿事件，实现会话生命周期管理
                 _excelApp.WorkbookBeforeClose += OnWorkbookBeforeClose;
                 _excelApp.WorkbookAfterSave += OnWorkbookAfterSave;
+                // 任何单元格改动都会让结构摘要过期。处理函数刻意做成只置一个
+                // 标志位：它在批量写入时会被触发成千上万次。
+                _excelApp.SheetChange += OnSheetChangeInvalidateIndex;
                 Log("Workbook event handlers registered");
 
                 // ★ 检查并尝试设置宏安全：VBA 功能依赖 AccessVBOM=1（信任对 VBA 工程对象模型的访问）

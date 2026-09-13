@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -19,7 +20,7 @@ namespace DeepExcel.AddIn.Bridge
     ///   收到: { type, payload }
     ///   发送: { type, payload }
     /// </summary>
-    public class MessageBridge : IDisposable
+    public partial class MessageBridge : IDisposable
     {
         private readonly Microsoft.Office.Interop.Excel.Application _excelApp;
         private readonly IExcelActions _excelActions;
@@ -57,6 +58,16 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>
         /// 当前活动工作簿对应的 key，用于 ThisAddIn 的 IsBusy 判断
         /// </summary>
+        /// <summary>
+        /// The signed-in account session, when the add-in is connected to a
+        /// DeepExcel server.
+        ///
+        /// Null on a local-only install, and that is a supported configuration
+        /// rather than an error: the routing resolver treats it as BYOK, so
+        /// everything behaves exactly as it did before accounts existed.
+        /// </summary>
+        public Account.SessionManager AccountSession { get; set; }
+
         public bool IsActiveWorkbookBusy
         {
             get
@@ -228,9 +239,18 @@ namespace DeepExcel.AddIn.Bridge
                     model = provider.Models[0];
                 }
 
+                // Where model traffic goes is the server's decision, applied in
+                // exactly one place. AccountSession is null on a local-only
+                // install, which resolves to BYOK and behaves as it always has.
+                var routing = Account.SidecarRoutingResolver.Resolve(
+                    AccountSession?.CurrentEndpoint, baseUrl, model, apiKey);
+
                 Logger.Instance.Info("MessageBridge",
-                    $"SendConfigToSession: wb={session.WorkbookName}, model={model}, baseUrl={baseUrl}, hasKey={!string.IsNullOrEmpty(apiKey)}");
-                session.Sidecar.UpdateConfig(baseUrl, model, apiKey);
+                    $"SendConfigToSession: wb={session.WorkbookName}, model={routing.Model}, " +
+                    $"baseUrl={routing.BaseUrl}, mode={routing.Mode}, " +
+                    $"hasKey={!string.IsNullOrEmpty(routing.ApiKey)}, " +
+                    $"hasToken={!string.IsNullOrEmpty(routing.AuthToken)}");
+                session.Sidecar.UpdateConfig(routing);
             }
             catch (Exception ex)
             {
@@ -326,6 +346,34 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleRollbackSnapshot(msg);
                     case "delete_snapshot":
                         return HandleDeleteSnapshot(msg);
+                    case "skill_list":
+                        return HandleSkillList();
+                    case "skill_save":
+                        return HandleSkillSave(msg);
+                    case "skill_sync":
+                        return HandleSkillSync();
+                    case "skill_pull":
+                        return HandleSkillPull();
+                    case "skill_share":
+                        return HandleSkillShare(msg);
+                    case "skill_import":
+                        return HandleSkillImport(msg);
+                    case "skill_delete":
+                        return HandleSkillDelete(msg);
+                    case "skill_prepare":
+                        return HandleSkillPrepare(msg);
+                    case "account_status":
+                        return HandleAccountStatus();
+                    case "account_server_meta":
+                        return HandleAccountServerMeta(msg);
+                    case "account_sign_in":
+                        return HandleAccountSignIn(msg);
+                    case "account_register":
+                        return HandleAccountRegister(msg);
+                    case "account_usage":
+                        return HandleAccountUsage();
+                    case "account_sign_out":
+                        return HandleAccountSignOut();
                     case "get_model_config":
                         return HandleGetModelConfig();
                     case "save_model_config":
@@ -1322,9 +1370,15 @@ namespace DeepExcel.AddIn.Bridge
                 }
 
                 // 正常用户消息：附带 Excel 上下文 + 附件列表
+                // Structure summary, cached until the workbook changes. Must be
+                // set before BuildContext, which embeds it. Null on any failure:
+                // a missing index costs accuracy, an exception would lose the
+                // user's message.
+                session.SemanticIndex = GetSemanticIndex(session.WorkbookKey);
                 var context = session.BuildContext(_excelActions);
                 var sessionId = session.NextSessionId();
                 session.IsBusy = true;
+                BeginTaskTrace(session.WorkbookKey, sessionId, content);
                 session.Sidecar.SendUserMessage(content, sessionId, context);
 
                 // ★ 追加到历史
@@ -1343,6 +1397,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
+                // Cancelled tasks must be distinguished from failed ones, or the
+                // success rate would be dragged down by users simply changing
+                // their mind.
+                CompleteTaskTrace(session.WorkbookKey, "cancelled");
+
                 // ★ P-2 修复：cancel 清理 session 级 pending clarify
                 if (session.PendingClarifyQuestion != null)
                 {
@@ -1674,6 +1733,7 @@ namespace DeepExcel.AddIn.Bridge
                     new { call_id = "", name = displayName, arguments = args });
                 // ★ 追加到历史
                 session.AppendToolCall(displayName);
+                RecordTraceTool(session.WorkbookKey, displayName, args);
             }
         }
 
@@ -1702,11 +1762,53 @@ namespace DeepExcel.AddIn.Bridge
             if (session != null)
             {
                 Logger.Instance.Info("MessageBridge", $"OnPermissionRequest: tool={tool}, req_id={requestId}, workbookKey={session.WorkbookKey}");
+
+                // Compute what the operation will actually do, before it does
+                // it. Null means "no preview policy for this tool"; a preview
+                // with Previewable=false means "we cannot know", which the
+                // panel must present differently from an exact change set.
+                var preview = BuildChangePreview(tool, args);
+
+                // The sidecar asks about anything potentially destructive; the
+                // decision about whether it is worth interrupting belongs here,
+                // because only this side can see the workbook's current state.
+                // Prompting for a 3-cell edit, or one that changes nothing,
+                // trains users to click through prompts without reading them --
+                // which is exactly what makes the prompts that matter useless.
+                if (preview != null && !Preview.PreviewPolicy.ShouldInterrupt(preview))
+                {
+                    Logger.Instance.Info("MessageBridge",
+                        $"Permission auto-allowed for {tool}: {preview.Summary()}");
+                    sender.SendPermissionResponse(requestId, "allow");
+                    return;
+                }
+
                 SendToSessionUi(session.WorkbookKey, "permission_request", new
                 {
                     request_id = requestId,
                     tool,
-                    args
+                    args,
+                    preview = preview == null ? null : new
+                    {
+                        previewable = preview.Previewable,
+                        reason = preview.NotPreviewableReason,
+                        summary = preview.Summary(),
+                        affected_cells = preview.AffectedCells,
+                        truncated = preview.IsTruncated,
+                        structural = preview.IsStructural,
+                        formulas_overwritten = preview.FormulasOverwritten,
+                        deleted_rows = preview.DeletedRows,
+                        deleted_columns = preview.DeletedColumns,
+                        warnings = preview.Warnings,
+                        changes = preview.Changes.Select(c => new
+                        {
+                            address = c.Address,
+                            before = c.Before,
+                            after = c.After,
+                            kind = c.Kind.ToString().ToLowerInvariant(),
+                            overwrites_formula = c.OverwritesFormula
+                        })
+                    }
                 });
             }
             else
@@ -1727,6 +1829,7 @@ namespace DeepExcel.AddIn.Bridge
                     new { input_tokens = inputTokens, output_tokens = outputTokens });
                 // ★ stream_end 时持久化对话历史到磁盘
                 session.OnStreamEnd();
+                CompleteTaskTrace(session.WorkbookKey, "success", inputTokens, outputTokens);
             }
         }
 
@@ -1737,6 +1840,7 @@ namespace DeepExcel.AddIn.Bridge
             {
                 session.IsBusy = false;
                 SendToSessionUi(session.WorkbookKey, "error", new { message = "Sidecar: " + error });
+                CompleteTaskTrace(session.WorkbookKey, "error");
             }
             else
             {

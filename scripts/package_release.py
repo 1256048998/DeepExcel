@@ -11,6 +11,7 @@ release build must never silently produce a package that cannot load.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -32,13 +33,16 @@ DEPLOY = os.path.join(ROOT, "deploy")
 PAYLOAD = os.path.join(DEPLOY, "payload")
 WEBVIEW_BOOTSTRAPPER = os.path.join(DEPLOY, "Includes", "MicrosoftEdgeWebview2Setup.exe")
 WEBVIEW_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
-INTERNAL_SIGNING_DIR = os.path.join(ROOT, ".local-signing")
-INTERNAL_CERTIFICATE = os.path.join(INTERNAL_SIGNING_DIR, "DeepExcel.Internal.cer")
-INTERNAL_THUMBPRINT = os.path.join(INTERNAL_SIGNING_DIR, "certificate-thumbprint.txt")
+CHECKSUM_FILE = "SHA256SUMS.txt"
 
 EXCEL_ITEMS = [
     "DeepExcel.AddIn.dll",
     "DeepExcel.AddIn.dll.config",
+    # Native diagnose/repair tooling. The installer calls these instead of
+    # powershell.exe, and the user gets DeepExcel.Repair.exe as the one thing to
+    # run when the ribbon tab does not appear.
+    "DeepExcel.Repair.exe",
+    "DeepExcel.Probe32.exe",
     "Extensibility.dll",
     "Microsoft.Bcl.AsyncInterfaces.dll",
     "Microsoft.Office.Interop.Excel.dll",
@@ -63,6 +67,8 @@ EXCEL_ITEMS = [
 EXCEL_REQUIRED_FILES = [
     "DeepExcel.AddIn.dll",
     "DeepExcel.AddIn.dll.config",
+    "DeepExcel.Repair.exe",
+    "DeepExcel.Probe32.exe",
     "Extensibility.dll",
     "Microsoft.Office.Interop.Excel.dll",
     "Microsoft.Vbe.Interop.dll",
@@ -126,6 +132,20 @@ the WebView2 runtime when required. Administrator access is not normally needed.
 
 Before installing, close Excel and WPS Spreadsheets. After installation, reopen
 either application and look for the DeepExcel ribbon tab.
+
+Windows SmartScreen
+-------------------
+DeepExcel is not code-signed yet, so Windows shows "Windows protected your PC"
+the first time you run the installer. Click "More info", then "Run anyway".
+
+You can verify the download first. Compare the output of
+
+    certutil -hashfile DeepExcel.Setup.exe SHA256
+
+against the value published in SHA256SUMS.txt on the download page.
+
+If the ribbon tab does not appear, run DeepExcel.Repair.exe from the install
+folder; it re-registers the add-in and writes a diagnostic bundle.
 
 The ZIP is a support/debug payload. End users should receive DeepExcel.Setup.exe.
 """
@@ -203,41 +223,29 @@ def sign_files(paths):
 
 
 def signing_is_configured():
-    return bool(os.environ.get("DEEPEXCEL_PFX")) or os.environ.get(
-        "USE_AZURE_TRUSTED_SIGNING", ""
-    ).lower() in ("1", "true") or bool(os.environ.get("DEEPEXCEL_CERT_THUMBPRINT"))
-
-
-def validate_production_signing_configuration():
-    """Return the expected PFX signer thumbprint, or None for Azure signing."""
-    if os.environ.get("DEEPEXCEL_CERT_THUMBPRINT"):
-        fail("DEEPEXCEL_CERT_THUMBPRINT is internal-only and is forbidden for production builds")
-
-    pfx = os.environ.get("DEEPEXCEL_PFX")
-    use_azure = os.environ.get("USE_AZURE_TRUSTED_SIGNING", "").lower() in ("1", "true")
-    if bool(pfx) == bool(use_azure):
-        fail("Production builds require exactly one signing source: PFX or Azure Trusted Signing")
-
-    if use_azure:
-        # Inno Setup's preprocessor is case-sensitive; normalize values such as
-        # TRUE so it also signs the nested uninstaller.
-        os.environ["USE_AZURE_TRUSTED_SIGNING"] = "1"
-        return None
-
-    if not os.path.isfile(pfx):
-        fail("Production PFX does not exist: %s" % pfx)
-    command = (
-        "$c=[Security.Cryptography.X509Certificates.X509Certificate2]::new("
-        "$env:DEEPEXCEL_PFX,$env:DEEPEXCEL_PFX_PASS,"
-        "[Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet);"
-        "$eku=$c.Extensions|Where-Object{$_.Oid.Value -eq '2.5.29.37'}|"
-        "ForEach-Object{$_.EnhancedKeyUsages}|Where-Object{$_.Value -eq '1.3.6.1.5.5.7.3.3'};"
-        "if(-not $c.HasPrivateKey -or -not $eku -or $c.Subject -eq $c.Issuer "
-        "-or $c.NotBefore -gt (Get-Date) -or $c.NotAfter -le (Get-Date)){exit 1};"
-        "$chain=[Security.Cryptography.X509Certificates.X509Chain]::new();"
-        "$chain.ChainPolicy.RevocationMode='NoCheck';"
-        "if(-not $chain.Build($c)){exit 1};$c.Thumbprint"
+    return (
+        bool(os.environ.get("DEEPEXCEL_PFX"))
+        or bool(os.environ.get("DEEPEXCEL_CERT_THUMBPRINT"))
+        or os.environ.get("USE_AZURE_TRUSTED_SIGNING", "").lower() in ("1", "true")
     )
+
+
+# Shared certificate predicate. Rejects self-signed certificates ($c.Subject -eq
+# $c.Issuer) and anything that does not chain to a trusted root, so the removed
+# "internal test" self-signed workflow cannot be reintroduced by setting an env
+# var. An honestly unsigned build is better for users than a private root CA.
+_CERT_PREDICATE = (
+    "$eku=$c.Extensions|Where-Object{$_.Oid.Value -eq '2.5.29.37'}|"
+    "ForEach-Object{$_.EnhancedKeyUsages}|Where-Object{$_.Value -eq '1.3.6.1.5.5.7.3.3'};"
+    "if(-not $c.HasPrivateKey -or -not $eku -or $c.Subject -eq $c.Issuer "
+    "-or $c.NotBefore -gt (Get-Date) -or $c.NotAfter -le (Get-Date)){exit 1};"
+    "$chain=[Security.Cryptography.X509Certificates.X509Chain]::new();"
+    "$chain.ChainPolicy.RevocationMode='NoCheck';"
+    "if(-not $chain.Build($c)){exit 1};$c.Thumbprint"
+)
+
+
+def _run_cert_check(command, source_description):
     try:
         thumbprint = subprocess.check_output(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
@@ -247,42 +255,86 @@ def validate_production_signing_configuration():
         ).strip().upper()
     except subprocess.CalledProcessError as exc:
         fail(
-            "Production PFX must contain a currently valid, CA-issued code-signing "
-            "certificate with a private key: %s" % exc.output.strip()
+            "%s must be a currently valid, CA-issued code-signing certificate with a "
+            "private key (self-signed certificates are rejected): %s"
+            % (source_description, exc.output.strip())
         )
     if len(thumbprint) != 40 or any(ch not in "0123456789ABCDEF" for ch in thumbprint):
-        fail("Cannot determine the production PFX signer thumbprint")
+        fail("Cannot determine the signer thumbprint for %s" % source_description)
     return thumbprint
 
 
-def load_internal_cert_thumbprint():
-    if not os.path.isfile(INTERNAL_CERTIFICATE) or not os.path.isfile(INTERNAL_THUMBPRINT):
+def validate_production_signing_configuration():
+    """Return the expected signer thumbprint, or None for Azure Trusted Signing."""
+    pfx = os.environ.get("DEEPEXCEL_PFX")
+    store_thumbprint = (os.environ.get("DEEPEXCEL_CERT_THUMBPRINT") or "").replace(" ", "").upper()
+    use_azure = os.environ.get("USE_AZURE_TRUSTED_SIGNING", "").lower() in ("1", "true")
+
+    sources = [bool(pfx), bool(store_thumbprint), use_azure]
+    if sum(1 for source in sources if source) != 1:
         fail(
-            "Internal signing certificate is missing; run "
-            "scripts/new-internal-signing-cert.ps1 first"
+            "Signed builds require exactly one signing source: DEEPEXCEL_PFX, "
+            "DEEPEXCEL_CERT_THUMBPRINT, or USE_AZURE_TRUSTED_SIGNING"
         )
-    with open(INTERNAL_THUMBPRINT, "r", encoding="ascii") as stream:
-        thumbprint = "".join(stream.read().split()).upper()
-    if len(thumbprint) != 40 or any(ch not in "0123456789ABCDEF" for ch in thumbprint):
-        fail("Invalid internal signing certificate thumbprint")
-    escaped_certificate = INTERNAL_CERTIFICATE.replace("'", "''")
+
+    if use_azure:
+        # Inno Setup's preprocessor is case-sensitive; normalize values such as
+        # TRUE so it also signs the nested uninstaller.
+        os.environ["USE_AZURE_TRUSTED_SIGNING"] = "1"
+        return None
+
+    if store_thumbprint:
+        # Certificate-store path, e.g. an EV token whose private key cannot be
+        # exported to a PFX.
+        if len(store_thumbprint) != 40 or any(ch not in "0123456789ABCDEF" for ch in store_thumbprint):
+            fail("DEEPEXCEL_CERT_THUMBPRINT must be a 40-character SHA-1 thumbprint")
+        command = (
+            "$c=Get-ChildItem Cert:\\CurrentUser\\My,Cert:\\LocalMachine\\My -ErrorAction "
+            "SilentlyContinue|Where-Object{($_.Thumbprint -replace '\\s','').ToUpperInvariant() "
+            "-eq '%s'}|Select-Object -First 1;if(-not $c){exit 1};%s"
+            % (store_thumbprint, _CERT_PREDICATE)
+        )
+        return _run_cert_check(command, "DEEPEXCEL_CERT_THUMBPRINT")
+
+    if not os.path.isfile(pfx):
+        fail("Production PFX does not exist: %s" % pfx)
     command = (
-        "$c=[Security.Cryptography.X509Certificates.X509Certificate2]::new('%s');"
-        "$eku=$c.Extensions|Where-Object{$_.Oid.Value -eq '2.5.29.37'}|"
-        "ForEach-Object{$_.EnhancedKeyUsages}|Where-Object{$_.Value -eq '1.3.6.1.5.5.7.3.3'};"
-        "if($c.Subject -ne 'CN=DeepExcel Internal Testing' -or $c.Issuer -ne $c.Subject "
-        "-or -not $eku -or $c.NotBefore -gt (Get-Date) -or $c.NotAfter -le (Get-Date)){exit 1};"
-        "$c.Thumbprint" % escaped_certificate
+        "$c=[Security.Cryptography.X509Certificates.X509Certificate2]::new("
+        "$env:DEEPEXCEL_PFX,$env:DEEPEXCEL_PFX_PASS,"
+        "[Security.Cryptography.X509Certificates.X509KeyStorageFlags]::DefaultKeySet);"
+        + _CERT_PREDICATE
     )
-    certificate_thumbprint = subprocess.check_output(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=30,
-    ).strip().upper()
-    if certificate_thumbprint != thumbprint:
-        fail("Internal CER and certificate-thumbprint.txt do not match")
-    return thumbprint
+    return _run_cert_check(command, "DEEPEXCEL_PFX")
+
+
+def sha256_of_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_checksums(paths):
+    """Publish SHA-256 digests for every distributable artifact.
+
+    DeepExcel ships unsigned, so Authenticode cannot vouch for integrity. The
+    digest file is the replacement: it is published next to the download and
+    lets a user run `certutil -hashfile <file> SHA256` before installing.
+    """
+    existing = [path for path in paths if os.path.isfile(path)]
+    if not existing:
+        fail("No artifacts to checksum")
+    checksum_path = os.path.join(DIST, CHECKSUM_FILE)
+    lines = []
+    for path in sorted(existing, key=os.path.basename):
+        digest = sha256_of_file(path)
+        lines.append("%s  %s" % (digest, os.path.basename(path)))
+        print("[checksum] %s  %s" % (digest, os.path.basename(path)))
+    # sha256sum-compatible format, LF endings so the file is stable across OSes.
+    with open(checksum_path, "w", encoding="ascii", newline="\n") as stream:
+        stream.write("\n".join(lines) + "\n")
+    return checksum_path
 
 
 def verify_authenticode(path, publisher_pattern=None, expected_thumbprint=None):
@@ -320,6 +372,66 @@ def ensure_webview2_bootstrapper():
         os.replace(temporary, WEBVIEW_BOOTSTRAPPER)
 
     verify_authenticode(WEBVIEW_BOOTSTRAPPER, "Microsoft")
+
+
+def verify_probe_is_32bit(path):
+    """A 64-bit Probe32 would test the wrong registry view and report a false pass.
+
+    That failure is invisible at build time and only shows up as "installs fine,
+    add-in missing" on a 32-bit Office machine, which is exactly the class of bug
+    this tooling exists to prevent. Read the PE header directly.
+    """
+    with open(path, "rb") as stream:
+        data = stream.read()
+
+    def u16(offset):
+        return int.from_bytes(data[offset:offset + 2], "little")
+
+    def u32(offset):
+        return int.from_bytes(data[offset:offset + 4], "little")
+
+    if data[:2] != b"MZ":
+        fail("DeepExcel.Probe32.exe is not a Windows executable")
+    pe = u32(0x3C)
+    if data[pe:pe + 4] != b"PE\0\0":
+        fail("DeepExcel.Probe32.exe has no PE header")
+
+    # The COFF machine field is IMAGE_FILE_MACHINE_I386 for BOTH AnyCPU and x86
+    # managed assemblies, so checking it proves nothing. The real discriminator
+    # is COMIMAGE_FLAGS_32BITREQUIRED in the CLI header.
+    optional = pe + 24
+    size_of_optional = u16(pe + 20)
+    magic = u16(optional)
+    if magic == 0x20B:  # PE32+
+        fail("DeepExcel.Probe32.exe is a 64-bit image; rebuild with scripts/build-repair.ps1")
+    if magic != 0x10B:
+        fail("DeepExcel.Probe32.exe has an unrecognized optional header magic 0x%X" % magic)
+
+    clr_directory = optional + 96 + 14 * 8
+    clr_rva = u32(clr_directory)
+    if clr_rva == 0:
+        fail("DeepExcel.Probe32.exe has no CLI header (not a managed assembly)")
+
+    # Translate the CLI header RVA into a file offset via the section table.
+    sections = optional + size_of_optional
+    clr_offset = None
+    for index in range(u16(pe + 6)):
+        header = sections + index * 40
+        virtual_address = u32(header + 12)
+        virtual_size = u32(header + 8)
+        raw_pointer = u32(header + 20)
+        if virtual_address <= clr_rva < virtual_address + max(virtual_size, u32(header + 16)):
+            clr_offset = raw_pointer + (clr_rva - virtual_address)
+            break
+    if clr_offset is None:
+        fail("Cannot locate the CLI header of DeepExcel.Probe32.exe")
+
+    flags = u32(clr_offset + 16)
+    if not flags & 0x00000002:  # COMIMAGE_FLAGS_32BITREQUIRED
+        fail(
+            "DeepExcel.Probe32.exe is AnyCPU and would run 64-bit, silently "
+            "testing the wrong registry view. Rebuild with scripts/build-repair.ps1."
+        )
 
 
 def assemble_payload(version):
@@ -368,8 +480,11 @@ def assemble_payload(version):
             % (wps_package.get("version"), version)
         )
 
-    for script_name in ("register-user.ps1", "diagnose.ps1"):
-        copy_item(SCRIPTS, script_name, excel_payload)
+    # register-user.ps1 / diagnose.ps1 are no longer shipped. DeepExcel.Repair.exe
+    # supersedes both for end users, and keeping PowerShell scripts out of the
+    # install directory removes a standing antivirus false-positive surface.
+    # They remain in scripts/ as development tools.
+    verify_probe_is_32bit(os.path.join(excel_payload, "DeepExcel.Probe32.exe"))
 
     with open(os.path.join(PAYLOAD, "INSTALL.txt"), "w", encoding="utf-8") as stream:
         stream.write(INSTALL_TXT_TEMPLATE.format(version=version))
@@ -400,53 +515,6 @@ def create_zip(version):
                 with open(full_path, "rb") as source, archive.open(info, "w") as destination:
                     shutil.copyfileobj(source, destination)
     return path
-
-
-def create_internal_kit(version, setup_path):
-    kit_path = os.path.join(DIST, "DeepExcel-Internal-v%s.zip" % version)
-    if os.path.exists(kit_path):
-        os.remove(kit_path)
-
-    readme = """DeepExcel v{version} internal test build
-========================================
-
-This package is for invited test users only. It uses the private DeepExcel
-internal-test publisher certificate and is not intended for public download.
-
-Installation
-------------
-1. Close Microsoft Excel and WPS Spreadsheets.
-2. Double-click Install-Internal-Certificate.cmd and confirm the certificate
-   installation for the current Windows user.
-3. Run DeepExcel.Setup.INTERNAL.exe.
-4. Reopen Excel or WPS Spreadsheets and look for the DeepExcel ribbon tab.
-
-The certificate contains only a public key. The private signing key never
-leaves the DeepExcel developer's Windows certificate store.
-""".format(version=version)
-
-    entries = [
-        (setup_path, "DeepExcel.Setup.INTERNAL.exe"),
-        (INTERNAL_CERTIFICATE, "DeepExcel.Internal.cer"),
-        (os.path.join(SCRIPTS, "install-internal-certificate.ps1"), "install-internal-certificate.ps1"),
-        (os.path.join(SCRIPTS, "Install-Internal-Certificate.cmd"), "Install-Internal-Certificate.cmd"),
-    ]
-    with zipfile.ZipFile(kit_path, "w", zipfile.ZIP_DEFLATED) as archive:
-        for source, archive_name in entries:
-            if not os.path.isfile(source):
-                fail("Internal kit input is missing: %s" % source)
-            info = zipfile.ZipInfo(archive_name, (1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
-            info.create_system = 3
-            info.external_attr = 0o100644 << 16
-            with open(source, "rb") as stream:
-                archive.writestr(info, stream.read())
-        info = zipfile.ZipInfo("README-INTERNAL.txt", (1980, 1, 1, 0, 0, 0))
-        info.compress_type = zipfile.ZIP_DEFLATED
-        info.create_system = 3
-        info.external_attr = 0o100644 << 16
-        archive.writestr(info, readme.encode("utf-8"))
-    return kit_path
 
 
 def find_iscc():
@@ -484,37 +552,17 @@ def main():
     parser.add_argument("--version", required=True, help="Product version, for example 0.4.17")
     parser.add_argument("--zip-only", action="store_true", help="Skip the Inno Setup installer (development only)")
     parser.add_argument(
-        "--allow-unsigned",
+        "--force-unsigned",
         action="store_true",
-        help="Build an unsigned installer for local validation; never distribute it",
-    )
-    parser.add_argument(
-        "--internal",
-        action="store_true",
-        help="Build a clearly labelled self-signed package for invited test users",
+        help="Ignore any signing credential in the shell and build an unsigned installer",
     )
     args = parser.parse_args()
 
-    if args.allow_unsigned and args.internal:
-        fail("--allow-unsigned and --internal cannot be used together")
-    if args.internal and args.zip_only:
-        fail("--internal cannot be combined with --zip-only; use the labelled internal kit")
-    internal_thumbprint = None
+    # DeepExcel currently ships unsigned (no code-signing certificate purchased).
+    # Integrity is published as SHA-256 in dist/SHA256SUMS.txt instead. Signing
+    # stays fully wired so a future certificate is a pure environment change.
     production_thumbprint = None
-    if args.internal:
-        internal_thumbprint = load_internal_cert_thumbprint()
-        # An internal build must use the dedicated non-exportable test key even
-        # if a production credential happens to be present in the shell.
-        for variable in (
-            "DEEPEXCEL_PFX",
-            "DEEPEXCEL_PFX_PASS",
-            "USE_AZURE_TRUSTED_SIGNING",
-        ):
-            os.environ.pop(variable, None)
-        os.environ["DEEPEXCEL_CERT_THUMBPRINT"] = internal_thumbprint
-    elif args.allow_unsigned:
-        # Local validation is intentionally unsigned even when the shell has a
-        # signing credential. This prevents an ambiguous production-looking file.
+    if args.force_unsigned:
         for variable in (
             "DEEPEXCEL_PFX",
             "DEEPEXCEL_PFX_PASS",
@@ -522,8 +570,6 @@ def main():
             "USE_AZURE_TRUSTED_SIGNING",
         ):
             os.environ.pop(variable, None)
-    elif os.environ.get("DEEPEXCEL_CERT_THUMBPRINT"):
-        fail("DEEPEXCEL_CERT_THUMBPRINT is internal-only; use --internal")
 
     dll_path = os.path.join(BIN_RELEASE, "DeepExcel.AddIn.dll")
     if not os.path.isfile(dll_path):
@@ -532,59 +578,47 @@ def main():
     if not assembly_version.startswith(args.version + ".") and assembly_version != args.version:
         fail("Requested version %s does not match assembly version %s" % (args.version, assembly_version))
 
+    signed = signing_is_configured()
     print("==> DeepExcel %s unified Excel + WPS package" % args.version)
-    if not args.zip_only and not args.allow_unsigned and not args.internal:
+    print("[package] Signing: %s" % ("configured" if signed else "NOT configured (unsigned build)"))
+    if signed and not args.zip_only:
         production_thumbprint = validate_production_signing_configuration()
     generate_reg_iss(assembly_version)
 
     try:
         assemble_payload(args.version)
         packaged_dll = os.path.join(PAYLOAD, "Excel", "DeepExcel.AddIn.dll")
-        if signing_is_configured():
+        if signed:
             sign_files([packaged_dll])
-            verify_authenticode(
-                packaged_dll,
-                expected_thumbprint=(
-                    internal_thumbprint if args.internal else production_thumbprint
-                ),
-            )
-        if not args.internal:
-            zip_path = create_zip(args.version)
-            print("[package] ZIP: %s (%.2f MB)" % (zip_path, os.path.getsize(zip_path) / 1024 / 1024))
+            verify_authenticode(packaged_dll, expected_thumbprint=production_thumbprint)
+
+        zip_path = create_zip(args.version)
+        print("[package] ZIP: %s (%.2f MB)" % (zip_path, os.path.getsize(zip_path) / 1024 / 1024))
 
         if args.zip_only:
+            write_checksums([zip_path])
             print("[package] ZIP-only development build complete")
             return
 
         ensure_webview2_bootstrapper()
         setup_path = build_installer()
-        sign_files([setup_path])
-        if args.internal:
-            internal_setup_path = os.path.join(DIST, "DeepExcel.Setup.INTERNAL.exe")
-            os.replace(setup_path, internal_setup_path)
-            setup_path = internal_setup_path
-            verify_authenticode(setup_path, expected_thumbprint=internal_thumbprint)
-            kit_path = create_internal_kit(args.version, setup_path)
-            print("[package] Internal kit: %s (%.2f MB)" % (kit_path, os.path.getsize(kit_path) / 1024 / 1024))
-        elif args.allow_unsigned and not signing_is_configured():
-            unsigned_path = os.path.join(DIST, "DeepExcel.Setup.UNSIGNED-LOCAL.exe")
-            os.replace(setup_path, unsigned_path)
-            setup_path = unsigned_path
-        else:
+        if signed:
+            sign_files([setup_path])
             verify_authenticode(setup_path, expected_thumbprint=production_thumbprint)
         print("[package] Installer: %s (%.2f MB)" % (setup_path, os.path.getsize(setup_path) / 1024 / 1024))
-        if args.internal:
-            print("[package] SELF-SIGNED INTERNAL TEST BUILD - NOT FOR PUBLIC DISTRIBUTION")
-        elif args.allow_unsigned and not signing_is_configured():
-            print("[package] UNSIGNED LOCAL VALIDATION BUILD - DO NOT DISTRIBUTE")
-        else:
+
+        checksum_path = write_checksums([setup_path, zip_path])
+        print("[package] Checksums: %s" % checksum_path)
+        if signed:
             print("[package] Signed installer ready for distribution")
+        else:
+            print(
+                "[package] UNSIGNED build. This is the current intended release form.\n"
+                "          Publish %s next to the download and tell users that\n"
+                "          SmartScreen will show 'Windows protected your PC' ->\n"
+                "          'More info' -> 'Run anyway'." % CHECKSUM_FILE
+            )
     finally:
-        # Inno always writes this temporary production-looking name first. An
-        # interrupted internal build must never leave a self-signed generic EXE.
-        generic_setup = os.path.join(DIST, "DeepExcel.Setup.exe")
-        if args.internal and os.path.isfile(generic_setup):
-            os.remove(generic_setup)
         if os.path.isdir(PAYLOAD):
             shutil.rmtree(PAYLOAD)
 

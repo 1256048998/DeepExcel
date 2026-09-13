@@ -252,6 +252,32 @@ namespace DeepExcel.AddIn.Sidecar
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
         }
 
+        /// <summary>
+        /// Sends the resolved routing for this session.
+        ///
+        /// In hosted mode api_key is deliberately absent and auth_token carries a
+        /// short-lived bearer token instead: the proxy authenticates the request,
+        /// and the user's own provider key must never be sent to it.
+        /// </summary>
+        public void UpdateConfig(Account.SidecarRouting routing)
+        {
+            if (routing == null)
+            {
+                throw new ArgumentNullException(nameof(routing));
+            }
+
+            var msg = new
+            {
+                type = SidecarProtocol.TypeConfig,
+                base_url = routing.BaseUrl,
+                model = routing.Model,
+                api_key = routing.ApiKey ?? "",
+                auth_token = routing.AuthToken ?? "",
+                routing_mode = routing.Mode
+            };
+            WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
+        }
+
         public void SendClarifyAnswer(string answer)
         {
             var msg = new { type = SidecarProtocol.TypeClarifyAnswer, answer };

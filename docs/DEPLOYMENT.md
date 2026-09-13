@@ -19,11 +19,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\_compile_only.ps1
 # 3. 生成内置 Python（首次需下载依赖）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\package-python.ps1
 
-# 4. 配置 Authenticode 代码签名
-$env:DEEPEXCEL_PFX = 'C:\secure\deepexcel-code-signing.pfx'
-$env:DEEPEXCEL_PFX_PASS = '<secret>'
-
-# 5. 生成 ZIP 支持包和签名的单文件安装器
+# 4. 生成 ZIP 支持包、单文件安装器和 SHA-256 校验值
 python scripts\package_release.py --version 0.4.17
 ```
 
@@ -31,14 +27,45 @@ python scripts\package_release.py --version 0.4.17
 
 - `dist\DeepExcel.Setup.exe`：唯一面向用户的交付物。
 - `dist\DeepExcel-v0.4.17.zip`：支持/诊断 payload，不作为用户安装方式。
+- `dist\SHA256SUMS.txt`：两个产物的 SHA-256,**必须与安装包一起发布**。
 
-没有签名证书时，只允许本地验证：
+## 签名状态：当前不签名
+
+DeepExcel 目前**没有购买代码签名证书**，发布形态就是未签名安装包 + 公布 SHA-256。
+
+2026-09-12 移除了原先的自签名内测方案。原方案要求用户运行 `Install-Internal-Certificate.cmd`，把我们自签发的 CA 装进系统根证书存储——该私钥一旦泄露，持有者可为任意软件签名并被用户机器无条件信任。为省掉一次 SmartScreen 放行点击而引入系统级信任风险，不划算。未签名 + 校验值是更干净的选择。
+
+用户侧的表现与应对：
+
+- 首次运行出现「Windows 已保护你的电脑」→ 点击「更多信息」→「仍要运行」。
+- 校验完整性：`certutil -hashfile DeepExcel.Setup.exe SHA256`，与 `SHA256SUMS.txt` 比对。
+- 下载页必须放 SmartScreen 对话框截图并标注点击位置。纯文字说明的首装完成率显著更低。
+
+### 将来购买证书后
+
+签名链路完整保留，届时只是环境变量变化，不需要改代码：
 
 ```powershell
-python scripts\package_release.py --version 0.4.17 --allow-unsigned
+# 方式一：PFX
+$env:DEEPEXCEL_PFX = 'C:\secure\deepexcel-code-signing.pfx'
+$env:DEEPEXCEL_PFX_PASS = '<secret>'
+
+# 方式二：证书存储（EV USB token 私钥不可导出时用这个）
+$env:DEEPEXCEL_CERT_THUMBPRINT = '<40 位 SHA-1 指纹>'
+
+# 方式三：Azure Trusted Signing
+$env:USE_AZURE_TRUSTED_SIGNING = '1'
+
+python scripts\package_release.py --version 0.4.17
 ```
 
-这种产物输出为 `dist\DeepExcel.Setup.UNSIGNED-LOCAL.exe`，只允许本机验证，不能发给用户。生产流程在未配置签名时会直接失败，避免误发未签名安装包。
+三种来源必须**只配置一种**，否则打包直接失败。任何来源的证书都会校验：必须含私钥、具备代码签名 EKU、在有效期内、**非自签名**（`Subject -eq Issuer` 直接拒绝）、且能构建到受信任根。这条校验是为了让被移除的自签名流程无法通过设环境变量复活。
+
+本机验证时若不想动用已配置的证书：
+
+```powershell
+python scripts\package_release.py --version 0.4.17 --force-unsigned
+```
 
 ## 发布前检查
 
@@ -62,18 +89,18 @@ python scripts\package_release.py --version 0.4.17 --allow-unsigned
 - WPS 离线节点必须使用官方 `wpsjs` 格式：`url="DeepExcel_<version>"`，并与 `jsaddons` 下的目录名完全一致；禁止写成 `file://`。
 - 内置 Python、pip 与全部 Python 依赖均固定版本和 SHA-256；依赖变化必须同步更新 `scripts\python-requirements.lock.txt`。
 
-## 内部测试版（免费自签名）
+## 遗留清理（2026-09-12 一次性）
 
-内部测试版不会改变本机 Excel/WPS 的开发注册，也不会把私钥写入仓库或安装包。私钥以不可导出形式保存在构建电脑的当前用户证书存储区：
+移除自签名方案后，构建机上仍可能残留旧的私钥和已分发的旧包。私钥留在证书存储里就仍然是可被滥用的签名能力，应当清掉：
 
 ```powershell
-# 首次执行或证书到期后执行
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\new-internal-signing-cert.ps1
-
-# 构建明确标注的内测包
-python scripts\package_release.py --version 0.4.17 --internal
+Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -eq 'CN=DeepExcel Internal Testing' } | Remove-Item
 ```
 
-发送给受邀测试用户的文件只有 `dist\DeepExcel-Internal-v0.4.17.zip`。用户先运行包内 `Install-Internal-Certificate.cmd`，再运行 `DeepExcel.Setup.INTERNAL.exe`。
+装过内测包的机器上，还应让用户从受信任根存储中移除该证书：
 
-此证书不是公共 CA 证书。它只适用于明确知情的内部/受邀测试用户，不得把 `*.INTERNAL.exe` 或 `DeepExcel-Internal-*.zip` 放到公开下载页。正式发布命令不会把该证书视为生产签名，缺少 PFX/Azure 正式凭据时仍会失败。
+```powershell
+Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq 'CN=DeepExcel Internal Testing' } | Remove-Item
+```
+
+同时下架所有 `dist\DeepExcel-Internal-*.zip` 与 `dist\DeepExcel.Setup.INTERNAL.exe`。

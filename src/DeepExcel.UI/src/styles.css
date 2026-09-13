@@ -2712,3 +2712,190 @@ body {
   max-width: 90%;
 }
 
+
+/* ===== 账号面板 ===== */
+/* 复用 config-* 面板外壳，这里只补状态展示与登录/注册切换需要的样式 */
+.account-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+  font-size: 13px;
+}
+.account-row:last-of-type { border-bottom: none; }
+
+.account-label {
+  flex: 0 0 72px;
+  color: var(--text-secondary, #666);
+}
+
+.account-mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.account-ok { color: #2e7d32; }
+.account-warn { color: #b26a00; }
+
+.account-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.account-tabs button {
+  flex: 1;
+  padding: 6px 0;
+  font-size: 13px;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+}
+.account-tabs button.active {
+  color: var(--accent, #1565c0);
+  border-bottom-color: var(--accent, #1565c0);
+  font-weight: 600;
+}
+
+.account-form label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+}
+.account-form label .config-input { margin-top: 4px; }
+
+/* ===== 执行前变更预览 ===== */
+/* 三种状态刻意用不同的边框色与徽章：
+   exact 可信、unknown 不可知、noop 大概率是搞错了目标。 */
+.preview-block {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--border-subtle, #ddd);
+  background: var(--bg-subtle, #fafafa);
+  font-size: 12px;
+}
+.preview-exact   { border-left-color: #1565c0; }
+.preview-unknown { border-left-color: #b26a00; }
+.preview-noop    { border-left-color: #757575; }
+
+.preview-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.preview-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+.preview-badge-exact   { background: #1565c0; }
+.preview-badge-unknown { background: #b26a00; }
+.preview-badge-noop    { background: #757575; }
+
+.preview-structural {
+  margin: 4px 0;
+  color: #b71c1c;
+}
+
+.preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  /* 长变更列表可滚动，不把确认按钮推出视野 */
+  display: block;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.preview-table td {
+  padding: 2px 6px 2px 0;
+  vertical-align: top;
+  white-space: nowrap;
+}
+.preview-addr   { color: var(--text-secondary, #666); min-width: 48px; }
+.preview-before { color: #b71c1c; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.preview-arrow  { color: var(--text-secondary, #999); padding: 0 4px; }
+.preview-after  { color: #2e7d32; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.preview-table em { color: var(--text-secondary, #999); font-style: italic; }
+
+/* 覆盖公式的行单独标出：这是最容易被忽略、也最难恢复的一种改动 */
+.preview-row-formula .preview-before {
+  background: rgba(183, 28, 28, 0.08);
+  font-weight: 600;
+}
+
+.preview-note {
+  margin: 4px 0 0;
+  color: var(--text-secondary, #666);
+  font-size: 11px;
+}
+
+.preview-warning {
+  margin-top: 4px;
+  color: #b26a00;
+  font-size: 11px;
+}
+
+/* ===== 技能库 ===== */
+.skill-candidate {
+  border-left: 3px solid #1565c0;
+  background: rgba(21, 101, 192, 0.04);
+}
+.skill-candidate-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+.skill-candidate-req {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-secondary, #666);
+  /* 原始需求可能很长，折两行就够看出是哪一次任务 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.skill-candidate-row { display: flex; gap: 6px; align-items: center; }
+.skill-candidate-row .config-input { flex: 1; }
+
+.skill-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+}
+.skill-item:last-child { border-bottom: none; }
+.skill-item-main { min-width: 0; }
+.skill-item-name { display: block; font-size: 13px; font-weight: 600; }
+.skill-item-meta { font-size: 11px; color: var(--text-secondary, #666); }
+.skill-item-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.skill-run-title { margin: 0 0 10px; font-size: 13px; font-weight: 600; }
+.skill-param { display: block; margin-bottom: 10px; font-size: 12px; color: var(--text-secondary, #666); }
+.skill-param .config-input { margin-top: 4px; }
+.skill-run-actions { display: flex; gap: 6px; justify-content: flex-end; margin: 10px 0; }
+
+/* 技能云同步 */
+.skill-sync { border-left: 3px solid var(--border-subtle, #ddd); }
+.skill-sync-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.skill-sync-row .config-input { flex: 1; }
+.skill-sync-msg {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: rgba(21, 101, 192, 0.06);
+  border-radius: 4px;
+  font-size: 12px;
+  /* 分享码要能选中复制 */
+  user-select: text;
+}

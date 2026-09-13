@@ -1,7 +1,12 @@
+import { ChangePreview } from './ChangePreview'
+import type { ChangePreviewData } from './ChangePreview'
+
 interface PermissionDrawerProps {
   visible: boolean
   tool: string
   args: Record<string, any>
+  /** 变更预览。null 表示该工具没有预览策略，按原有方式只显示参数。 */
+  preview?: ChangePreviewData | null
   onAllow: () => void
   onDeny: () => void
 }
@@ -32,7 +37,7 @@ function formatValue(v: any): string {
   return s.length > 240 ? s.slice(0, 240) + '\n…' : s
 }
 
-export function PermissionDrawer({ visible, tool, args, onAllow, onDeny }: PermissionDrawerProps) {
+export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny }: PermissionDrawerProps) {
   const desc = TOOL_DESC[tool] || `执行 ${tool}`
 
   // 筛选要显示的参数（最多 5 个，跳过 null/undefined）
@@ -59,6 +64,9 @@ export function PermissionDrawer({ visible, tool, args, onAllow, onDeny }: Permi
           <span className="permission-tool-chip">{desc}</span>
         </div>
 
+        {/* 变更预览优先于原始参数：决定该基于"会发生什么"，而不是"传了什么参数" */}
+        {preview && <ChangePreview preview={preview} />}
+
         {/* 参数预览：代码/参数用深色背景 monospace */}
         {argEntries.length > 0 && (
           <div className="permission-args">
@@ -73,7 +81,11 @@ export function PermissionDrawer({ visible, tool, args, onAllow, onDeny }: Permi
 
         {/* 底部：操作按钮 */}
         <div className="permission-actions">
-          <span className="permission-hint">本次会话内允许后不再询问</span>
+          <span className="permission-hint">
+            {preview && preview.previewable
+              ? '确认后立即执行'
+              : '本次会话内允许后不再询问'}
+          </span>
           <div className="permission-btns">
             <button className="perm-btn perm-deny" onClick={onDeny} type="button">
               拒绝

@@ -9,6 +9,30 @@ $csc = Join-Path $packages 'Microsoft.Net.Compilers.3.8.0\tools\csc.exe'
 
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir -Force | Out-Null }
 
+# Fail before csc runs, not after.
+#
+# csc deletes the existing output file before creating the new one. When Excel
+# holds DeepExcel.AddIn.dll the delete succeeds (the CLR loader opens with
+# FILE_SHARE_DELETE) but the create fails -- so a "failed" build leaves
+# bin\Release with no add-in DLL at all. bin/ is gitignored, so there is nothing
+# to restore from and the next thing the developer sees is "加载项主文件缺失".
+$lockingProcesses = @(Get-Process -Name 'EXCEL', 'et', 'wps' -ErrorAction SilentlyContinue)
+if ($lockingProcesses.Count -gt 0 -and (Test-Path (Join-Path $outDir 'DeepExcel.AddIn.dll'))) {
+    $names = ($lockingProcesses | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
+    throw @"
+Close Excel/WPS before compiling. Running: $names
+
+They hold a lock on $outDir\DeepExcel.AddIn.dll. Compiling anyway would DELETE
+the existing DLL and then fail to write the new one, leaving no add-in at all.
+
+  Get-Process EXCEL,et,wps -ErrorAction SilentlyContinue | Stop-Process -Force
+
+To compile without touching the registered build, pass a different output path:
+
+  scripts\_compile_only.ps1 -OutputDir `$env:TEMP\DeepExcelBuild
+"@
+}
+
 # Keep bin\Release reproducible.  WebView2's managed AnyCPU loader resolves the
 # native DLL from runtimes\win-<arch>\native.  A root-level x86 loader shadows
 # that mechanism and makes the pane fail in 64-bit Excel.

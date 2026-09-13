@@ -93,9 +93,13 @@ RestartIfNeededByRun=no
 ; Sign the uninstaller + setup binaries via scripts/sign.ps1 (Authenticode).
 ; The $f placeholder is the file InnoSetup wants signed; sign.ps1 also stamps
 ; an RFC3161 timestamp so the signature outlives the cert. Set a cert in CI via
-; DEEPEXCEL_PFX / DEEPEXCEL_PFX_PASS, DEEPEXCEL_CERT_THUMBPRINT for the
-; explicitly labelled internal build, or USE_AZURE_TRUSTED_SIGNING=1.
-#if (GetEnv("DEEPEXCEL_PFX") != "") || (GetEnv("DEEPEXCEL_CERT_THUMBPRINT") != "") || (GetEnv("USE_AZURE_TRUSTED_SIGNING") == "1") || (GetEnv("USE_AZURE_TRUSTED_SIGNING") == "true")
+; DEEPEXCEL_PFX / DEEPEXCEL_PFX_PASS or USE_AZURE_TRUSTED_SIGNING=1.
+;
+; DeepExcel currently ships UNSIGNED: no certificate has been purchased, and
+; self-signing was removed on 2026-09-12 because it required users to trust a
+; private root CA. Integrity is published as dist/SHA256SUMS.txt instead.
+; Signing remains fully wired so a future certificate is an env-var change.
+#if (GetEnv("DEEPEXCEL_PFX") != "") || (GetEnv("USE_AZURE_TRUSTED_SIGNING") == "1") || (GetEnv("USE_AZURE_TRUSTED_SIGNING") == "true")
 SignTool=deepsign
 #endif
 
@@ -121,7 +125,10 @@ Source: "Includes\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: dele
 [Icons]
 Name: "{group}\{cm:UninstallProgram,{#AppName}}"; Filename: "{uninstallexe}"
 Name: "{group}\{#AppName} 官网"; Filename: "{#AppURL}"
-Name: "{group}\手动注册（排错用）"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\register-user.ps1"""; WorkingDir: "{app}"
+; One entry point for "Excel 里没有 DeepExcel 选项卡". Double-clicking it opens a
+; window that diagnoses on load; the old shortcut launched a raw PowerShell
+; console, which most users close before reading.
+Name: "{group}\{#AppName} 诊断与修复"; Filename: "{app}\DeepExcel.Repair.exe"; WorkingDir: "{app}"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{userappdata}\kingsoft\wps\jsaddons\DeepExcel_{#AppVersion}"
@@ -400,11 +407,6 @@ begin
     RaiseException(description + ' failed (exit code ' + IntToStr(resultCode) + ').');
 end;
 
-function PowerShellPath(): string;
-begin
-  Result := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
-end;
-
 function MoveFileEx(existingFile, newFile: string; flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
 
@@ -596,15 +598,22 @@ begin
 
         RegisterDeepExcel();
         VerifyDeepExcelRegistration();
+        // DeepExcel.Repair.exe replaces the two powershell.exe hops that used
+        // to run register-user.ps1 here. Native tooling keeps powershell.exe
+        // out of the install critical path: it was both a hard dependency on
+        // the user's PowerShell environment and a textbook antivirus heuristic
+        // hit (unsigned process -> HKCU\...\Office\Excel\Addins). It performs
+        // the work Inno's [Code] cannot: clearing Excel's binary DisabledItems
+        // values, stripping Mark-of-the-Web, and 64-bit COM activation.
         RunAndRequire(
-          PowerShellPath(),
-          '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-            ExpandConstant('{app}\register-user.ps1') + '" -RepairOnly',
-          '正在修复 Excel 加载项状态');
+          ExpandConstant('{app}\DeepExcel.Repair.exe'),
+          '--repair --quiet',
+          '正在校验并修复 Excel 加载项状态');
+        // A process can only activate COM in its own bitness, so 32-bit Office
+        // support needs a genuinely 32-bit probe.
         RunAndRequire(
-          ExpandConstant('{win}\SysWOW64\WindowsPowerShell\v1.0\powershell.exe'),
-          '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' +
-            ExpandConstant('{app}\register-user.ps1') + '" -ActivationOnly',
+          ExpandConstant('{app}\DeepExcel.Probe32.exe'),
+          '--activation-only',
           '正在验证 32 位 Excel 加载器');
         VerifyDeepExcelRegistration();
       end;
@@ -630,7 +639,22 @@ begin
     end;
   end
   else if CurStep = ssDone then
+  begin
     InstallCompleted := True;
+    // The final note belongs here, not in DeinitializeSetup.
+    //
+    // DeinitializeSetup runs as Setup is tearing down, after the wizard form is
+    // gone. Showing a message box from there produced "Floating point
+    // underflow." on a real install -- the install itself had already succeeded
+    // ("Installation process succeeded." in the log), so the only visible effect
+    // was a crash-looking dialog at the very end. For an unsigned installer the
+    // user has already had to click through SmartScreen; ending on that box
+    // makes a successful install look broken.
+    if not WizardSilent then
+      MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
+             '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
+             '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -643,11 +667,8 @@ begin
   end;
 end;
 
-procedure DeinitializeSetup();
-begin
-  // Friendly final note (only on a successful, non-silent install).
-  if InstallCompleted and (not WizardSilent) and (not IsUninstaller()) then
-    MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
-           '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
-           '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);
-end;
+// DeinitializeSetup is deliberately absent.
+//
+// It runs after the wizard form has been destroyed, so anything touching the UI
+// from there is operating on a torn-down window. The completion notice that used
+// to live here now runs in CurStepChanged(ssDone), while the form is still alive.

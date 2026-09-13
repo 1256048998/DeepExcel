@@ -81,17 +81,42 @@ def _load_wps_local_config():
         return None
 
 
-# ★ 高风险工具集合：需要用户在面板内抽屉式确认才能执行
-# 低风险工具（读/写值/排序/格式化等）直接放行，不打扰用户
+# 需要经过确认流程的工具。
+#
+# 注意这里只是"要不要问 C#"，不是"一定会弹窗"。C# 侧会先算出具体变更集，
+# 只有值得打扰用户时才真的弹；改 3 个单元格或根本没有变化的操作会被自动放行。
+# 把这个判断放在 C# 而不是这里，是因为只有那边能看到工作簿的当前状态。
 _HIGH_RISK_TOOLS = {
-    "execute_vba",       # 执行任意 VBA 代码
-    "execute_python",    # 执行任意 Python 代码
-    "rollback",          # 回滚工作簿到快照
-    "clean_data",        # 清洗数据（修改单元格）
-    "remove_duplicates", # 删除重复项（删除行）
+    # 任意代码：无法预演，只能快照 + 明确告知
+    "execute_vba",
+    "execute_python",
+    "send_keys",
+    # 破坏性结构操作
+    "rollback",
+    "delete_rows", "delete_columns", "delete_sheet", "delete_blank_rows",
+    "clear_range",
+    # 大范围写入：可能覆盖公式
+    "write_range", "write_table", "replace_formula", "fill_formula_down",
+    # 数据清洗：会批量改写单元格
+    "clean_data", "remove_duplicates", "split_text_to_columns",
+    "fill_blank_cells", "remove_special_chars", "clean_amount",
+    "merge_columns", "rename_columns", "collapse_spaces",
+    "text_to_number", "unify_date", "trim_spaces",
+    # 合并单元格会丢数据
+    "merge_cells", "unmerge_cells",
 }
 
-# ★ 会话级"允许并记住"：用户允许过的工具本次会话内不再询问
+# "允许并记住"只适用于授予一种能力，不适用于逐次判断影响范围的操作。
+#
+# 批准过一次 delete_rows，不等于批准了之后任何一次删除——下一次可能删 200 行。
+# 只有 VBA/Python 这类"我信任它能跑代码"的授权适合记住。
+_REMEMBERABLE_TOOLS = {
+    "execute_vba",
+    "execute_python",
+    "send_keys",
+}
+
+# ★ 会话级"允许并记住"：仅对 _REMEMBERABLE_TOOLS 生效
 _allowed_tools_session = set()
 
 # ★ 最近一条用户消息文本（用于 Computer Use 工具的触发门槛检查）
@@ -124,26 +149,29 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
             return {"continue_": True}
         bare_name = tool_name.replace("mcp__excel__", "")
 
+        # ★ Computer Use 门槛检查必须在高风险判断之前。
+        # 它是一道"拒绝"门禁，不是"询问"门禁：用户没要求截图时，AI 自作主张调用
+        # 应当被直接拒掉，而不是弹窗交给用户决定。放在低风险分支里会导致
+        # send_keys 进入高风险集合后绕过这道检查。
+        if bare_name in ("screenshot_excel", "send_keys"):
+            user_msg = _last_user_text.lower()
+            if not any(kw in user_msg for kw in _COMPUTER_USE_TRIGGERS):
+                sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} blocked (user did not request computer use)\n")
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "screenshot_excel/send_keys 仅在用户主动要求截图或 computer use 时可用。当前用户消息未包含相关请求，请依靠工具返回值判断结果，不要主动截图验证。",
+                    },
+                    "reason": "Computer Use 工具需要用户明确要求才可调用",
+                }
+
         # 低风险工具直接放行
         if bare_name not in _HIGH_RISK_TOOLS:
-            # ★ Computer Use 门槛检查：screenshot_excel/send_keys 仅在用户主动要求时放行
-            # 防止 AI 自作主张截图验证工具执行效果（token 浪费 + 延迟）
-            if bare_name in ("screenshot_excel", "send_keys"):
-                user_msg = _last_user_text.lower()
-                if not any(kw in user_msg for kw in _COMPUTER_USE_TRIGGERS):
-                    sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} blocked (user did not request computer use)\n")
-                    return {
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": "screenshot_excel/send_keys 仅在用户主动要求截图或 computer use 时可用。当前用户消息未包含相关请求，请依靠工具返回值判断结果，不要主动截图验证。",
-                        },
-                        "reason": "Computer Use 工具需要用户明确要求才可调用",
-                    }
             return {"continue_": True}
 
-        # ★ "允许并记住"：本次会话已允许过的工具不再询问
-        if bare_name in _allowed_tools_session:
+        # ★ "允许并记住"：仅限能力型授权，逐次操作每次都要看变更集
+        if bare_name in _allowed_tools_session and bare_name in _REMEMBERABLE_TOOLS:
             sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} auto-allowed (session remembered)\n")
             return {
                 "hookSpecificOutput": {
@@ -220,6 +248,74 @@ class _ResponseCache:
 
 
 _response_cache = _ResponseCache()
+
+
+DEFAULT_BASE_URL = "https://api.anthropic.com"
+DEFAULT_MODEL = "claude-sonnet-4"
+
+
+def build_env_config(cfg: dict, environ) -> tuple:
+    """Resolve the SDK environment from the config the C# bridge sent.
+
+    Two outbound modes, decided by the server and resolved on the C# side by
+    SidecarRoutingResolver:
+
+        byok   -- the user's own provider and API key (x-api-key header)
+        hosted -- the DeepExcel proxy and a short-lived bearer token
+                  (Authorization header)
+
+    The rule that matters: exactly one credential is ever set. In hosted mode
+    the user's provider key is NOT forwarded -- the proxy authenticates the
+    request itself, so sending the key would expose it to one more party and
+    bypass metering at the same time. In BYOK mode no proxy token exists, so
+    there is nothing that could leak to a third-party provider.
+
+    Returns (env_config, model).
+    """
+    if not cfg:
+        # No config message: fall back to the ambient environment. This is the
+        # development path and the 30-second-timeout path, never the normal one.
+        return (
+            {
+                "ANTHROPIC_BASE_URL": environ.get("ANTHROPIC_BASE_URL", DEFAULT_BASE_URL),
+                "ANTHROPIC_API_KEY": environ.get("ANTHROPIC_API_KEY", ""),
+            },
+            environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL),
+        )
+
+    env_config = {"ANTHROPIC_BASE_URL": cfg.get("base_url") or DEFAULT_BASE_URL}
+    auth_token = cfg.get("auth_token") or ""
+    if cfg.get("routing_mode") == "hosted" and auth_token:
+        env_config["ANTHROPIC_AUTH_TOKEN"] = auth_token
+    else:
+        # Includes the case of hosted-without-a-token: falling back to the local
+        # key would silently bill the user's own provider account. The C# side
+        # already refuses to produce that combination; this is defence in depth.
+        env_config["ANTHROPIC_API_KEY"] = cfg.get("api_key") or ""
+
+    return env_config, (cfg.get("model") or DEFAULT_MODEL)
+
+
+def stale_env_keys(env_config: dict) -> list:
+    """Environment variables that must be removed before creating the client.
+
+    Model defaults inherited from ~/.claude/settings.json would override the
+    model we were told to use. The credential we are NOT using must also go:
+    when both are present the SDK's choice depends on implementation details,
+    which could send the user's provider key to the DeepExcel proxy or the proxy
+    token to a third-party provider. Both hand a credential to the wrong party.
+    """
+    stale = [
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    ]
+    if "ANTHROPIC_AUTH_TOKEN" in env_config:
+        stale.append("ANTHROPIC_API_KEY")
+    else:
+        stale.append("ANTHROPIC_AUTH_TOKEN")
+    return stale
 
 
 def _build_cache_key(user_text: str, attachments: list, model: str, base_url: str) -> str:
@@ -531,9 +627,19 @@ def _build_excel_context_lite(context: dict) -> str:
     wb_name = context.get("workbookName")
     if wb_name:
         lines.append(f"[工作簿] {wb_name}")
-    if lines:
-        return " ".join(lines) + "\n"
-    return ""
+
+    header = (" ".join(lines) + "\n") if lines else ""
+
+    # Workbook structure summary: column types, value ranges, blank positions,
+    # named ranges and cross-sheet links. Roughly 300-600 tokens per sheet, and
+    # it replaces the read_range round-trips the model would otherwise make just
+    # to work out what the sheet contains -- which on a large sheet it cannot do
+    # completely anyway.
+    structure = context.get("structure")
+    if isinstance(structure, str) and structure.strip():
+        header += structure.rstrip() + "\n"
+
+    return header
 
 
 def _build_history_summary(history: list) -> str:
@@ -827,25 +933,17 @@ async def main():
             try:
                 with anyio.fail_after(30.0):
                     cfg = await _message_buffer["config"].get()
-                sys.stderr.write(f"[sidecar] config received: base_url={cfg.get('base_url')}, model={cfg.get('model')}, hasKey={bool(cfg.get('api_key'))}\n")
+                sys.stderr.write(
+                    f"[sidecar] config received: base_url={cfg.get('base_url')}, "
+                    f"model={cfg.get('model')}, mode={cfg.get('routing_mode', 'byok')}, "
+                    f"hasKey={bool(cfg.get('api_key'))}, hasToken={bool(cfg.get('auth_token'))}\n")
                 sys.stderr.flush()
             except TimeoutError:
                 sys.stderr.write("[sidecar] WARNING: config timeout (30s), falling back to env vars\n")
                 sys.stderr.flush()
 
-        # 构建 env 配置（DeepSeek 必须通过 env 传给 SDK，os.environ 不生效）
-        if cfg:
-            env_config = {
-                "ANTHROPIC_BASE_URL": cfg.get("base_url", "https://api.anthropic.com"),
-                "ANTHROPIC_API_KEY": cfg.get("api_key", ""),
-            }
-            model = cfg.get("model", "claude-sonnet-4")
-        else:
-            env_config = {
-                "ANTHROPIC_BASE_URL": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
-                "ANTHROPIC_API_KEY": os.environ.get("ANTHROPIC_API_KEY", ""),
-            }
-            model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4")
+        routing_mode = (cfg or {}).get("routing_mode", "byok")
+        env_config, model = build_env_config(cfg, os.environ)
 
         # ★ 关键修复：显式同步到 os.environ，覆盖 ~/.claude/settings.json 的 env 配置。
         # SDK 在 ClaudeSDKClient 创建时会读 settings.json 的 env 字段并 merge 进 process env，
@@ -855,22 +953,23 @@ async def main():
         # 被 deepseek 拒绝（400 "supported: deepseek-v4-pro/flash, but you passed step-3.7-flash"）。
         for k, v in env_config.items():
             os.environ[k] = v
-        # 清掉可能从 settings.json 继承的 model 默认值，避免覆盖我们传的 model 参数
-        for k in ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-                  "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
-                  "ANTHROPIC_AUTH_TOKEN"):
+        for k in stale_env_keys(env_config):
             os.environ.pop(k, None)
 
         # ★ 诊断日志：打印 os.environ 实际值（脱敏 api_key），验证 settings.json 是否被覆盖
         _diag_env_base = os.environ.get("ANTHROPIC_BASE_URL", "<unset>")
         _diag_env_model = os.environ.get("ANTHROPIC_MODEL", "<unset>")
-        _diag_env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "<unset>")
+        # ANTHROPIC_AUTH_TOKEN 只报告存在与否。以前它总是被 pop 掉，恒为 <unset>，
+        # 打印全值没有后果；托管模式下它是一个活的 bearer 令牌，而这些日志会被
+        # DeepExcel.Repair.exe 的诊断包收集并发给支持人员。
+        _diag_has_token = "ANTHROPIC_AUTH_TOKEN" in os.environ
         _diag_env_sonnet = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "<unset>")
         _diag_has_key = "ANTHROPIC_API_KEY" in os.environ
         sys.stderr.write(f"[sidecar][diag] os.environ after override: "
                          f"ANTHROPIC_BASE_URL={_diag_env_base}, "
                          f"ANTHROPIC_MODEL={_diag_env_model}, "
-                         f"ANTHROPIC_AUTH_TOKEN={_diag_env_token}, "
+                         f"routing_mode={routing_mode}, "
+                         f"ANTHROPIC_AUTH_TOKEN_present={_diag_has_token}, "
                          f"ANTHROPIC_DEFAULT_SONNET_MODEL={_diag_env_sonnet}, "
                          f"ANTHROPIC_API_KEY_present={_diag_has_key}\n")
         sys.stderr.flush()
@@ -943,12 +1042,14 @@ async def main():
             # 这些值会被 SDK 实际使用，覆盖我们的 env_config）
             _post_base = os.environ.get("ANTHROPIC_BASE_URL", "<unset>")
             _post_model = os.environ.get("ANTHROPIC_MODEL", "<unset>")
-            _post_token = os.environ.get("ANTHROPIC_AUTH_TOKEN", "<unset>")
+            # Presence only. This is a live bearer token in hosted mode, and
+            # these logs are collected into the support bundle.
+            _post_has_token = "ANTHROPIC_AUTH_TOKEN" in os.environ
             _post_sonnet = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "<unset>")
             sys.stderr.write(f"[sidecar][diag] os.environ AFTER client created: "
                              f"ANTHROPIC_BASE_URL={_post_base}, "
                              f"ANTHROPIC_MODEL={_post_model}, "
-                             f"ANTHROPIC_AUTH_TOKEN={_post_token}, "
+                             f"ANTHROPIC_AUTH_TOKEN_present={_post_has_token}, "
                              f"ANTHROPIC_DEFAULT_SONNET_MODEL={_post_sonnet}\n")
             sys.stderr.flush()
             sys.stderr.write("[sidecar] ClaudeSDKClient connected, entering agent loop\n")

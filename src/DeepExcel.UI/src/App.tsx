@@ -6,7 +6,11 @@ import { HistoryPanel } from './components/HistoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
+import { AccountPanel } from './components/AccountPanel'
+import { SkillPanel } from './components/SkillPanel'
+import type { AccountStatus } from './components/AccountPanel'
 import { PermissionDrawer } from './components/PermissionDrawer'
+import type { ChangePreviewData } from './components/ChangePreview'
 import { PromptManager } from './components/PromptManager'
 import type { Message, ModelConfig } from './types'
 import type { PromptTemplate, PromptType } from './utils/prompts'
@@ -18,6 +22,7 @@ interface PermissionState {
   requestId?: string
   tool?: string
   args?: Record<string, any>
+  preview?: ChangePreviewData | null
 }
 
 export interface AttachmentInfo {
@@ -43,6 +48,13 @@ export default function App() {
   const [conversationsOpen, setConversationsOpen] = useState(false)
   // ★ 模型配置弹窗（Ribbon 按钮触发）
   const [modelConfigOpen, setModelConfigOpen] = useState(false)
+
+  // 账号面板。未登录也能正常使用（自带 API Key），登录用于内测准入与使用统计。
+  const [accountOpen, setAccountOpen] = useState(false)
+
+  // 技能库：把上次成功的多步任务保存为可重放技能
+  const [skillsOpen, setSkillsOpen] = useState(false)
+  const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null)
   // ★ 输入框模型选择下拉：modelConfig（已连接 provider 列表）+ selectedModel（用户当前选择）
   // 挂载时加载一次，ModelConfigPanel 关闭时刷新（用户可能在面板里测试连接/切换默认厂商）
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
@@ -323,8 +335,8 @@ export default function App() {
       } else if (data.type === 'permission_request') {
         // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
         // 从输入框上方 slide-up 显示抽屉，不阻塞 Excel UI 线程
-        const { request_id, tool, args } = data.payload
-        setPermission({ visible: true, requestId: request_id, tool, args })
+        const { request_id, tool, args, preview } = data.payload
+        setPermission({ visible: true, requestId: request_id, tool, args, preview })
       } else if (data.type === 'compacted') {
         // ★ autocompact 触发：插入压缩提示卡，让用户知道发生了上下文压缩
         setMessages(prev => [...prev, {
@@ -627,6 +639,31 @@ export default function App() {
           </button>
           <button
             className="header-btn icon-only"
+            onClick={() => setSkillsOpen(true)}
+            title="技能库"
+            type="button"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </button>
+          <button
+            className="header-btn icon-only"
+            onClick={() => setAccountOpen(true)}
+            title={
+              accountStatus && accountStatus.state !== 'signedout'
+                ? `账号：${accountStatus.email ?? ''}`
+                : '账号（未登录）'
+            }
+            type="button"
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </button>
+          <button
+            className="header-btn icon-only"
             onClick={() => setModelConfigOpen(true)}
             title="模型配置"
             type="button"
@@ -666,6 +703,7 @@ export default function App() {
         visible={permission.visible}
         tool={permission.tool || ''}
         args={permission.args || {}}
+        preview={permission.preview}
         onAllow={handlePermissionAllow}
         onDeny={handlePermissionDeny}
       />
@@ -710,6 +748,16 @@ export default function App() {
       <ModelConfigPanel
         open={modelConfigOpen}
         onClose={() => setModelConfigOpen(false)}
+      />
+      <SkillPanel
+        open={skillsOpen}
+        onClose={() => setSkillsOpen(false)}
+        onRun={(prompt) => void sendMessage(prompt)}
+      />
+      <AccountPanel
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        onStatusChange={setAccountStatus}
       />
       <PromptManager
         visible={promptManagerOpen}

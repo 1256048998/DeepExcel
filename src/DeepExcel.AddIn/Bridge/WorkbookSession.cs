@@ -230,6 +230,15 @@ namespace DeepExcel.AddIn.Bridge
         /// ★ 性能优化：只预读取选中区域的地址和行列数（几十个 token），
         /// 不读 Values/Formulas 等完整数据。AI 看到地址后可直接操作，
         /// 需要详细数据时再调 read_range。兼顾速度和 token 消耗。</summary>
+        /// <summary>
+        /// Rendered workbook structure summary for this session, or null.
+        ///
+        /// Set by MessageBridge immediately before BuildContext. Kept on the
+        /// session rather than rebuilt inside BuildContext so that caching and
+        /// the time budget live in one place.
+        /// </summary>
+        public string SemanticIndex { get; set; }
+
         public object BuildContext(IExcelActions excelActions)
         {
             try
@@ -298,6 +307,10 @@ namespace DeepExcel.AddIn.Bridge
                     workbook = workbookLite,
                     selection = selectionLite,
                     attachments = attachmentList,
+                    // Column types, ranges, blanks and cross-sheet links. Lets
+                    // the model skip the read_range round-trips it currently
+                    // needs just to work out what the sheet contains.
+                    structure = SemanticIndex,
                     timestamp = DateTime.Now.ToString("o"),
                 };
             }

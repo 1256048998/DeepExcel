@@ -5,17 +5,36 @@
 DeepExcel 是一款 Windows 表格 AI 加载项。它把模型对话、表格上下文和可审计的工具调用放在同一个侧边面板中，用户不需要在表格与聊天网页之间反复切换。
 
 > [!IMPORTANT]
-> 当前测试包使用自签名证书，仅适合受邀内测，不应公开分发。Microsoft Excel 端已完成真实安装和运行验证；WPS 端仍处于兼容性验证阶段，不同 WPS 版本的 JS 加载项能力可能存在差异。
+> 当前安装包**未进行代码签名**，首次运行会触发 Windows SmartScreen 提示，属于正常现象（见下）。Microsoft Excel 端已完成真实安装和运行验证；WPS 端仍处于兼容性验证阶段，不同 WPS 版本的 JS 加载项能力可能存在差异。
 
 ## 快速开始
 
-### 安装内测版
+### 安装
 
-1. 获取 `DeepExcel-Internal-v0.4.17.zip`，删除旧的同名 ZIP 和旧解压目录。
-2. 完全退出 Excel、WPS及其后台进程。
-3. 解压 ZIP，首次使用时运行 `Install-Internal-Certificate.cmd`。
-4. 运行 `DeepExcel.Setup.INTERNAL.exe`。
-5. 重新打开 Excel 或 WPS，在功能区选择 **DeepExcel → 打开面板**。
+1. 完全退出 Excel、WPS 及其后台进程。
+2. 运行 `DeepExcel.Setup.exe`。出现「Windows 已保护你的电脑」时，点击 **更多信息 → 仍要运行**。
+3. 重新打开 Excel 或 WPS，在功能区选择 **DeepExcel → 打开面板**。
+
+安装完成后如果功能区没有 DeepExcel 选项卡，运行安装目录下的 `DeepExcel.Repair.exe`。
+
+<details>
+<summary>关于 SmartScreen 提示与完整性校验</summary>
+
+DeepExcel 尚未购买代码签名证书，因此 Windows 无法显示发布者信息。安装包完整性通过 SHA-256 公布，可在安装前自行核对：
+
+```powershell
+certutil -hashfile DeepExcel.Setup.exe SHA256
+```
+
+把输出与下载页的 `SHA256SUMS.txt` 比对，一致即说明文件未被篡改。
+
+早期内测版曾要求运行 `Install-Internal-Certificate.cmd` 安装自签名根证书，该做法已于 2026-09-12 移除——让用户信任一个私有根 CA 的风险高于 SmartScreen 提示带来的不便。如果你装过旧内测版，建议清理残留证书：
+
+```powershell
+Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq 'CN=DeepExcel Internal Testing' } | Remove-Item
+```
+
+</details>
 
 安装器按当前 Windows 用户安装，会：
 
@@ -71,6 +90,28 @@ DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA
 
 其他功能包括流式回复、工具调用状态、操作快照、手动回滚、对话历史、附件、提示词模板、VBA 中文字符串处理和 Sidecar 冷启动诊断。
 
+### 工作簿结构摘要
+
+打开工作簿时会在后台构建轻量结构摘要——每列的名称、类型、取值范围、空值位置、公式列以及跨表引用——随每条消息提供给模型。这让模型不必为了搞清"C 列是不是数字"而反复读取数据；大表上它本来也读不全。摘要会在编辑后自动失效重建，采样得出的结论会明确标注为采样结论。
+
+### 执行前变更预览
+
+删行、批量写入、清空区域等操作会先算出**具体会改哪些单元格**，以改前/改后对照展示，确认后才执行。覆盖已有公式的单元格会单独标出。
+
+VBA 和 Python 无法预演，这种情况会**明确说明"无法预览"并自动创建快照**，不会假装模拟过。改动很小或根本没有变化的操作会直接执行，不打扰。
+
+### 技能库
+
+一次成功的多步任务可以保存为技能：系统会把其中的数据区域、日期、工作表名识别成参数，下次填入新值即可重放。技能是骨架而非宏——重放仍由 AI 执行，数据结构变化时以原始意图为准，并且同样经过上述确认与预览流程。
+
+技能按单文件存储在 `%APPDATA%\DeepExcel\skills\`，可直接发送文件分享。登录账号后还可以同步到云端、用分享码分享给他人。
+
+**同步与分享是分开的**：同步只是备份，技能仍然私有；只有显式点“分享”才会生成分享码，且随时可以撤销。上传前会自动移除本地文件路径与工作簿名——技能的参数默认值来自真实运行，里面可能有真实的文件路径。客户端和服务端各脱敏一次。
+
+### 账号（可选）
+
+连接 DeepExcel 服务器后可使用账号登录，用于内测准入与使用统计。**不登录也能完整使用**——在模型设置里填写自己的 API Key 即可。
+
 ## 系统要求
 
 | 项目 | 要求 |
@@ -106,7 +147,7 @@ DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA
 - API Key 只允许当前 Windows 用户通过 DPAPI 解密；
 - VBA 和 Python 执行经过权限确认与受限操作检查；
 - WPS 清单更新只修改 DeepExcel 节点；
-- 内测自签名证书不等同于公共 CA 代码签名；
+- 安装包未经代码签名，请用 `SHA256SUMS.txt` 核对完整性；
 - 使用 AI 修改重要工作簿前，仍建议保留独立备份。
 
 ## 项目结构
@@ -115,11 +156,18 @@ DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA
 DeepExcel/
 ├── src/
 │   ├── DeepExcel.AddIn/       # Excel COM 加载项、WebView2、表格工具
+│   │   ├── Account/           # 账号会话、出口路由解析、遥测
+│   │   ├── Perception/        # 工作簿语义索引（类型推断、采样、缓存）
+│   │   ├── Preview/           # 执行前变更预览
+│   │   └── Skills/            # 技能参数化与本地技能库
 │   ├── DeepExcel.UI/          # React + TypeScript 侧边面板
 │   ├── DeepExcel.Sidecar/     # Python AI Agent 与 IPC
 │   ├── DeepExcel.Wps/         # WPS Ribbon、任务窗格与 JSA 工具
+│   ├── DeepExcel.Repair/      # 诊断与修复工具（GUI + CLI）
+│   ├── DeepExcel.Probe32/     # 32 位 COM 激活探针
 │   └── DeepExcel.Tests/       # 单元测试
-├── scripts/                   # 编译、注册、签名和打包脚本
+├── server/                    # 账号 / 权益 / 出口路由 / 遥测服务端
+├── scripts/                   # 编译、测试、打包与安装验收脚本
 ├── deploy/                    # Inno Setup 安装器定义
 ├── docs/                      # 部署、设计与审计文档
 └── DeepExcel.sln
@@ -174,60 +222,66 @@ Python、pip 和依赖版本由脚本及 `scripts/python-requirements.lock.txt` 
 
 ## 构建安装包
 
-### 内部自签名测试包
-
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\new-internal-signing-cert.ps1
-python scripts\package_release.py --version 0.4.17 --internal
+python scripts\package_release.py --version 0.5.0
 ```
 
 输出：
 
 ```text
-dist\DeepExcel-Internal-v0.4.17.zip
-dist\DeepExcel.Setup.INTERNAL.exe
+dist\DeepExcel.Setup.exe        # 面向用户的唯一交付物
+dist\DeepExcel-v0.5.0.zip      # 支持/诊断 payload
+dist\SHA256SUMS.txt             # 必须与安装包一起发布
 ```
 
-### 生产签名包
+当前发布形态是**未签名安装包 + 公布 SHA-256**。签名链路完整保留：设置 `DEEPEXCEL_PFX`、`DEEPEXCEL_CERT_THUMBPRINT` 或 `USE_AZURE_TRUSTED_SIGNING` 任一即可自动签名，无需改代码。自签名证书会被打包脚本主动拒绝。
 
-生产构建需要有效的 Authenticode PFX 或 Azure Trusted Signing：
-
-```powershell
-$env:DEEPEXCEL_PFX = 'C:\secure\deepexcel-code-signing.pfx'
-$env:DEEPEXCEL_PFX_PASS = '<由安全环境提供>'
-python scripts\package_release.py --version 0.4.17
-```
-
-没有生产证书时，只允许生成本机验证版本：
-
-```powershell
-python scripts\package_release.py --version 0.4.17 --allow-unsigned
-```
-
-无签名产物禁止发送给用户。完整流程见 [部署文档](docs/DEPLOYMENT.md)。
+完整流程见 [部署文档](docs/DEPLOYMENT.md)。
 
 ## 发布前验证
 
 至少完成：
 
-1. C# 加载项编译；
-2. React 前端构建；
-3. VBA 与模型列表解析测试；
-4. Sidecar 自然冷启动导入；
-5. Excel 32 位和 64 位 COM 激活检查；
-6. WPS Ribbon/任务窗格回调测试；
-7. 安装、升级、卸载及开发注册恢复；
-8. 安装包 Authenticode 与 SHA-256 校验。
+1. C# 加载项编译（`scripts\_compile_only.ps1`，需先关闭 Excel/WPS）；
+2. 诊断修复工具编译（`scripts\build-repair.ps1`）；
+3. React 前端构建；
+4. C# 单元测试（`scripts\run-tests-csharp.ps1`）；
+5. 打包守卫测试（`python scripts\test_package_release.py`）；
+6. Sidecar 自然冷启动导入；
+7. WPS Ribbon/任务窗格回调测试；
+8. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
+9. `SHA256SUMS.txt` 与安装包一同发布。
+
+第 8 步是硬性要求。开发机永远装得上——它已经有注册表项、有运行时、没有下载来源标记。v0.4.11 → v0.4.17 连续七个版本栽在这里，就是因为没有在干净机器上验证过。
 
 ## 常见问题
 
 ### Excel 中没有 DeepExcel 选项卡
 
 1. 完全退出所有 Excel 进程；
-2. 重新运行安装器；
-3. 在 `文件 → 选项 → 加载项` 中检查“禁用项目”和“COM 加载项”；
-4. 确认 `DeepExcel.AddIn` 已启用；
-5. 查看 `%APPDATA%\DeepExcel\logs\DeepExcel_Load.log`。
+2. 运行安装目录（`%LOCALAPPDATA%\DeepExcel`）下的 **`DeepExcel.Repair.exe`**，或开始菜单的「DeepExcel 诊断与修复」；
+3. 窗口会自动诊断并给出结论。若显示「发现可自动修复的问题」，点击 **修复**；
+4. 重新打开 Excel。
+
+如果提示存在无法自动修复的问题，点击 **导出诊断包**，把桌面上生成的 ZIP 发给支持人员。该 ZIP 只含日志、环境信息和脱敏后的配置，不含单元格内容、工作簿路径或 API Key。
+
+命令行用法：
+
+```powershell
+%LOCALAPPDATA%\DeepExcel\DeepExcel.Repair.exe --verify
+```
+
+常见诊断码：
+
+| 诊断码 | 含义 |
+| --- | --- |
+| `E-REG-002` | 32 位视图缺少 COM 注册，32 位 Excel 无法加载 |
+| `E-REG-005` | 存在机器级（HKLM）注册残留，会覆盖用户级注册，需管理员清理 |
+| `E-REG-006` | 注册指向旧版本 DLL |
+| `E-ACT-001` / `E-ACT-002` | 64 位 / 32 位进程中 COM 激活失败 |
+| `E-ENV-001` / `E-ENV-002` | 缺少 .NET Framework 4.8 / WebView2 运行时 |
+| `E-RES-001` | 加载项被 Excel 加入禁用列表 |
+| `E-LOAD-001` | 上次 Excel 启动时加载项初始化失败（附具体异常） |
 
 ### Sidecar 显示 `code=1`
 
@@ -265,8 +319,29 @@ python scripts\package_release.py --version 0.4.17 --allow-unsigned
 %LOCALAPPDATA%\DeepExcel\
 ```
 
+## 运行测试
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run-tests-csharp.ps1
+python scripts\test_package_release.py
+```
+
+服务端测试：
+
+```powershell
+cd server
+.venv\Scripts\python.exe -m pytest tests\ -q
+```
+
+本项目没有 dotnet CLI，C# 测试通过 Roslyn + xunit.runner.console 直接编译运行。首次运行需要还原引用程序集：
+
+```powershell
+.\nuget.exe install Microsoft.NETFramework.ReferenceAssemblies.net48 -Version 1.0.3 -OutputDirectory packages
+```
+
 ## 文档
 
+- [服务端（账号 / 权益 / 出口路由 / 遥测）](server/README.md)
 - [部署与签名](docs/DEPLOYMENT.md)
 - [WPS 说明](docs/README-WPS.md)
 - [架构设计](docs/superpowers/specs/2026-06-25-DeepExcel-architecture-design.md)
