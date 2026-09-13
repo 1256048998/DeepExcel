@@ -1179,14 +1179,27 @@ body {
 }
 
 /* Markdown 内容样式 */
+
+/* ★ markdown 正文容器：撤掉 .message 继承下来的 white-space: pre-wrap。
+   markdown 自己已经把换行解析成块级元素，pre-wrap 再叠一层会把段内软换行
+   渲染成硬换行，和块级 margin 一起造成"空行过多"。
+   非 markdown 的纯文本消息不经过 .md-body，仍靠 .message 的 pre-wrap 保留换行。 */
+.md-body {
+  white-space: normal;
+}
+
+/* 首尾块不再向外撑边距——气泡本身已有 10px padding，否则每条消息上下各多一截空白 */
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+
 .message-content h1,
 .message-content h2,
 .message-content h3,
 .message-content h4,
 .message-content h5,
 .message-content h6 {
-  margin-top: 12px;
-  margin-bottom: 6px;
+  margin-top: 10px;
+  margin-bottom: 4px;
   font-weight: 600;
   line-height: 1.4;
 }
@@ -1197,17 +1210,28 @@ body {
 .message-content h4, .message-content h5, .message-content h6 { font-size: 13px; }
 
 .message-content p {
-  margin: 8px 0;
+  margin: 6px 0;
 }
 
 .message-content ul,
 .message-content ol {
-  margin: 8px 0;
+  margin: 6px 0;
   padding-left: 20px;
 }
 
 .message-content li {
-  margin: 4px 0;
+  margin: 3px 0;
+}
+
+/* ★ 松散列表（条目之间有空行）会被解析成 <li><p>…</p></li>，
+   p 的上下 margin 叠在 li 的 margin 上，步骤列表每条之间就多出一截空白。
+   面板里的编号步骤几乎全是这种写法，所以这条影响面很大。 */
+.message-content li > p {
+  margin: 0;
+}
+
+.message-content li > p + p {
+  margin-top: 4px;
 }
 
 .message-content blockquote {
@@ -1251,8 +1275,10 @@ body {
   text-decoration: underline;
 }
 
+/* 提示词已要求不要输出 --- 分割线；这里压到 8px 是兜底，
+   历史会话和偶尔不听话的输出仍会带分割线 */
 .message-content hr {
-  margin: 12px 0;
+  margin: 8px 0;
   border: none;
   border-top: 1px solid var(--color-border);
 }
