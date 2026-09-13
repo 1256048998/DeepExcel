@@ -191,37 +191,76 @@ function Invoke-ActivationTrace {
 # either shows the DeepExcel tab or it does not -- that needs a human looking
 # at the sandbox window, so this function ends by launching WPS.
 function Install-WpsInGuest {
+    # Everything here is logged to the mapped folder. The previous run skipped
+    # WPS and left no trace of why -- the sandbox console dies with the VM, so a
+    # step with no artifact is a step that cannot be diagnosed.
+    $log = 'C:\DeepExcelVerify\wps-install.log'
+    $dir = Split-Path -Parent $log
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    function Write-WpsLog([string]$Message) {
+        $line = '{0}  {1}' -f (Get-Date -Format 'HH:mm:ss'), $Message
+        Add-Content -LiteralPath $log -Value $line
+        Write-Host "  (wps) $Message"
+    }
+
     $setup = 'C:\DeepExcelStage\WpsSetup.exe'
-    if (-not (Test-Path $setup)) {
-        Write-Host '  (wps) installer not staged; skipping'
-        return $false
+    Write-WpsLog "staged installer present: $(Test-Path $setup)"
+    if (-not (Test-Path $setup)) { return $false }
+    Write-WpsLog ('installer size: {0:N0} bytes' -f (Get-Item $setup).Length)
+
+    # Try the common silent switches in order. WPS is not a plain NSIS package,
+    # so /S alone is not guaranteed; each attempt gets a short window to show
+    # progress before moving on.
+    $searchPaths = @('C:\Program Files (x86)\Kingsoft', 'C:\Program Files\Kingsoft',
+                     "$env:LOCALAPPDATA\Kingsoft", "$env:ProgramData\Kingsoft")
+
+    function Find-Et {
+        param([string[]]$Paths)
+        foreach ($p in $Paths) {
+            if (Test-Path $p) {
+                $hit = Get-ChildItem -Path $p -Recurse -Filter 'et.exe' -ErrorAction SilentlyContinue |
+                       Select-Object -First 1
+                if ($hit) { return $hit }
+            }
+        }
+        return $null
     }
 
-    Write-Host 'Installing WPS (silent attempt)...'
-    # /S is the usual NSIS silent switch. If this build does not honour it the
-    # wizard appears instead, which is fine -- a human is watching this window.
-    Start-Process -FilePath $setup -ArgumentList '/S' -PassThru | Out-Null
+    foreach ($switches in @('/S', '/silent', '/quiet /norestart', '')) {
+        $label = if ($switches) { $switches } else { '(no switches, interactive)' }
+        Write-WpsLog "launching installer with: $label"
+        try {
+            if ($switches) {
+                Start-Process -FilePath $setup -ArgumentList $switches -PassThru | Out-Null
+            } else {
+                Start-Process -FilePath $setup -PassThru | Out-Null
+            }
+        } catch {
+            Write-WpsLog "launch failed: $($_.Exception.Message)"
+            continue
+        }
 
-    $deadline = (Get-Date).AddMinutes(10)
-    $found = $null
-    while ((Get-Date) -lt $deadline) {
-        $found = Get-ChildItem -Path 'C:\Program Files (x86)\Kingsoft','C:\Program Files\Kingsoft',
-                                     "$env:LOCALAPPDATA\Kingsoft" -Recurse -Filter 'et.exe' `
-                                     -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($found) { break }
-        Start-Sleep -Seconds 10
+        # Interactive attempt gets much longer: a human has to click through it.
+        $minutes = if ($switches) { 4 } else { 15 }
+        $deadline = (Get-Date).AddMinutes($minutes)
+        while ((Get-Date) -lt $deadline) {
+            $found = Find-Et -Paths $searchPaths
+            if ($found) {
+                Write-WpsLog "installed: $($found.FullName)"
+                Set-Content -LiteralPath 'C:\wps-et-path.txt' -Value $found.FullName -Encoding ASCII
+                return $true
+            }
+            Start-Sleep -Seconds 10
+        }
+        Write-WpsLog "et.exe not found after $minutes min with: $label"
+        $procs = @(Get-Process -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -match 'wps|et|setup|ksolaunch' } |
+                   ForEach-Object { $_.Name })
+        Write-WpsLog ("running related processes: " + ($procs -join ', '))
     }
 
-    if (-not $found) {
-        Write-Host '  (wps) et.exe not found after 10 minutes.'
-        Write-Host '  (wps) If the WPS wizard is on screen, finish it, then re-run:'
-        Write-Host '        powershell -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe -WithWps'
-        return $false
-    }
-
-    Write-Host "  (wps) installed: $($found.FullName)"
-    Set-Content -LiteralPath 'C:\wps-et-path.txt' -Value $found.FullName -Encoding UTF8
-    return $true
+    Write-WpsLog 'giving up on WPS install; WPS checks will be file-level only'
+    return $false
 }
 
 function Invoke-GuestVerification {
@@ -457,7 +496,23 @@ function Invoke-GuestVerification {
             Write-Host ' Close WPS, then press Enter here to continue (uninstall check).'
             Write-Host '--------------------------------------------------------------'
             Start-Process -FilePath $etPath | Out-Null
-            try { Read-Host 'Press Enter to continue' | Out-Null } catch { }
+
+            # Do NOT use Read-Host to pause here. Under the sandbox LogonCommand
+            # it does not reliably block: the previous run sailed straight past
+            # it and went on to uninstall, destroying the very state that was
+            # supposed to be inspected.
+            #
+            # Wait on a sentinel file instead. The results folder is mapped
+            # read-write, so the host side can drop the file once the human has
+            # actually looked at the ribbon.
+            $go = Join-Path (Split-Path -Parent $ResultFile) 'continue.txt'
+            Remove-Item $go -ErrorAction SilentlyContinue
+            Write-Host " Waiting for $go (create it from the host to continue)."
+            $waitUntil = (Get-Date).AddMinutes(45)
+            while (-not (Test-Path $go) -and (Get-Date) -lt $waitUntil) {
+                Start-Sleep -Seconds 5
+            }
+            Write-Host ' Continuing.'
         }
     }
 
