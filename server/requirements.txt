@@ -1,0 +1,24 @@
+# Pinned to the exact versions the test suite actually runs against.
+#
+# These are generated from the working environment, not written by hand: an
+# earlier hand-written pin named alembic==1.16.6, a version that does not
+# exist, and nothing caught it until the image was built for the first time.
+# Regenerate with `pip list --format=json` after changing a dependency, and
+# let the test suite be the gate.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+email-validator==2.3.0
+SQLAlchemy==2.0.52
+alembic==1.20.0
+psycopg[binary]==3.3.5
+# Runtime dependency of the model proxy (app/proxy/router.py), not just a test
+# tool. It lived in requirements-dev only because pytest pulled it in locally,
+# so the gap was invisible until the image was built and the app failed to
+# import at startup.
+httpx==0.28.1
+PyJWT==2.14.0
+python-multipart==0.0.32
+
+# Password hashing uses hashlib.scrypt from the standard library, so there is no
+# bcrypt/argon2 dependency and therefore no native build step in the image.

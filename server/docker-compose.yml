@@ -1,0 +1,88 @@
+# Single-host deployment. Deliberately not Kubernetes: the workload is a
+# gatekeeper and a log sink for a closed beta, and operational complexity that
+# does not pay for itself is a cost, not a safeguard.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-deepexcel}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-deepexcel}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deepexcel}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Not published. Only the api service needs to reach it.
+    expose:
+      - "5432"
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-deepexcel}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-deepexcel}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    restart: unless-stopped
+    environment:
+      DEEPEXCEL_ENV: production
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-deepexcel}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-deepexcel}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      REQUIRE_INVITE_CODE: ${REQUIRE_INVITE_CODE:-true}
+      # Leave unset until M6. While it is empty every client is told to keep
+      # using its own provider key; setting it is what turns on hosted routing.
+      HOSTED_PROXY_BASE_URL: ${HOSTED_PROXY_BASE_URL:-}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      ADMIN_ORIGIN: ${ADMIN_ORIGIN:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  admin:
+    build: ./admin
+    restart: unless-stopped
+    depends_on:
+      - api
+    # Bound to loopback: the operator console reaches it through an SSH tunnel
+    # or a reverse proxy that terminates TLS and authenticates, never directly
+    # from the internet.
+    ports:
+      - "127.0.0.1:8080:80"
+
+  # Daily logical backup. An account database with no backup is a single disk
+  # failure away from every user losing access.
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    entrypoint: >
+      sh -c 'while true; do
+        pg_dump -h db -U ${POSTGRES_USER:-deepexcel} -d ${POSTGRES_DB:-deepexcel}
+          | gzip > /backups/deepexcel-$$(date +%%Y%%m%%d-%%H%%M%%S).sql.gz;
+        find /backups -name "deepexcel-*.sql.gz" -mtime +14 -delete;
+        sleep 86400;
+      done'
+
+volumes:
+  pgdata:
