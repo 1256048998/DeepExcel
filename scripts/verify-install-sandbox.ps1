@@ -148,20 +148,33 @@ function Invoke-ActivationTrace {
     $traceDir = 'C:\pmtrace'
     New-Item -ItemType Directory -Path $tools, $traceDir -Force | Out-Null
 
+    # Every failure here goes to the mapped folder. The previous run produced no
+    # trace and no explanation, because these messages only went to a console
+    # that dies with the VM.
+    $log = Join-Path $OutDir 'trace-setup.log'
+    function Write-TraceLog([string]$m) {
+        Add-Content -LiteralPath $log -Value ('{0}  {1}' -f (Get-Date -Format 'HH:mm:ss'), $m)
+        Write-Host "  (trace) $m"
+    }
+
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $zip = Join-Path $tools 'ProcessMonitor.zip'
+        Write-TraceLog 'downloading ProcessMonitor.zip from download.sysinternals.com'
         Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/ProcessMonitor.zip' `
                           -OutFile $zip -UseBasicParsing
+        Write-TraceLog ('downloaded {0:N0} bytes' -f (Get-Item $zip).Length)
         Expand-Archive -LiteralPath $zip -DestinationPath $tools -Force
+        Write-TraceLog ('extracted: ' + ((Get-ChildItem $tools -Filter '*.exe' | ForEach-Object Name) -join ', '))
     } catch {
-        Write-Host "  (trace) download failed: $($_.Exception.Message)"
+        Write-TraceLog ("download/extract FAILED: " + $_.Exception.Message)
         return
     }
 
     $procmon = Join-Path $tools 'Procmon64.exe'
     if (-not (Test-Path $procmon)) { $procmon = Join-Path $tools 'Procmon.exe' }
-    if (-not (Test-Path $procmon)) { Write-Host '  (trace) Procmon not found in archive'; return }
+    if (-not (Test-Path $procmon)) { Write-TraceLog 'Procmon executable not found in archive'; return }
+    Write-TraceLog "using $procmon"
 
     $pml = Join-Path $traceDir 'trace.pml'
     Start-Process -FilePath $procmon -ArgumentList '/AcceptEula','/Quiet','/Minimized','/BackingFile',$pml | Out-Null
@@ -178,13 +191,18 @@ function Invoke-ActivationTrace {
     $csv = Join-Path $traceDir 'trace.csv'
     Start-Process -FilePath $procmon -ArgumentList '/OpenLog',$pml,'/SaveAs',$csv -Wait | Out-Null
 
-    if (-not (Test-Path $csv)) { Write-Host '  (trace) CSV export produced nothing'; return }
+    if (-not (Test-Path $csv)) { Write-TraceLog 'CSV export produced nothing'; return }
+    Write-TraceLog ('CSV exported: {0:N0} bytes' -f (Get-Item $csv).Length)
 
     # Only the interesting rows leave the VM.
     $rows = Import-Csv -LiteralPath $csv
+    # Widened deliberately: COM activation fails before the CLR is involved, so
+    # the interesting misses may be mscoree/registry lookups, not files under
+    # the install directory. Filtering only on the add-in's own name could hide
+    # the very event being hunted.
     $miss = $rows | Where-Object {
-        $_.Result -match 'NAME NOT FOUND|PATH NOT FOUND' -and
-        $_.'Process Name' -match 'DeepExcel'
+        $_.Result -match 'NAME NOT FOUND|PATH NOT FOUND|ACCESS DENIED' -and
+        ($_.'Process Name' -match 'DeepExcel|Probe32|Repair' -or $_.Path -match 'DeepExcel|mscoree')
     }
     $summary = Join-Path $OutDir 'activation-trace.log'
     $out = @("Total traced events: $($rows.Count)",
