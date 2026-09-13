@@ -1,4 +1,28 @@
 // DeepExcel WPS JS add-in entry. Keep this file browser-safe.
+
+// ★ 诊断日志。WPS 端曾经在用户机器上"装了但用不了"：选项卡在，点"打开面板"
+// 毫无反应，而且不留任何痕迹——因为出错分支用 app.ShowDialog('data:text/html;...')
+// 报错，WPS 若拒绝 data: URL，这个兜底也失败，用户和我们都什么都看不到。
+// 干净沙箱 + 真实 WPS 已复现。任何排查的前提是先有一行日志。
+//
+// 运行时能力不确定（require 在 WPS 的 JS 宿主里未必存在），所以逐个降级尝试，
+// 全部失败也绝不抛异常——诊断代码自己把加载项搞挂是最坏的结果。
+var DIAG_PATH_HINT = 'DeepExcel\\logs\\wps-panel.log'
+function _diag(message) {
+  var line = '[' + new Date().toISOString() + '] ' + message + '\n'
+  try {
+    var fs = require('fs')
+    var path = require('path')
+    var base = (typeof process !== 'undefined' && process.env &&
+                (process.env.LOCALAPPDATA || process.env.APPDATA)) || 'C:\\'
+    var dir = path.join(base, 'DeepExcel', 'logs')
+    try { fs.mkdirSync(dir, { recursive: true }) } catch (_) {}
+    fs.appendFileSync(path.join(dir, 'wps-panel.log'), line)
+    return
+  } catch (_) {}
+  try { console.log('[DeepExcel] ' + message); return } catch (_) {}
+}
+
 var sidecar = null
 var taskpane = null
 var messageChannel = null
@@ -225,11 +249,14 @@ function OnPluginDestroy() {
 }
 
 function OnAction() {
+  _diag('OnAction entered')
   var app = _application()
   if (!app) {
+    _diag('FATAL: WPS Application API unavailable (window.Application / wps both missing)')
     console.error('[DeepExcel] WPS Application API unavailable')
     return false
   }
+  _diag('Application API present; typeof CreateTaskPane=' + (typeof app.CreateTaskPane))
 
   try {
     var storedId = app.PluginStorage && app.PluginStorage.getItem('deepexcel_taskpane_id')
@@ -237,8 +264,11 @@ function OnAction() {
       try { taskpane = app.GetTaskPane(storedId) } catch (_) { taskpane = null }
     }
     if (!taskpane) {
-      taskpane = app.CreateTaskPane(GetUrlPath() + '/taskpane.html', 'DeepExcel AI')
+      var paneUrl = GetUrlPath() + '/taskpane.html'
+      _diag('creating taskpane at: ' + paneUrl)
+      taskpane = app.CreateTaskPane(paneUrl, 'DeepExcel AI')
       if (!taskpane) throw new Error('CreateTaskPane returned undefined (URL rejected or unsupported)')
+      _diag('taskpane created, id=' + taskpane.ID)
       if (app.PluginStorage) app.PluginStorage.setItem('deepexcel_taskpane_id', taskpane.ID)
       try {
         var right = app.Enum && app.Enum.msoCTPDockPositionRight
@@ -256,18 +286,35 @@ function OnAction() {
     }
     return true
   } catch (error) {
+    var detail = String((error && (error.stack || error.message)) || error)
+    _diag('OnAction FAILED: ' + detail)
     console.error('[DeepExcel] open taskpane failed:', error)
+
+    // 报错必须真的到达用户。原先只用 ShowDialog('data:text/html;...')，
+    // 一旦 WPS 拒绝 data: URL，用户看到的就是"点了没反应"。按可靠性降级：
+    // Alert（最朴素、最可能被支持）→ ShowDialog → 日志兜底。
+    var shown = false
     try {
-      app.ShowDialog(
-        'data:text/html;charset=utf-8,' + encodeURIComponent(
-          '<h3>DeepExcel 面板打开失败</h3><p>' + String(error.message || error) + '</p>'
-        ),
-        'DeepExcel',
-        480,
-        260,
-        false
-      )
+      if (typeof app.Alert === 'function') {
+        app.Alert('DeepExcel 面板打开失败：' + detail)
+        shown = true
+      }
     } catch (_) {}
+    if (!shown) {
+      try {
+        app.ShowDialog(
+          'data:text/html;charset=utf-8,' + encodeURIComponent(
+            '<h3>DeepExcel 面板打开失败</h3><p>' + detail + '</p>'
+          ),
+          'DeepExcel',
+          480,
+          260,
+          false
+        )
+        shown = true
+      } catch (_) {}
+    }
+    if (!shown) _diag('could not surface the error to the user at all; log only')
     return false
   }
 }

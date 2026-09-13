@@ -22,6 +22,14 @@ param(
     [switch]$Launch,
     [switch]$Trace,
     [switch]$WithWps,
+    # Drive WPS with synthetic keystrokes. Off by default: it races the
+    # add-in's initialisation and produced a ribbon with no DeepExcel tab.
+    [switch]$AutoKeys,
+    # Tests whether WPS can load the Excel COM add-in directly, the way FFCell
+    # ships: one VSTO/COM add-in serving both hosts, no JS add-in at all.
+    # Disables the JS add-in first so any ribbon tab that appears can only have
+    # come from COM.
+    [switch]$ComWps,
     [string]$SetupPath,
     # Path to a WPS installer on the host. Not downloaded automatically: the
     # sandbox is disposable, so an automatic download would re-fetch several
@@ -36,7 +44,7 @@ $ErrorActionPreference = 'Stop'
 # Host side: build the .wsb and launch
 # ---------------------------------------------------------------------------
 function Start-SandboxRun {
-    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup)
+    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup, [bool]$ComWpsTest, [bool]$AutoKeysTest)
 
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     if (-not $Setup) { $Setup = Join-Path $repoRoot 'dist\DeepExcel.Setup.exe' }
@@ -68,6 +76,12 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     $traceArg = ''
     if ($WithTrace) { $traceArg = ' -Trace' }
 
+    $keysArg = ''
+    if ($AutoKeysTest) { $keysArg = ' -AutoKeys' }
+
+    $comArg = ''
+    if ($ComWpsTest) { $comArg = ' -ComWps' }
+
     $wpsArg = ''
     if ($WpsSetup) {
         if (-not (Test-Path $WpsSetup)) { throw "WPS installer not found: $WpsSetup" }
@@ -93,7 +107,7 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg</Command>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg$comArg$keysArg</Command>
   </LogonCommand>
 </Configuration>
 "@ | Set-Content -LiteralPath $wsb -Encoding UTF8
@@ -263,8 +277,150 @@ function Install-WpsInGuest {
     return $false
 }
 
+# Screenshots taken INSIDE the VM, written to the mapped folder.
+#
+# Whether a ribbon tab appears is a visual fact, and nothing outside the VM can
+# see the sandbox window. Capturing from within the guest removes the human from
+# the loop entirely and never touches the host's mouse or keyboard.
+function Save-GuestScreenshot {
+    param([string]$OutDir, [string]$Name)
+    try {
+        # Captured in a CHILD process on purpose.
+        #
+        # This script is started by the sandbox LogonCommand, before WPS is
+        # installed. Installing WPS churns the registry underneath it, and the
+        # long-lived process is then unable to load any new assembly at all --
+        # both System.Windows.Forms and System.Drawing failed with 0x800703FA
+        # ("registry key marked for deletion"), and retrying inside the same
+        # process never recovers. A freshly spawned powershell.exe gets a clean
+        # assembly-load context and succeeds.
+        $path = Join-Path $OutDir ($Name + '.png')
+        $capture = @"
+Add-Type -AssemblyName System.Drawing
+`$w = 1920; `$h = 1080
+try {
+  `$vc = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+        Where-Object { `$_.CurrentHorizontalResolution } | Select-Object -First 1
+  if (`$vc) { `$w = [int]`$vc.CurrentHorizontalResolution; `$h = [int]`$vc.CurrentVerticalResolution }
+} catch { }
+`$bmp = New-Object System.Drawing.Bitmap `$w, `$h
+`$gfx = [System.Drawing.Graphics]::FromImage(`$bmp)
+`$gfx.CopyFromScreen(0, 0, 0, 0, `$bmp.Size)
+`$bmp.Save('$path', [System.Drawing.Imaging.ImageFormat]::Png)
+`$gfx.Dispose(); `$bmp.Dispose()
+Write-Output ('{0}x{1}' -f `$w, `$h)
+"@
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($capture))
+        $stdout = Join-Path $OutDir ('.' + $Name + '.out')
+        Start-Process -FilePath 'powershell.exe' `
+            -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded `
+            -Wait -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError "$stdout.err" | Out-Null
+
+        if (Test-Path $path) {
+            $size = (Get-Content -LiteralPath $stdout -ErrorAction SilentlyContinue | Select-Object -First 1)
+            Write-Host "  (shot) $path"
+            Add-Content -LiteralPath (Join-Path $OutDir 'screenshot.log') -Value ("OK   {0}  {1}" -f $Name, $size)
+        } else {
+            $err = (Get-Content -LiteralPath "$stdout.err" -Raw -ErrorAction SilentlyContinue)
+            Add-Content -LiteralPath (Join-Path $OutDir 'screenshot.log') -Value ("FAIL {0}  {1}" -f $Name, $err)
+        }
+        Remove-Item $stdout, "$stdout.err" -ErrorAction SilentlyContinue
+    } catch {
+        # Console output dies with the VM, so the reason has to reach the
+        # mapped folder or it is lost.
+        Write-Host "  (shot) failed: $($_.Exception.Message)"
+        try {
+            Add-Content -LiteralPath (Join-Path $OutDir 'screenshot.log') `
+                        -Value ("FAIL {0}  {1}" -f $Name, $_.Exception.ToString())
+        } catch { }
+    }
+}
+
+# Keystrokes into the guest's foreground window, via a child process for the
+# same assembly-load reason as the screenshots. WPS opens on a login dialog and
+# a "what's new" tab, so the ribbon does not exist until those are dismissed --
+# that is why the first automated attempt found no ribbon elements at all.
+function Send-GuestKeys {
+    param([string]$Keys, [int]$SleepMs = 1500)
+    $script = @"
+`$w = New-Object -ComObject WScript.Shell
+Start-Sleep -Milliseconds 300
+`$w.SendKeys('$Keys')
+Start-Sleep -Milliseconds $SleepMs
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+    Start-Process -FilePath 'powershell.exe' `
+        -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encoded `
+        -Wait -NoNewWindow | Out-Null
+}
+
+# Dumps the WPS window's automation tree so element names can be read from the
+# host instead of guessed. Guessing "the button is called X" already cost one
+# run.
+function Save-GuestUiTree {
+    param([string]$OutDir, [string]$Name)
+    try {
+        $ok = $false
+        for ($try = 1; $try -le 5 -and -not $ok; $try++) {
+            try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop; $ok = $true }
+            catch { Start-Sleep -Seconds 5 }
+        }
+        if (-not $ok) { throw 'UIAutomation assemblies could not be loaded' }
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $all = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                             [System.Windows.Automation.Condition]::TrueCondition)
+        $lines = @("elements: $($all.Count)")
+        foreach ($e in $all) {
+            try {
+                $n = $e.Current.Name
+                $c = $e.Current.ControlType.ProgrammaticName
+                if ($n) { $lines += ('{0}  [{1}]' -f $n, $c) }
+            } catch { }
+        }
+        $lines | Set-Content -LiteralPath (Join-Path $OutDir ($Name + '.txt')) -Encoding UTF8
+        Write-Host "  (ui) tree dumped: $Name ($($all.Count) elements)"
+    } catch {
+        try {
+            Add-Content -LiteralPath (Join-Path $OutDir 'screenshot.log') `
+                        -Value ("FAIL uitree  " + $_.Exception.ToString())
+        } catch { }
+    }
+}
+
+# Clicks the ribbon button from inside the guest via UI Automation, so the
+# "does the panel open" question does not need a human either. Host input is
+# never touched -- this drives the VM's own UI tree.
+function Invoke-GuestRibbonClick {
+    param([string]$AutomationName)
+    try {
+        $ok = $false
+        for ($try = 1; $try -le 5 -and -not $ok; $try++) {
+            try { Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes -ErrorAction Stop; $ok = $true }
+            catch { Start-Sleep -Seconds 5 }
+        }
+        if (-not $ok) { throw 'UIAutomation assemblies could not be loaded' }
+        $root = [System.Windows.Automation.AutomationElement]::RootElement
+        $cond = New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::NameProperty, $AutomationName)
+        $deadline = (Get-Date).AddSeconds(30)
+        $el = $null
+        while (-not $el -and (Get-Date) -lt $deadline) {
+            $el = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+            if (-not $el) { Start-Sleep -Seconds 2 }
+        }
+        if (-not $el) { Write-Host "  (ui) element not found: $AutomationName"; return $false }
+        $pattern = $el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $pattern.Invoke()
+        Write-Host "  (ui) invoked: $AutomationName"
+        return $true
+    } catch {
+        Write-Host "  (ui) failed on '$AutomationName': $($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Invoke-GuestVerification {
-    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps)
+    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps, [bool]$ComWps, [bool]$AutoKeys)
 
     Write-Host '=== DeepExcel fresh-install verification ==='
     Write-Host "Setup: $Setup"
@@ -477,6 +633,85 @@ function Invoke-GuestVerification {
     #     normal WPS loads a developer-mode entry is exactly the open question.
     #     Only the ribbon can answer that, so hand the window to a human here,
     #     before the uninstall step tears everything down.
+    # 5b-2. Decide whether main.js runs at all.
+    #
+    # The ribbon tab and its buttons come from ribbon.xml, which WPS renders
+    # without any JS. Both JS callbacks (GetImage for the icons, OnAction for
+    # the button) do nothing, which is equally consistent with "main.js never
+    # loaded" and "main.js loaded but its require() calls threw" -- those are
+    # wrapped in try blocks that swallow the error.
+    #
+    # main.js is written against Node-style require(), so require('fs') should
+    # exist in that runtime. A marker written at the top of the file settles it
+    # without needing anyone to click anything.
+    $jsDiag = Join-Path $outDir 'wps-js-diag.log'
+    if ($addinDir) {
+        $mainJs = Join-Path $addinDir.FullName 'main.js'
+        if (Test-Path $mainJs) {
+            $probe = @"
+/* DIAG */ try { require('fs').appendFileSync('$($jsDiag -replace '\\','\\')', 'main.js top-level executed ' + new Date().toISOString() + '\n') } catch (e) { }
+"@
+            $tail = @"
+
+/* DIAG */ try { require('fs').appendFileSync('$($jsDiag -replace '\\','\\')', 'main.js reached end of file\n') } catch (e) { }
+"@
+            $body = Get-Content -LiteralPath $mainJs -Raw
+            Set-Content -LiteralPath $mainJs -Value ($probe + "`n" + $body + $tail) -Encoding UTF8
+            Write-Host '  (wps) instrumented main.js with load probes'
+        } else {
+            Write-Host "  (wps) main.js not found under $($addinDir.FullName)"
+        }
+    }
+
+    # 5b-3. COM route experiment.
+    if ($ComWps -and $addinDir) {
+        Write-Host ''
+        Write-Host '=== COM route experiment ==='
+
+        # The installer rolled the COM registration back when the Excel-side
+        # post-install step failed, so put it back first -- --repair rebuilds
+        # both registry views and the Excel add-in key.
+        if (Test-Path $repair) {
+            Start-Process -FilePath $repair -ArgumentList '--repair' -Wait -NoNewWindow `
+                -RedirectStandardOutput (Join-Path $outDir 'com-wps-repair.log') `
+                -RedirectStandardError  (Join-Path $outDir 'com-wps-repair.log.err') | Out-Null
+            Write-Host '  restored COM registration via --repair'
+        }
+
+        # Disable the JS add-in, otherwise its tab would be indistinguishable
+        # from a tab loaded through COM.
+        $pub = Join-Path $jsaddons 'publish.xml'
+        if (Test-Path $pub) {
+            Copy-Item $pub (Join-Path $outDir 'publish.xml.before-com-test') -Force
+            [xml]$m = Get-Content -LiteralPath $pub -Raw
+            $gone = 0
+            foreach ($n in @($m.SelectNodes('//*[@url]'))) {
+                if ($n.url -like 'DeepExcel_*') { $n.ParentNode.RemoveChild($n) | Out-Null; $gone++ }
+            }
+            $m.Save($pub)
+            Write-Host "  disabled JS add-in (removed $gone publish.xml entry/entries)"
+        }
+
+        # WPS reads its own add-in list, plus a trust whitelist on the personal
+        # edition. Register under both spellings of the vendor key -- the casing
+        # differs between WPS builds.
+        foreach ($vendor in 'Kingsoft', 'kingsoft') {
+            $base = "HKCU:\Software\$vendor\Office\ET"
+            try {
+                New-Item -Path "$base\AddIns\DeepExcel.AddIn" -Force | Out-Null
+                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'Description'  -Value 'DeepExcel AI AddIn'
+                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'FriendlyName' -Value 'DeepExcel AI AddIn'
+                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'LoadBehavior' -Value 3 -Type DWord
+                New-Item -Path "$base\AddinsWL\DeepExcel.AddIn" -Force | Out-Null
+                Set-ItemProperty -Path "$base\AddinsWL\DeepExcel.AddIn" -Name '(default)' -Value 1
+            } catch {
+                Write-Host "  registering under $vendor failed: $($_.Exception.Message)"
+            }
+        }
+        Write-Host '  registered DeepExcel.AddIn under WPS ET AddIns + AddinsWL'
+        Write-Host '  -> any DeepExcel tab in WPS now can only come from COM'
+    }
+
     if ($wpsReady) {
         $etPath = Get-Content -LiteralPath 'C:\wps-et-path.txt' -ErrorAction SilentlyContinue
         if ($etPath) {
@@ -505,14 +740,154 @@ function Invoke-GuestVerification {
             # Wait on a sentinel file instead. The results folder is mapped
             # read-write, so the host side can drop the file once the human has
             # actually looked at the ribbon.
+            # WPS opens on a login dialog plus a "what's new" tab; the ribbon
+            # does not exist until both are out of the way. Escape closes the
+            # dialog, Ctrl+N gets an actual spreadsheet.
+            Start-Sleep -Seconds 25
+            Save-GuestScreenshot -OutDir $outDir -Name '01-wps-opened'
+
+            # Synthetic keystrokes are OFF by default. Driving Escape/Ctrl+N
+            # produced a WPS window with no DeepExcel tab at all, unlike every
+            # manual run -- the automation appears to race the add-in's own
+            # initialisation, and a run that perturbs what it measures is worse
+            # than no run. WPS also wants a QR-code sign-in that cannot be
+            # automated. So by default this pauses and lets a human drive.
+            if ($AutoKeys) {
+                Send-GuestKeys -Keys '{ESC}' -SleepMs 2500
+                Send-GuestKeys -Keys '^n'   -SleepMs 6000
+                Save-GuestScreenshot -OutDir $outDir -Name '02-workbook-open'
+            }
+
+            # UI Automation also has to run in a child process -- the parent
+            # cannot load assemblies any more (see Save-GuestScreenshot).
+            $tabName   = [string]([char]0x6253 + [char]0x5F00 + [char]0x9762 + [char]0x677F)
+            $treeFile  = Join-Path $outDir 'ui-tree.txt'
+            $actionLog = Join-Path $outDir 'ui-actions.log'
+            $uiScript = @"
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+`$root = [System.Windows.Automation.AutomationElement]::RootElement
+`$all = `$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                       [System.Windows.Automation.Condition]::TrueCondition)
+`$names = @("elements: " + `$all.Count)
+foreach (`$e in `$all) {
+  try { if (`$e.Current.Name) { `$names += (`$e.Current.Name + '  [' + `$e.Current.ControlType.ProgrammaticName + ']') } } catch { }
+}
+`$names | Set-Content -LiteralPath '$treeFile' -Encoding UTF8
+
+function Invoke-ByName([string]`$n) {
+  `$c = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::NameProperty, `$n)
+  `$el = `$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, `$c)
+  if (-not `$el) { return "not found: `$n" }
+  try {
+    `$p = `$el.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+    `$p.Invoke(); return "invoked: `$n"
+  } catch {
+    try {
+      `$sp = `$el.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+      `$sp.Select(); return "selected: `$n"
+    } catch { return ("pattern failed on `$n : " + `$_.Exception.Message) }
+  }
+}
+Invoke-ByName 'DeepExcel' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Append
+Start-Sleep -Seconds 3
+Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Append
+"@
+            $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($uiScript))
+            Start-Process -FilePath 'powershell.exe' `
+                -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc `
+                -Wait -NoNewWindow | Out-Null
+
+            Start-Sleep -Seconds 12
+            Save-GuestScreenshot -OutDir $outDir -Name '03-after-panel-click'
+
+            # The add-in's own log is the only place that says how far OnAction
+            # got. It lives in the profile, not the mapped folder.
+            $panelLog = Join-Path $env:LOCALAPPDATA 'DeepExcel\logs\wps-panel.log'
+            if (Test-Path $panelLog) {
+                Copy-Item $panelLog (Join-Path $outDir 'wps-panel.log') -Force
+                Write-Host '  (wps) copied add-in panel log'
+            } else {
+                Add-Content -LiteralPath $actionLog -Value "add-in log not created at $panelLog"
+            }
+
             $go = Join-Path (Split-Path -Parent $ResultFile) 'continue.txt'
             Remove-Item $go -ErrorAction SilentlyContinue
             Write-Host " Waiting for $go (create it from the host to continue)."
+            # Watch for the add-in's log DURING the wait, not after it.
+            #
+            # The previous version copied it before the human had touched
+            # anything, so it always captured nothing. The log only appears once
+            # the panel button is actually clicked, which is precisely what this
+            # wait is for. Screenshots are also taken periodically, so an error
+            # dialog that the human closes is still recorded.
+            $panelLogSrc = Join-Path $env:LOCALAPPDATA 'DeepExcel\logs\wps-panel.log'
+            $panelLogDst = Join-Path $outDir 'wps-panel.log'
             $waitUntil = (Get-Date).AddMinutes(45)
+            $tick = 0
             while (-not (Test-Path $go) -and (Get-Date) -lt $waitUntil) {
                 Start-Sleep -Seconds 5
+                $tick++
+                if (Test-Path $panelLogSrc) {
+                    try { Copy-Item $panelLogSrc $panelLogDst -Force } catch { }
+                }
+                # every ~30s
+                if ($tick % 6 -eq 0) {
+                    Save-GuestScreenshot -OutDir $outDir -Name 'live-latest'
+                }
             }
+            if (Test-Path $panelLogSrc) {
+                try { Copy-Item $panelLogSrc $panelLogDst -Force } catch { }
+            }
+            Save-GuestScreenshot -OutDir $outDir -Name '04-final'
             Write-Host ' Continuing.'
+
+            # Whatever WPS itself recorded about the add-in. Paths are guesses,
+            # so this lists what exists rather than assuming any single one.
+            $wpsLogSummary = Join-Path $outDir 'wps-logs.txt'
+            $roots = @("$env:APPDATA\kingsoft", "$env:LOCALAPPDATA\kingsoft",
+                       "$env:APPDATA\Kingsoft", "$env:LOCALAPPDATA\Kingsoft", $env:TEMP)
+            $report = @()
+            foreach ($root in $roots) {
+                if (-not (Test-Path $root)) { continue }
+                $hits = Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Extension -in '.log','.txt' -and $_.Length -gt 0 -and
+                                       $_.LastWriteTime -gt (Get-Date).AddHours(-2) } |
+                        Select-Object -First 40
+                foreach ($h in $hits) { $report += ('{0}  ({1} bytes)' -f $h.FullName, $h.Length) }
+            }
+            $report | Set-Content -LiteralPath $wpsLogSummary -Encoding UTF8
+            Write-Host "  (wps) $($report.Count) recent log files listed in $wpsLogSummary"
+
+            # Listing filenames is not enough -- WPS records add-in loading in
+            # its own log, and that text is the only place likely to say why the
+            # JS callbacks are dead. Pull the relevant lines out; the full log is
+            # ~300 KB and most of it is unrelated.
+            $interesting = 'DeepExcel|jsaddon|jsplugin|addon|plugin'
+            $extract = @()
+            foreach ($root in @("$env:APPDATA\kingsoft\office6\log", "$env:APPDATA\Kingsoft\office6\log")) {
+                if (-not (Test-Path $root)) { continue }
+                $logs = Get-ChildItem -Path $root -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue |
+                        Where-Object { $_.LastWriteTime -gt (Get-Date).AddHours(-2) }
+                foreach ($l in $logs) {
+                    $hits = Select-String -LiteralPath $l.FullName -Pattern $interesting -ErrorAction SilentlyContinue
+                    if ($hits) {
+                        $extract += ''
+                        $extract += ('===== {0} ({1} matching lines) =====' -f $l.FullName, $hits.Count)
+                        $extract += ($hits | Select-Object -First 200 |
+                                     ForEach-Object { '{0}: {1}' -f $_.LineNumber, $_.Line.Trim() })
+                    }
+                }
+            }
+            $extract | Set-Content -LiteralPath (Join-Path $outDir 'wps-log-extract.txt') -Encoding UTF8
+            Write-Host "  (wps) $($extract.Count) log lines extracted"
+
+            # The installed add-in folder as WPS actually sees it.
+            if ($addinDir) {
+                Get-ChildItem -Path $addinDir.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.FullName.Substring($addinDir.FullName.Length + 1) } |
+                    Set-Content -LiteralPath (Join-Path $outDir 'wps-addin-tree.txt') -Encoding UTF8
+            }
         }
     }
 
@@ -571,8 +946,8 @@ function Invoke-GuestVerification {
     # Note: -Param:$switch.IsPresent does not parse (the member access is taken
     # as a separate token). These targets are [bool], so cast explicitly.
 if ($Launch) {
-    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath
+    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath -ComWpsTest ([bool]$ComWps) -AutoKeysTest ([bool]$AutoKeys)
 } else {
     if (-not $SetupPath) { throw 'Specify -SetupPath, or use -Launch to run this inside Windows Sandbox.' }
-    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps)
+    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps) -ComWps ([bool]$ComWps) -AutoKeys ([bool]$AutoKeys)
 }

@@ -83,6 +83,11 @@ EXCEL_REQUIRED_FILES = [
 WPS_ITEMS = [
     "main.js",
     "ribbon.xml",
+    # 加载项清单：声明入口 url 和按钮的 onAction 回调。开发路径的
+    # build-wps.ps1 一直在复制它，发布路径却漏了，于是用户装到的加载项
+    # 只有 ribbon.xml 能渲染出选项卡，所有 JS 回调都是死的——选项卡在、
+    # 图标不显示、点"打开面板"毫无反应。干净沙箱 + 真实 WPS 已复现。
+    "jsplugins.xml",
     "taskpane.html",
     "package.json",
     "sidecar-host.js",
@@ -105,6 +110,9 @@ WPS_ITEMS = [
 WPS_REQUIRED_FILES = [
     "main.js",
     "ribbon.xml",
+    # 这条守卫本来就是为了拦"WPS 资源缺失"，连 images/panel.svg 都列了，
+    # 偏偏漏了加载项清单本身，于是缺失一路溜到用户机器上。
+    "jsplugins.xml",
     "taskpane.html",
     "sidecar-host.js",
     "config-store.js",
