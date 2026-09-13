@@ -141,8 +141,20 @@ def main():
     check("a failed install restores the previous registration",
           "RestorePreviousExcelRegistration" in iss
           and "SnapshotPreviousExcelRegistration" in iss)
-    check("WPS manifest is reverted when a later step fails",
-          re.search(r"if wpsActivated then\s*\n\s*try UpdateWpsManifest\('Uninstall'\)", iss)
+    # WPS activation used to be the last statement of the Excel try block, with
+    # a revert if a later step failed. It is now its own try block, so:
+    #   * an Excel-side failure no longer skips it -- the WPS add-in is plain JS
+    #     and needs nothing from Excel, but it was unreachable on any machine
+    #     where the Excel half failed (reported from the field, WPS installed
+    #     but unusable), and on machines with no Excel at all;
+    #   * nothing runs after it, so there is no "later step" left to revert for.
+    # What must not regress is the independence itself.
+    check("WPS activation is not chained behind the Excel block",
+          re.search(r"Log\('Excel post-install step failed.*?\n\s*end;\s*\n.*?try\s*\n.*?UpdateWpsManifest\('Install'\)",
+                    iss, re.S) is not None,
+          "an Excel failure must not skip WPS activation")
+    check("a WPS activation failure still fails the install",
+          re.search(r"UpdateWpsManifest\('Install'\);.*?except.*?PostInstallFailed := True", iss, re.S)
           is not None)
 
     # ---- uninstall --------------------------------------------------------
@@ -154,6 +166,21 @@ def main():
     check("assembly version comes from the generated include",
           '#include "DeepExcel.reg.iss"' in iss_raw and "{#AssemblyVersion}" in iss_raw)
     check("packager generates that include", "generate_reg_iss" in packager)
+
+    # ---- a failed install must not report success --------------------------
+    # Inno treats an exception raised from CurStepChanged as non-fatal: it logs
+    # the exception, continues to ssDone, and Setup still exits 0. Confirmed
+    # with a minimal probe .iss. That is how a fresh-machine install could roll
+    # back the COM registration and still report success -- the v0.4.11..v0.4.17
+    # failure mode, hidden behind a zero exit code. Silent/IT deployments and CI
+    # only ever see the exit code.
+    check("post-install failure is recorded rather than re-raised",
+          "PostInstallFailed := True" in iss and "RaiseException(errorMessage)" not in iss,
+          "re-raising is silently swallowed by Inno and yields exit code 0")
+    check("post-install failure forces a non-zero exit code",
+          "ExitProcess@kernel32.dll" in iss and "ExitProcess(4)" in iss)
+    check("the failure exit happens after rollback, in ssDone",
+          iss.index("PostInstallFailed := True") < iss.index("ExitProcess(4)"))
 
     # ---- balanced Pascal blocks (cheap syntax smoke test) -----------------
     code = iss[iss.index("[Code]"):] if "[Code]" in iss else ""
@@ -168,9 +195,12 @@ def main():
         return 1
     print("All checks passed.")
     print()
-    print("NOTE: these are static checks. The installer has still never been")
-    print("compiled on this machine -- install Inno Setup 6 and run")
-    print("`python scripts/package_release.py --version <v>` for real verification.")
+    print("NOTE: these are static checks -- they read the .iss, they do not run it.")
+    print("Real verification is two more steps:")
+    print("  python scripts/package_release.py --version <v>   (compiles the installer)")
+    print("  powershell -File scripts/verify-install-sandbox.ps1 -Launch  (clean machine)")
+    print("Inno Setup 6 lives in %LOCALAPPDATA%\\Programs\\Inno Setup 6, which is not")
+    print("on PATH -- `where ISCC` finds nothing, so do not read that as 'not installed'.")
     return 0
 
 

@@ -141,6 +141,8 @@ var
   ExcelEnabled: Boolean;
   ExcelInstalled: Boolean;
   InstallCompleted: Boolean;
+  PostInstallFailed: Boolean;
+  PostInstallError: string;
   PreviousRegistrationExists: Boolean;
   PreviousMainAssembly: string;
   PreviousMainCodeBase: string;
@@ -410,6 +412,11 @@ end;
 function MoveFileEx(existingFile, newFile: string; flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
 
+// Inno offers no way to set Setup's exit code from [Code]. A post-install
+// failure must not be reported as success, so the failure path ends here.
+procedure ExitProcess(exitCode: Cardinal);
+  external 'ExitProcess@kernel32.dll stdcall';
+
 procedure UpdateWpsManifest(const mode: string);
 var
   addinRoot, manifestPath, temporaryPath, backupPath: string;
@@ -618,16 +625,8 @@ begin
         VerifyDeepExcelRegistration();
       end;
 
-      // WPS activation is deliberately last: all following statements are
-      // non-failing bookkeeping, so a committed publish.xml never points at
-      // files that a later setup error rolls back.
-      WizardForm.StatusLabel.Caption := '正在启用 WPS 表格加载项';
-      UpdateWpsManifest('Install');
-      wpsActivated := True;
     except
       errorMessage := GetExceptionMessage();
-      if wpsActivated then
-        try UpdateWpsManifest('Uninstall'); except end;
       if ExcelEnabled then
       begin
         if PreviousRegistrationExists then
@@ -635,12 +634,69 @@ begin
         else
           UnregisterDeepExcel();
       end;
-      RaiseException(errorMessage);
+      // Do NOT re-raise. Inno treats an exception from CurStepChanged as
+      // non-fatal: it logs "CurStepChanged raised an exception", continues to
+      // ssDone, and Setup still returns exit code 0. Verified with a minimal
+      // probe .iss -- the exit code was 0 even though the post-install step had
+      // failed and the registration above was rolled back.
+      //
+      // That is how a fresh-machine install could report success while leaving
+      // Excel with no add-in registered: exactly the v0.4.11..v0.4.17 failure
+      // mode, hidden behind a successful exit code. Silent/IT deployments and
+      // CI see only the exit code, so it has to tell the truth.
+      PostInstallFailed := True;
+      PostInstallError := errorMessage;
+      Log('Excel post-install step failed; Excel registration rolled back: ' + errorMessage);
+    end;
+
+    // WPS is activated in its own try block, NOT chained after the Excel work.
+    //
+    // The WPS add-in is plain JS: no COM, no .NET, no bitness, nothing it needs
+    // from the Excel side. It used to sit at the end of the Excel try block, so
+    // any Excel-side failure skipped it entirely -- the files were copied (the
+    // [Files] section is unconditional) but publish.xml never learned about
+    // them, and WPS silently loaded nothing. On a machine with no Excel at all,
+    // that made the WPS add-in unreachable for a reason that has nothing to do
+    // with WPS.
+    //
+    // The old ordering comment argued WPS must come last so a committed
+    // publish.xml can never point at rolled-back files. That still holds: the
+    // rollback above only touches Excel's COM registration, and the payload in
+    // jsaddons is left in place on failure (Setup now exits non-zero instead of
+    // unwinding the file copy), so the manifest never dangles.
+    try
+      WizardForm.StatusLabel.Caption := '正在启用 WPS 表格加载项';
+      UpdateWpsManifest('Install');
+      wpsActivated := True;
+    except
+      errorMessage := GetExceptionMessage();
+      Log('WPS activation failed: ' + errorMessage);
+      if not PostInstallFailed then
+      begin
+        PostInstallFailed := True;
+        PostInstallError := errorMessage;
+      end;
     end;
   end
   else if CurStep = ssDone then
   begin
     InstallCompleted := True;
+
+    if PostInstallFailed then
+    begin
+      if not WizardSilent then
+        MsgBox('DeepExcel 安装未完成。' + #13#10 + #13#10 +
+               PostInstallError + #13#10 + #13#10 +
+               '已撤销本次注册，Excel 不会加载到半配置的加载项。' + #13#10 +
+               '请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」查看详细诊断。',
+               mbCriticalError, MB_OK);
+      // ExitProcess is the only way to return a non-zero code from here; Inno
+      // has no API to set one. Verified by probe: the log is fully flushed
+      // before the process ends, so /LOG output stays complete.
+      Log('Exiting with code 4 (fatal error during installation).');
+      ExitProcess(4);
+    end;
+
     // The final note belongs here, not in DeinitializeSetup.
     //
     // DeinitializeSetup runs as Setup is tearing down, after the wizard form is
