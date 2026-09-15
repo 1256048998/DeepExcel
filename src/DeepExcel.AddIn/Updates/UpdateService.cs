@@ -20,6 +20,33 @@ namespace DeepExcel.AddIn.Updates
         /// <summary>Downloaded and verified; waiting for the user to restart.</summary>
         Ready,
         Failed,
+        /// <summary>Installed and failed too many times; stop offering it.</summary>
+        Blocked,
+    }
+
+    /// <summary>
+    /// One reportable moment in the update cycle.
+    ///
+    /// Every field is a version number or a fixed token. No URLs, no paths, no
+    /// exception text — those are the three things that reliably smuggle user
+    /// data into telemetry, and the privacy line on this product forbids all of
+    /// them. <see cref="UpdateService.StatusDetail"/> contains all three and is
+    /// deliberately not part of this type.
+    /// </summary>
+    public sealed class UpdateEvent
+    {
+        /// <summary>check | download | launch | apply</summary>
+        public string Phase { get; set; }
+
+        /// <summary>up_to_date | ready | failed | blocked | installed | started</summary>
+        public string Outcome { get; set; }
+
+        /// <summary>An <see cref="UpdateRejection"/> name or an UpdateTransportException code.</summary>
+        public string ReasonCode { get; set; }
+
+        public string FromVersion { get; set; }
+        public string ToVersion { get; set; }
+        public long DurationMs { get; set; }
     }
 
     /// <summary>
@@ -40,23 +67,92 @@ namespace DeepExcel.AddIn.Updates
     {
         private const string LogCategory = "Update";
 
+        /// <summary>How long the updater waits for Excel when a user asked for it.</summary>
+        public const int UserInitiatedWaitSeconds = 900;
+
         private readonly Func<UpdateDownloader> _downloaderFactory;
         private readonly IManifestVerifier _verifier;
         private readonly string _stageRoot;
+        private readonly UpdateJournal _journal;
+        private readonly Action<UpdateEvent> _telemetry;
         private readonly object _gate = new object();
 
         public UpdateService(
             UpdateOptions options = null,
             IManifestVerifier verifier = null,
             Func<UpdateDownloader> downloaderFactory = null,
-            string stageRoot = null)
+            string stageRoot = null,
+            Action<UpdateEvent> telemetry = null)
         {
             Options = options ?? UpdateOptions.FromConfig();
             _verifier = verifier ?? EmbeddedUpdateKey.Verifier;
             _downloaderFactory = downloaderFactory ?? (() => new UpdateDownloader());
             _stageRoot = stageRoot ?? UpdateStage.DefaultRoot();
+            _journal = new UpdateJournal(_stageRoot);
+            // Injected rather than reached for, so this class stays testable
+            // without an account, a network or a server.
+            _telemetry = telemetry;
             Status = IsUsable ? UpdateStatus.Idle : UpdateStatus.Disabled;
             StatusDetail = IsUsable ? null : DisabledReason();
+        }
+
+        /// <summary>
+        /// Reports an upgrade that already happened, if the updater left a note.
+        ///
+        /// This is the only way the product can answer "did anyone actually take
+        /// the update" — the process that knows is the updater, and it exited
+        /// before this build started. Safe to call regardless of whether
+        /// updating is currently enabled: the upgrade is a past fact.
+        /// </summary>
+        public AppliedReceipt ReportPendingUpgrade()
+        {
+            try
+            {
+                AppliedReceipt receipt = _journal.TakeReceipt();
+                if (receipt == null)
+                {
+                    return null;
+                }
+                // A version that installed is a version that will not be
+                // offered again, so its failure count is spent history.
+                _journal.ClearAttempts();
+                Logger.Instance.Info(
+                    LogCategory, "已完成升级：" + receipt.FromVersion + " → " + receipt.ToVersion);
+                Emit("apply", "installed", null, receipt.FromVersion, receipt.ToVersion, 0);
+                return receipt;
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning(LogCategory, "读取升级回执失败：" + ex.Message);
+                return null;
+            }
+        }
+
+        private void Emit(
+            string phase, string outcome, string reasonCode,
+            string fromVersion, string toVersion, long durationMs)
+        {
+            if (_telemetry == null)
+            {
+                return;
+            }
+            try
+            {
+                _telemetry(new UpdateEvent
+                {
+                    Phase = phase,
+                    Outcome = outcome,
+                    ReasonCode = reasonCode,
+                    FromVersion = fromVersion,
+                    ToVersion = toVersion,
+                    DurationMs = durationMs,
+                });
+            }
+            catch (Exception ex)
+            {
+                // Telemetry is never allowed to be the reason an update fails.
+                Logger.Instance.Warning(LogCategory, "更新遥测上报失败：" + ex.Message);
+            }
         }
 
         public UpdateOptions Options { get; }
@@ -112,6 +208,13 @@ namespace DeepExcel.AddIn.Updates
             }
 
             SetStatus(UpdateStatus.Checking, null);
+            var clock = Stopwatch.StartNew();
+            // Tracked so a transport failure is attributed to the step it
+            // actually happened in. Reporting a failed download as a failed
+            // check would point whoever reads the numbers at the wrong system:
+            // the feed would look broken when the package host is.
+            string phase = "check";
+            string targetVersion = null;
             try
             {
                 string manifestJson;
@@ -130,16 +233,57 @@ namespace DeepExcel.AddIn.Updates
                         if (check.Rejection == UpdateRejection.NotNewer)
                         {
                             UpdateStage.Prune(_stageRoot, null);
+                            _journal.ClearAttempts();
+                            Emit("check", "up_to_date", null,
+                                 InstalledVersion, null, clock.ElapsedMilliseconds);
                             return SetStatus(UpdateStatus.UpToDate, check.Detail);
                         }
                         Logger.Instance.Warning(
                             LogCategory,
                             string.Format(CultureInfo.InvariantCulture,
                                 "更新清单被拒绝（{0}）：{1}", check.Rejection, check.Detail));
+                        Emit("check", "failed", check.Rejection.ToString(),
+                             InstalledVersion, null, clock.ElapsedMilliseconds);
                         return SetStatus(UpdateStatus.Failed, check.Detail);
                     }
 
                     UpdateRelease release = check.Release;
+
+                    // An update that has already failed to install several times
+                    // is not going to start working on the next restart. It is
+                    // still staged and still verifies, so without this it would
+                    // be offered again every single session — antivirus blocking
+                    // the installer produces exactly that loop.
+                    int attempts = _journal.AttemptsFor(release.Version);
+                    if (attempts >= UpdateJournal.MaxAttempts)
+                    {
+                        Logger.Instance.Warning(
+                            LogCategory,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "v{0} 已连续 {1} 次安装未成功，停止自动提示", release.Version, attempts));
+                        Emit("launch", "blocked", "max_attempts",
+                             InstalledVersion, release.Version, clock.ElapsedMilliseconds);
+                        // Staged is kept so the panel can name the version the
+                        // user now has to install by hand. Status is what stops
+                        // it being offered; LaunchInstaller re-checks anyway.
+                        lock (_gate)
+                        {
+                            Staged = new StagedUpdate
+                            {
+                                Directory = UpdateStage.DirectoryFor(_stageRoot, release.Version),
+                                PackagePath = Path.Combine(
+                                    UpdateStage.DirectoryFor(_stageRoot, release.Version),
+                                    UpdateStage.PackageFileName),
+                                Release = release,
+                            };
+                        }
+                        return SetStatus(
+                            UpdateStatus.Blocked,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "v{0} 已连续 {1} 次安装未成功，可能被安全软件拦截。请手动下载安装。",
+                                release.Version, attempts));
+                    }
+
                     string stageDirectory = UpdateStage.DirectoryFor(_stageRoot, release.Version);
                     Directory.CreateDirectory(stageDirectory);
                     string packagePath = Path.Combine(stageDirectory, UpdateStage.PackageFileName);
@@ -148,6 +292,8 @@ namespace DeepExcel.AddIn.Updates
                     // version; re-verify rather than trusting that it is intact.
                     if (!UpdateStage.VerifyPackage(packagePath, release, out _))
                     {
+                        phase = "download";
+                        targetVersion = release.Version;
                         SetStatus(UpdateStatus.Downloading, release.Version);
                         var relay = new Progress<double>(value =>
                         {
@@ -162,6 +308,8 @@ namespace DeepExcel.AddIn.Updates
                         {
                             TryDelete(packagePath);
                             Logger.Instance.Error(LogCategory, "更新包校验失败：" + detail);
+                            Emit("download", "failed", "package_digest_mismatch",
+                                 InstalledVersion, release.Version, clock.ElapsedMilliseconds);
                             return SetStatus(UpdateStatus.Failed, detail);
                         }
                     }
@@ -187,6 +335,8 @@ namespace DeepExcel.AddIn.Updates
                     Progress = 1.0;
                     Logger.Instance.Info(
                         LogCategory, "已就绪：v" + release.Version + "（重启 Excel 后安装）");
+                    Emit("check", "ready", null,
+                         InstalledVersion, release.Version, clock.ElapsedMilliseconds);
                     return SetStatus(UpdateStatus.Ready, release.Version);
                 }
             }
@@ -197,11 +347,18 @@ namespace DeepExcel.AddIn.Updates
             catch (UpdateTransportException ex)
             {
                 Logger.Instance.Warning(LogCategory, ex.Message);
+                // ex.Code, never ex.Message: the message quotes the feed URL.
+                Emit(phase, "failed", ex.Code,
+                     InstalledVersion, targetVersion, clock.ElapsedMilliseconds);
                 return SetStatus(UpdateStatus.Failed, ex.Message);
             }
             catch (Exception ex)
             {
                 Logger.Instance.Error(LogCategory, "检查更新失败", ex);
+                // The exception type, not its message. An unexpected exception
+                // is the most likely place for a path to leak into telemetry.
+                Emit(phase, "failed", ex.GetType().Name,
+                     InstalledVersion, targetVersion, clock.ElapsedMilliseconds);
                 return SetStatus(UpdateStatus.Failed, ex.Message);
             }
         }
@@ -228,6 +385,17 @@ namespace DeepExcel.AddIn.Updates
                 error = "没有已就绪的更新。";
                 return false;
             }
+            // Defence in depth: the panel hides the button once a version is
+            // blocked, but the panel is not a security boundary and the check
+            // that stops the loop belongs next to the thing it guards.
+            if (_journal.IsExhausted(staged.Release.Version))
+            {
+                error = string.Format(
+                    CultureInfo.InvariantCulture,
+                    "v{0} 已连续 {1} 次安装未成功，请手动下载安装。",
+                    staged.Release.Version, UpdateJournal.MaxAttempts);
+                return false;
+            }
 
             try
             {
@@ -250,6 +418,12 @@ namespace DeepExcel.AddIn.Updates
                 arguments.Append(" --channel ").Append(Options.Channel);
                 arguments.Append(" --wait-pid ").Append(
                     Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+                // Fifteen minutes, not the three-minute default. Closing Excel
+                // means answering a save prompt per dirty workbook, and a user
+                // who steps away mid-prompt should not come back to an update
+                // that quietly gave up and left no sign it was ever running.
+                arguments.Append(" --wait-seconds ").Append(
+                    UserInitiatedWaitSeconds.ToString(CultureInfo.InvariantCulture));
                 // The user just asked for this and is waiting, so a failure is
                 // worth a dialog. Nothing else passes this flag: an updater that
                 // can pop a modal box unprompted would interrupt people at
@@ -270,7 +444,18 @@ namespace DeepExcel.AddIn.Updates
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 });
-                Logger.Instance.Info(LogCategory, "已启动更新程序，等待 Excel 退出");
+
+                // Counted here, not when the updater reports back — by then this
+                // process is gone. An installer killed by antivirus, a crash, a
+                // silent failure: all of them still burn an attempt, which is
+                // what stops the offer from repeating forever.
+                _journal.RecordAttempt(staged.Release.Version);
+                Logger.Instance.Info(
+                    LogCategory,
+                    string.Format(CultureInfo.InvariantCulture,
+                        "已启动更新程序（第 {0} 次尝试），等待 Excel 退出",
+                        _journal.AttemptsFor(staged.Release.Version)));
+                Emit("launch", "started", null, InstalledVersion, staged.Release.Version, 0);
                 return true;
             }
             catch (Exception ex)

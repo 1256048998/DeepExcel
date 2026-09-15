@@ -218,3 +218,74 @@ def test_published_schema_matches_the_enforced_allowlist(client):
     for name, fields in published["event_types"].items():
         assert set(fields) == set(ALLOWLIST[name])
     assert "cell contents" in published["never_collected"]
+
+
+def test_update_event_keeps_versions_and_codes(client):
+    kept, dropped = sanitize(
+        "update_event",
+        {"phase": "check", "outcome": "ready", "reason_code": "feed_http_503",
+         "from_version": "0.5.0", "to_version": "0.6.0", "duration_ms": 1240},
+    )
+    assert kept == {
+        "phase": "check", "outcome": "ready", "reason_code": "feed_http_503",
+        "from_version": "0.5.0", "to_version": "0.6.0", "duration_ms": 1240,
+    }
+    assert dropped == []
+
+
+def test_update_event_drops_the_feed_url_and_the_staging_path(client):
+    """The update subsystem's error messages name both, so this is the field
+    most likely to be added by someone trying to debug a failing rollout."""
+    kept, dropped = sanitize(
+        "update_event",
+        {
+            "phase": "download",
+            "outcome": "failed",
+            "feed_url": "https://updates.acme.internal/api/v1/updates/latest",
+            "stage_path": r"C:\Users\zhang\AppData\Local\DeepExcel\updates\0.6.0",
+            "error_message": r"下载更新包失败：C:\Users\zhang\...\DeepExcel.Setup.exe",
+        },
+    )
+    assert kept == {"phase": "download", "outcome": "failed"}
+    assert sorted(dropped) == ["error_message", "feed_url", "stage_path"]
+
+
+def test_update_event_phase_and_outcome_are_closed_sets(client):
+    """The client picks these from a fixed list. A value outside it means the
+    two sides have drifted, and silently storing it would hide that."""
+    kept, dropped = sanitize(
+        "update_event",
+        {"phase": "verifying", "outcome": "probably_fine", "from_version": "0.5.0"},
+    )
+    assert kept == {"from_version": "0.5.0"}
+    assert sorted(dropped) == ["outcome", "phase"]
+
+
+def test_update_event_reason_code_cannot_carry_a_message(client):
+    kept, _ = sanitize(
+        "update_event",
+        {"phase": "check", "outcome": "failed", "reason_code": "x" * 200},
+    )
+    # Truncated rather than dropped, so a long code still classifies; the cap is
+    # what stops it being used as a message field.
+    assert len(kept["reason_code"]) == 40
+
+
+def test_update_event_round_trips_through_the_api(client):
+    tokens = register(client)
+    response = client.post(
+        "/api/v1/telemetry",
+        json={"events": [{
+            "event_type": "update_event",
+            "payload": {"phase": "apply", "outcome": "installed",
+                        "from_version": "0.5.0", "to_version": "0.6.0"},
+        }]},
+        headers=auth_headers(tokens),
+    )
+    assert response.status_code == 200, response.text
+
+    with get_session_factory()() as db:
+        stored = db.scalars(select(TelemetryEvent)).all()
+    payloads = [json.loads(e.payload) for e in stored if e.event_type == "update_event"]
+    assert payloads == [{"phase": "apply", "outcome": "installed",
+                         "from_version": "0.5.0", "to_version": "0.6.0"}]

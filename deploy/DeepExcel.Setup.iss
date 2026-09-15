@@ -160,6 +160,38 @@ var
   PreviousCommandLineSafe: Cardinal;
 
 // ---------------------------------------------------------------------------
+// Silent-run detection
+// ---------------------------------------------------------------------------
+// WizardSilent alone is not trustworthy here: under /VERYSILENT it was observed
+// returning False, which would put a message box in front of an install that by
+// definition has nobody watching it. That matters more than it used to -- the
+// auto-updater runs this installer with /VERYSILENT after Excel exits, so a
+// dialog waiting for a click is an update that hangs until its timeout and then
+// reports failure for no reason the user can see.
+//
+// /SUPPRESSMSGBOXES currently papers over it by making MsgBox return a default
+// immediately. This does not rely on that: the command line is the fact, and it
+// is read directly.
+function IsSilentRun(): Boolean;
+var
+  i: Integer;
+  argument: string;
+begin
+  Result := WizardSilent;
+  if Result then
+    Exit;
+  for i := 1 to ParamCount do
+  begin
+    argument := Uppercase(ParamStr(i));
+    if (argument = '/SILENT') or (argument = '/VERYSILENT') then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// ---------------------------------------------------------------------------
 // .NET 4.8 detection (adapted from Kynosarges DotNetVersion, public domain)
 // ---------------------------------------------------------------------------
 function IsDotNet48Detected(): Boolean;
@@ -582,7 +614,7 @@ begin
   end;
 
   // 3) WebView2 runtime warning (install is attempted after files are copied).
-  if ExcelInstalled and (not IsWebView2Installed()) then
+  if ExcelInstalled and (not IsWebView2Installed()) and (not IsSilentRun()) then
     MsgBox('未检测到 WebView2 运行时，安装程序将自动为您安装（需联网）。' + #13#10 +
            '若离线环境安装失败，请先手动安装“Microsoft Edge WebView2 Runtime”。', mbInformation, MB_OK);
 
@@ -689,7 +721,7 @@ begin
 
     if PostInstallFailed then
     begin
-      if not WizardSilent then
+      if not IsSilentRun() then
         MsgBox('DeepExcel 安装未完成。' + #13#10 + #13#10 +
                PostInstallError + #13#10 + #13#10 +
                '已撤销本次注册，Excel 不会加载到半配置的加载项。' + #13#10 +
@@ -711,7 +743,7 @@ begin
     // was a crash-looking dialog at the very end. For an unsigned installer the
     // user has already had to click through SmartScreen; ending on that box
     // makes a successful install look broken.
-    if not WizardSilent then
+    if not IsSilentRun() then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
              '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);

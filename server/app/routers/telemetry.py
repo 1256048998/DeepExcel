@@ -104,6 +104,26 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
         "diagnostic_code": _diagnostic_code,
         "client_version": lambda v: _string(v, 32),
     },
+    # The auto-updater is the one feature nobody can observe from the inside:
+    # it runs in the background, and the process that knows an install
+    # succeeded has already exited by the time the new build starts. Without
+    # these, "did anyone actually take the update" is unanswerable.
+    #
+    # Every field is a version number or a token from a fixed set. Notably
+    # absent: the feed URL, the staging path, and any exception message. The
+    # client carries those in UpdateService.StatusDetail and deliberately does
+    # not put them in an event -- error text routinely quotes paths.
+    "update_event": {
+        "phase": lambda v: _enum(v, {"check", "download", "launch", "apply"}),
+        "outcome": lambda v: _enum(
+            v, {"up_to_date", "ready", "failed", "blocked", "installed", "started"}),
+        # An UpdateRejection name, an UpdateTransportException code, or an
+        # exception type name. Never a message.
+        "reason_code": lambda v: _string(v, 40),
+        "from_version": lambda v: _string(v, 32),
+        "to_version": lambda v: _string(v, 32),
+        "duration_ms": _int,
+    },
     "user_feedback": {
         "rating": lambda v: _enum(v, {"up", "down"}),
         "reason_code": lambda v: _string(v, 40),

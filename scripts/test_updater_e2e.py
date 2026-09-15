@@ -35,12 +35,14 @@ CSC = os.path.join(ROOT, "packages", "Microsoft.Net.Compilers.3.8.0", "tools", "
 FRAMEWORK = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
 UPDATER_DIR = os.path.join(ROOT, "src", "DeepExcel.Updater")
 UPDATES_DIR = os.path.join(ROOT, "src", "DeepExcel.AddIn", "Updates")
-SHARED_SOURCES = ["ReleaseVersion.cs", "UpdateSigning.cs", "UpdateManifest.cs", "UpdateStage.cs"]
+SHARED_SOURCES = ["ReleaseVersion.cs", "UpdateSigning.cs", "UpdateManifest.cs",
+                  "UpdateStage.cs", "UpdateJournal.cs"]
 
 EXIT_INSTALLED = 0
 EXIT_USAGE = 2
 EXIT_STAGE_REJECTED = 3
 EXIT_DIGEST_MISMATCH = 4
+EXIT_HOST_RUNNING = 5
 
 _failures = []
 _checks = 0
@@ -87,6 +89,27 @@ def build_updater(workspace, private_key_path):
     if result.returncode != 0:
         raise RuntimeError("Updater build failed:\n%s\n%s" % (result.stdout, result.stderr))
     return output, info
+
+
+def build_stub_installer(workspace):
+    """An executable that accepts any arguments and succeeds.
+
+    Needed to exercise the path after a successful install -- above all the
+    upgrade receipt, which is the only record that anyone ever took an update
+    and is written by code that never runs in a --dry-run.
+    """
+    source = os.path.join(workspace, "stub.cs")
+    with open(source, "w", encoding="utf-8") as stream:
+        stream.write("class Stub { static int Main(string[] args) { return 0; } }\n")
+    output = os.path.join(workspace, "stub.exe")
+    result = subprocess.run(
+        [CSC, "/nologo", "/target:exe", "/out:" + output,
+         "/reference:" + os.path.join(FRAMEWORK, "mscorlib.dll"), source],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError("Stub build failed:\n%s\n%s" % (result.stdout, result.stderr))
+    with open(output, "rb") as stream:
+        return stream.read()
 
 
 def stage(workspace, name, private_key_path, version="0.6.0", package=b"pretend installer bytes",
@@ -231,6 +254,40 @@ def main():
         _, output = run_updater(updater, failing)
         check("更新包已损坏或被替换" in output,
               "a silent failure still reports the reason on stderr")
+
+        # ---- a real install, all the way through ----------------------------
+        #
+        # Everything above stops at --dry-run. The upgrade receipt is written
+        # only after an installer actually returns 0, and it is the sole source
+        # of truth for "how many clients took the update" -- so the one code
+        # path nobody could see is also the one that answers the only question
+        # the feature has to answer.
+        print("\n==> Real install (stub installer)")
+        applied = stage(workspace, "applied", key_path,
+                        package=build_stub_installer(workspace))
+        result = subprocess.run(
+            [updater, "--stage", applied, "--installed-version", "0.5.0"],
+            capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace")
+
+        if result.returncode == EXIT_HOST_RUNNING:
+            # Excel or WPS is open on this machine, and the updater correctly
+            # refuses to install underneath it. Not a failure.
+            print("  skip  receipt check -- a host application is running "
+                  "(the updater refused, which is correct)")
+        else:
+            check(result.returncode == EXIT_INSTALLED,
+                  "a staged update installs end to end (exit %d)" % result.returncode)
+            receipt_path = os.path.join(
+                os.path.dirname(applied.rstrip("\\/")), "applied.json")
+            check(os.path.isfile(receipt_path),
+                  "the updater leaves an upgrade receipt beside the version directories")
+            if os.path.isfile(receipt_path):
+                with open(receipt_path, encoding="utf-8") as stream:
+                    receipt = json.load(stream)
+                check(receipt.get("from") == "0.5.0" and receipt.get("to") == "0.6.0",
+                      "the receipt names both versions (%s -> %s)"
+                      % (receipt.get("from"), receipt.get("to")))
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

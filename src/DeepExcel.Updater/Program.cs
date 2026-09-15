@@ -188,7 +188,27 @@ namespace DeepExcel.Updater
             }
             Log("安装成功：v" + check.Release.Version);
 
-            // 6. Put the user back where they were. Never fatal.
+            // 6. Leave a note for the build that is about to replace this one.
+            //
+            // This process is the only one that knows the upgrade succeeded, and
+            // it is about to exit. Without the note, "how many clients actually
+            // took the update" -- the single question the whole feature exists
+            // to answer -- has no source of truth anywhere.
+            try
+            {
+                string stageRoot = Path.GetDirectoryName(stage.TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                new UpdateJournal(stageRoot).WriteReceipt(installedVersion, check.Release.Version);
+                Log("已写入升级回执到 " + stageRoot);
+            }
+            catch (Exception ex)
+            {
+                // The install already succeeded; losing the receipt costs a
+                // telemetry data point, not the upgrade.
+                Log("写入升级回执失败：" + ex.Message);
+            }
+
+            // 7. Put the user back where they were. Never fatal.
             if (options.TryGetValue("relaunch", out string host) && !string.IsNullOrWhiteSpace(host))
             {
                 Relaunch(host);

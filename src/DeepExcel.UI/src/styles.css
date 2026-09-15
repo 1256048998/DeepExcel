@@ -2969,3 +2969,11 @@ body {
 .update-banner-close:hover {
   opacity: 1;
 }
+
+/* 装不上的更新用警示色：它和"已就绪"是两种完全不同的处境，
+   一个什么都不用做，另一个必须用户动手。同色会让人忽略后者。 */
+.update-banner.blocked {
+  background: #fef3c7;
+  border-bottom-color: #fcd34d;
+  color: #92400e;
+}

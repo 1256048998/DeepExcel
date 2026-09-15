@@ -122,7 +122,8 @@ try {
         'ReleaseVersion.cs',
         'UpdateSigning.cs',
         'UpdateManifest.cs',
-        'UpdateStage.cs'
+        'UpdateStage.cs',
+        'UpdateJournal.cs'
     ) | ForEach-Object { Join-Path $baseDir "src\DeepExcel.AddIn\Updates\$_" }
     foreach ($shared in $sharedUpdateSources) {
         if (-not (Test-Path $shared)) { throw "Missing shared update source: $shared" }

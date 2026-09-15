@@ -53,7 +53,11 @@ export function UpdateBanner() {
   }, [poll])
 
   const version = status?.available_version
-  if (!status || status.state !== 'ready' || !version) return null
+  // blocked 与 ready 一起显示，是因为 blocked 恰恰是用户唯一需要动手的情况：
+  // 更新已经下好、验签也过了，但在这台机器上装不上（多半被安全软件拦了）。
+  // 把它藏起来等于让用户一直停在旧版本且毫不知情。
+  const blocked = status?.state === 'blocked'
+  if (!status || (status.state !== 'ready' && !blocked) || !version) return null
   if (dismissed === version) return null
 
   const handleInstall = async () => {
@@ -77,16 +81,29 @@ export function UpdateBanner() {
   }
 
   return (
-    <div className="update-banner" role="status">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-        <polyline points="7 10 12 15 17 10" />
-        <line x1="12" y1="15" x2="12" y2="3" />
-      </svg>
-      <span className="update-banner-text" title={status.notes ?? undefined}>
-        {error ?? `新版本 v${version} 已就绪${formatSize(status.size)}`}
+    <div className={`update-banner${blocked ? ' blocked' : ''}`} role="status">
+      {blocked ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          <line x1="12" y1="9" x2="12" y2="13" />
+          <line x1="12" y1="17" x2="12.01" y2="17" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      )}
+      <span className="update-banner-text" title={status.detail ?? status.notes ?? undefined}>
+        {error ??
+          (blocked
+            ? `v${version} 多次安装未成功，请手动下载安装`
+            : `新版本 v${version} 已就绪${formatSize(status.size)}`)}
       </span>
+      {!blocked && (
       <button
         className="header-btn primary"
         onClick={handleInstall}
@@ -96,6 +113,7 @@ export function UpdateBanner() {
       >
         {installing ? '正在关闭 Excel…' : '重启安装'}
       </button>
+      )}
       <button
         className="update-banner-close"
         onClick={handleDismiss}

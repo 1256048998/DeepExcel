@@ -2060,6 +2060,7 @@ namespace DeepExcel.AddIn.Bridge
 
         public void Dispose()
         {
+            StopUpdateTimer();
             foreach (var kvp in _sessions)
             {
                 try

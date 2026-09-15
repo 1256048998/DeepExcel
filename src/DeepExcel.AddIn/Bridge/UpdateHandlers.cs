@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using DeepExcel.AddIn.Account;
 using DeepExcel.AddIn.Diagnostics;
 using DeepExcel.AddIn.Updates;
 
@@ -15,8 +17,29 @@ namespace DeepExcel.AddIn.Bridge
     /// </summary>
     public partial class MessageBridge
     {
+        /// <summary>
+        /// Wait before the first check.
+        ///
+        /// Excel's startup is already contended — COM registration, the sidecar
+        /// pre-warm, WebView2 — and the network stack is not reliably up the
+        /// instant an add-in loads. Nothing about an update is urgent enough to
+        /// join that queue.
+        /// </summary>
+        private static readonly TimeSpan FirstCheckDelay = TimeSpan.FromMinutes(1);
+
+        /// <summary>
+        /// Then every six hours, for as long as Excel stays open.
+        ///
+        /// Checking once at startup was wrong for the way this product is
+        /// actually used: Excel commonly stays open for days, so a single failed
+        /// check at 9am meant no update for the rest of the week, and a release
+        /// published at noon reached nobody until they happened to restart.
+        /// </summary>
+        private static readonly TimeSpan RecheckInterval = TimeSpan.FromHours(6);
+
         private UpdateService _updateService;
-        private Task _updateCheck;
+        private Timer _updateTimer;
+        private int _updateCheckRunning;
         private readonly object _updateGate = new object();
 
         private UpdateService Updates
@@ -25,13 +48,48 @@ namespace DeepExcel.AddIn.Bridge
             {
                 lock (_updateGate)
                 {
-                    return _updateService ?? (_updateService = new UpdateService());
+                    return _updateService ?? (_updateService = new UpdateService(telemetry: ReportUpdateEvent));
                 }
             }
         }
 
         /// <summary>
-        /// Starts a background check, once per session.
+        /// Sends one update event, if this install has an account to send it under.
+        ///
+        /// Every field is a version number or a fixed token; see
+        /// <see cref="UpdateEvent"/> for why <c>StatusDetail</c> is not among
+        /// them.
+        /// </summary>
+        private void ReportUpdateEvent(UpdateEvent update)
+        {
+            if (update == null)
+            {
+                return;
+            }
+            TelemetryReporter reporter = Telemetry;
+            if (reporter == null)
+            {
+                // Signed out. The update itself still works — the feed is
+                // deliberately unauthenticated — we just cannot count it.
+                return;
+            }
+
+            var payload = new Dictionary<string, object>
+            {
+                ["phase"] = update.Phase,
+                ["outcome"] = update.Outcome,
+                ["from_version"] = update.FromVersion,
+            };
+            if (!string.IsNullOrEmpty(update.ReasonCode)) payload["reason_code"] = update.ReasonCode;
+            if (!string.IsNullOrEmpty(update.ToVersion)) payload["to_version"] = update.ToVersion;
+            if (update.DurationMs > 0) payload["duration_ms"] = update.DurationMs;
+
+            reporter.Record("update_event", payload);
+        }
+
+        /// <summary>
+        /// Starts the update cycle: report any completed upgrade, then check on
+        /// a schedule.
         ///
         /// Called from add-in startup. It must never throw, never block, and
         /// never be the reason Excel is slow to open a workbook: the entire
@@ -42,34 +100,81 @@ namespace DeepExcel.AddIn.Bridge
             try
             {
                 UpdateService service = Updates;
+
+                // Runs even when updating is switched off or unconfigured: the
+                // receipt records an upgrade that already happened, and it is
+                // the only evidence that the update path works end to end.
+                Task.Run(() =>
+                {
+                    try { service.ReportPendingUpgrade(); }
+                    catch (Exception ex)
+                    {
+                        Logger.Instance.Warning("Update", "升级回执上报失败：" + ex.Message);
+                    }
+                });
+
                 if (!service.IsUsable)
                 {
                     Logger.Instance.Debug("Update", "跳过更新检查：" + service.StatusDetail);
                     return;
                 }
+
                 lock (_updateGate)
                 {
-                    if (_updateCheck != null)
+                    if (_updateTimer != null)
                     {
                         return;
                     }
-                    _updateCheck = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await service.CheckAndStageAsync(null, CancellationToken.None)
-                                .ConfigureAwait(false);
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Instance.Warning("Update", "后台更新检查异常：" + ex.Message);
-                        }
-                    });
+                    _updateTimer = new Timer(
+                        _ => RunUpdateCheck(), null, FirstCheckDelay, RecheckInterval);
                 }
             }
             catch (Exception ex)
             {
                 Logger.Instance.Warning("Update", "无法启动更新检查：" + ex.Message);
+            }
+        }
+
+        /// <summary>One scheduled check. Overlapping ticks are dropped, not queued.</summary>
+        private void RunUpdateCheck()
+        {
+            // A check on a slow link can outlast the interval. Re-entering would
+            // have two downloads writing the same staging file.
+            if (Interlocked.CompareExchange(ref _updateCheckRunning, 1, 0) != 0)
+            {
+                return;
+            }
+            try
+            {
+                UpdateService service = Updates;
+
+                // Ready: already downloaded and verified, waiting on the user.
+                // Blocked: failed to install repeatedly, so re-checking would
+                // only re-stage something that cannot install on this machine.
+                if (service.Status == UpdateStatus.Ready || service.Status == UpdateStatus.Blocked)
+                {
+                    return;
+                }
+                service.CheckAndStageAsync(null, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("Update", "后台更新检查异常：" + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _updateCheckRunning, 0);
+            }
+        }
+
+        private void StopUpdateTimer()
+        {
+            lock (_updateGate)
+            {
+                try { _updateTimer?.Dispose(); }
+                catch (Exception) { }
+                _updateTimer = null;
             }
         }
 

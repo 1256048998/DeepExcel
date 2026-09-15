@@ -174,6 +174,26 @@ def main():
     # back the COM registration and still report success -- the v0.4.11..v0.4.17
     # failure mode, hidden behind a zero exit code. Silent/IT deployments and CI
     # only ever see the exit code.
+    # ---- silent runs must never wait for a click ------------------------
+    # The auto-updater runs this installer with /VERYSILENT after Excel exits.
+    # A message box there is not a cosmetic problem: nobody is present to
+    # dismiss it, so the update hangs until the updater's timeout and is then
+    # reported as a failure with no visible cause. WizardSilent alone was
+    # observed returning False under /VERYSILENT, hence IsSilentRun.
+    check("IsSilentRun exists", "function IsSilentRun()" in iss)
+    check("IsSilentRun also reads the command line",
+          "/VERYSILENT" in iss and "ParamStr(i)" in iss,
+          "WizardSilent alone was unreliable; the command line is the fact")
+
+    silent_guards = iss.count("IsSilentRun()")
+    check("every dialog gate goes through IsSilentRun", silent_guards >= 4,
+          f"found {silent_guards} uses (declaration + call sites)")
+
+    # Exactly one: the fallback inside IsSilentRun itself.
+    bare = len(re.findall(r"(?<!:= )WizardSilent", iss))
+    check("no dialog is gated on WizardSilent alone", bare == 0,
+          "a bare WizardSilent is the unreliable check this replaced")
+
     check("post-install failure is recorded rather than re-raised",
           "PostInstallFailed := True" in iss and "RaiseException(errorMessage)" not in iss,
           "re-raising is silently swallowed by Inno and yields exit code 0")

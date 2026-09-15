@@ -8,11 +8,35 @@ using System.Threading.Tasks;
 
 namespace DeepExcel.AddIn.Updates
 {
-    /// <summary>Raised when the update feed or package cannot be retrieved.</summary>
+    /// <summary>
+    /// Raised when the update feed or package cannot be retrieved.
+    ///
+    /// Carries a classification code alongside the message because the message
+    /// is not reportable: it quotes URLs, file paths and provider error text,
+    /// and telemetry's privacy line forbids all three. The code is chosen at the
+    /// throw site, where what went wrong is actually known — deriving it later
+    /// by matching on message text would put that decision in the wrong place
+    /// and break the first time a message is reworded.
+    /// </summary>
     public sealed class UpdateTransportException : Exception
     {
-        public UpdateTransportException(string message) : base(message) { }
-        public UpdateTransportException(string message, Exception inner) : base(message, inner) { }
+        public UpdateTransportException(string code, string message) : base(message)
+        {
+            Code = code;
+        }
+
+        public UpdateTransportException(string code, string message, Exception inner)
+            : base(message)
+        {
+            Code = code;
+            InnerTransportException = inner;
+        }
+
+        /// <summary>A fixed, non-identifying token safe to send as telemetry.</summary>
+        public string Code { get; }
+
+        /// <summary>Kept separately so the base message never absorbs provider text.</summary>
+        public Exception InnerTransportException { get; }
     }
 
     /// <summary>
@@ -42,12 +66,12 @@ namespace DeepExcel.AddIn.Updates
         {
             if (string.IsNullOrWhiteSpace(feedUrl))
             {
-                throw new UpdateTransportException("未配置更新源地址。");
+                throw new UpdateTransportException("feed_not_configured", "未配置更新源地址。");
             }
             if (!Uri.TryCreate(feedUrl, UriKind.Absolute, out Uri uri) ||
                 !string.Equals(uri.Scheme, "https", StringComparison.OrdinalIgnoreCase))
             {
-                throw new UpdateTransportException("更新源地址必须是 https：" + feedUrl);
+                throw new UpdateTransportException("feed_not_https", "更新源地址必须是 https：" + feedUrl);
             }
 
             try
@@ -58,13 +82,14 @@ namespace DeepExcel.AddIn.Updates
                 {
                     if (!response.IsSuccessStatusCode)
                     {
-                        throw new UpdateTransportException(string.Format(
-                            CultureInfo.InvariantCulture,
-                            "更新源返回 {0}。", (int)response.StatusCode));
+                        throw new UpdateTransportException(
+                            "feed_http_" + (int)response.StatusCode,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "更新源返回 {0}。", (int)response.StatusCode));
                     }
                     if (response.Content.Headers.ContentLength > UpdateManifest.MaxManifestBytes)
                     {
-                        throw new UpdateTransportException("更新清单过大，已拒绝下载。");
+                        throw new UpdateTransportException("feed_too_large", "更新清单过大，已拒绝下载。");
                     }
 
                     using (Stream stream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
@@ -79,11 +104,11 @@ namespace DeepExcel.AddIn.Updates
             }
             catch (HttpRequestException ex)
             {
-                throw new UpdateTransportException("无法连接更新源：" + ex.Message, ex);
+                throw new UpdateTransportException("feed_network", "无法连接更新源：" + ex.Message, ex);
             }
             catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new UpdateTransportException("连接更新源超时。", ex);
+                throw new UpdateTransportException("feed_timeout", "连接更新源超时。", ex);
             }
         }
 
@@ -111,9 +136,10 @@ namespace DeepExcel.AddIn.Updates
                 {
                     if (!response.IsSuccessStatusCode)
                     {
-                        throw new UpdateTransportException(string.Format(
-                            CultureInfo.InvariantCulture,
-                            "下载更新包失败（HTTP {0}）。", (int)response.StatusCode));
+                        throw new UpdateTransportException(
+                            "package_http_" + (int)response.StatusCode,
+                            string.Format(CultureInfo.InvariantCulture,
+                                "下载更新包失败（HTTP {0}）。", (int)response.StatusCode));
                     }
 
                     long? advertised = response.Content.Headers.ContentLength;
@@ -121,10 +147,11 @@ namespace DeepExcel.AddIn.Updates
                     {
                         // Cheap and it fails before the bytes are spent; the
                         // digest is still what decides.
-                        throw new UpdateTransportException(string.Format(
-                            CultureInfo.InvariantCulture,
-                            "更新包大小与清单不符（服务器 {0}，清单 {1}）。",
-                            advertised.Value, release.Size));
+                        throw new UpdateTransportException(
+                            "package_size_mismatch",
+                            string.Format(CultureInfo.InvariantCulture,
+                                "更新包大小与清单不符（服务器 {0}，清单 {1}）。",
+                                advertised.Value, release.Size));
                     }
 
                     using (Stream source = await response.Content.ReadAsStreamAsync().ConfigureAwait(false))
@@ -143,12 +170,12 @@ namespace DeepExcel.AddIn.Updates
             catch (HttpRequestException ex)
             {
                 SafeDelete(partial);
-                throw new UpdateTransportException("下载更新包失败：" + ex.Message, ex);
+                throw new UpdateTransportException("package_network", "下载更新包失败：" + ex.Message, ex);
             }
             catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
                 SafeDelete(partial);
-                throw new UpdateTransportException("下载更新包超时。", ex);
+                throw new UpdateTransportException("package_timeout", "下载更新包超时。", ex);
             }
             catch (Exception)
             {
@@ -177,9 +204,10 @@ namespace DeepExcel.AddIn.Updates
                 total += read;
                 if (total > limit)
                 {
-                    throw new UpdateTransportException(string.Format(
-                        CultureInfo.InvariantCulture,
-                        "服务器发送的数据超过声明的 {0} 字节，已中止。", limit));
+                    throw new UpdateTransportException(
+                        "response_exceeds_declared_size",
+                        string.Format(CultureInfo.InvariantCulture,
+                            "服务器发送的数据超过声明的 {0} 字节，已中止。", limit));
                 }
                 await destination.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
                 if (progress != null && limit > 0)
