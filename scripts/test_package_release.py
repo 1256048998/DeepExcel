@@ -189,6 +189,81 @@ def test_updater_is_packaged(module):
           "DeepExcel.Updater.exe" in module.EXCEL_REQUIRED_FILES)
 
 
+def test_every_wps_source_file_is_packaged(module):
+    """Every tracked WPS source file must reach the release payload.
+
+    This is the guard that was missing when jsplugins.xml shipped absent. The
+    development path (build-wps.ps1) had always copied it; the release path's
+    WPS_ITEMS did not list it. The result on a user's machine was an add-in
+    whose ribbon tab appeared and whose every JS callback was dead -- reproduced
+    in a clean sandbox against real WPS, and matching a field report of "WPS
+    installs but does not work".
+
+    Adding that one filename to the list fixed that one file. It did nothing
+    about the next one. So the list is checked against the source tree itself
+    rather than against the other hand-maintained list, which could drift the
+    same way.
+
+    Git is the source of truth: it excludes web/ and sidecar/, which are build
+    outputs rather than sources.
+    """
+    wps_root = os.path.join(ROOT, "src", "DeepExcel.Wps")
+    try:
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", "src/DeepExcel.Wps"],
+            cwd=ROOT, capture_output=True, text=True, timeout=60,
+            encoding="utf-8", errors="replace")
+    except OSError as exc:
+        check("git is available to enumerate WPS sources", False, str(exc)[:70])
+        return
+    if tracked.returncode != 0:
+        check("git is available to enumerate WPS sources", False, tracked.stderr[:70])
+        return
+
+    top_level_files, top_level_dirs = set(), set()
+    for line in tracked.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        relative = os.path.relpath(line, "src/DeepExcel.Wps").replace("\\", "/")
+        head, _, tail = relative.partition("/")
+        if tail:
+            top_level_dirs.add(head)
+        else:
+            top_level_files.add(head)
+
+    check("found WPS sources to check", bool(top_level_files),
+          "%d files, %d directories" % (len(top_level_files), len(top_level_dirs)))
+
+    packaged = set(module.WPS_ITEMS)
+    missing = sorted(top_level_files - packaged)
+    check("every tracked WPS file is in WPS_ITEMS", not missing,
+          "not packaged: %s" % ", ".join(missing) if missing else "")
+
+    missing_dirs = sorted(top_level_dirs - packaged)
+    check("every tracked WPS directory is in WPS_ITEMS", not missing_dirs,
+          "not packaged: %s" % ", ".join(missing_dirs) if missing_dirs else "")
+
+    # The reverse: a name in the list that no longer exists makes the packager
+    # fail at release time with "Required release item is missing", which is a
+    # worse moment to find out than now.
+    ghosts = sorted(
+        name for name in packaged
+        if not os.path.exists(os.path.join(wps_root, name.replace("/", os.sep)))
+        and name not in ("web", "sidecar")
+    )
+    check("WPS_ITEMS lists nothing that no longer exists", not ghosts,
+          "stale entries: %s" % ", ".join(ghosts) if ghosts else "")
+
+    # jsplugins.xml specifically: it is the add-in manifest that binds ribbon
+    # buttons to their handlers, so losing it produces a tab that looks fine
+    # and does nothing -- the failure mode least likely to be noticed in a
+    # smoke test.
+    check("the add-in manifest is a required file",
+          "jsplugins.xml" in module.WPS_REQUIRED_FILES,
+          "without it a missing manifest becomes a silent user-facing failure")
+
+
 def test_update_manifest_guards(module):
     """The update manifest guards.
 
@@ -304,6 +379,7 @@ def main():
     test_write_checksums(module)
     test_signing_rejects_self_signed_sources(module)
     test_updater_is_packaged(module)
+    test_every_wps_source_file_is_packaged(module)
     test_update_manifest_guards(module)
 
     print()
