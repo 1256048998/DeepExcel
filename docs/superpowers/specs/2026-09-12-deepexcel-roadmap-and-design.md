@@ -28,9 +28,10 @@
 > `requirements.txt` 里一个不存在的 alembic 版本、以及把 `httpx` 错列为 dev 依赖
 > 导致生产镜像启动即失败。
 >
-> **仍未闭合的验证缺口：** 本机未安装 Inno Setup，`.iss` 未经编译验证；
-> `scripts/verify-install-sandbox.ps1` 因此也从未实际执行。装上 Inno Setup 跑一次
-> 完整打包 + Sandbox 验收，才算真正交付。
+> **仍未闭合的验证缺口：** Inno Setup 已装、`.iss` 已真实编译、Sandbox 验收也跑过
+> （并抓到过一个「安装失败却返回 0」的发布阻断缺陷，已修）。剩下的是 COM 激活
+> `0x80070002` 未定性——Windows Sandbox 没有 Office，覆盖不了任何依赖 Excel 的步骤，
+> 需要一台装了 Excel 的干净机器才能判断。
 
 **关联：**
 - [架构设计](2026-06-25-DeepExcel-architecture-design.md)
