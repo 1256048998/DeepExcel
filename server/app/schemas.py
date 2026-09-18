@@ -188,6 +188,11 @@ class DashboardStats(BaseModel):
     task_success_rate_7d: float | None
     top_tool_errors_7d: list[dict[str, Any]]
     client_versions: list[dict[str, Any]]
+    # Auto-update health. The version histogram above says where clients are;
+    # these say whether the mechanism that moves them is working at all.
+    update_upgrades_7d: int
+    update_blocked_7d: int
+    top_update_failures_7d: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------

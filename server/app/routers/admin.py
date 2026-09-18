@@ -278,6 +278,42 @@ def stats(
         if name:
             tool_errors[name] += 1
 
+    # Auto-update health.
+    #
+    # The client-version histogram says where clients are; it cannot say whether
+    # the updater is what put them there. An updater that silently stopped
+    # working looks exactly like "nobody has upgraded yet" -- same flat version
+    # distribution, no errors anywhere -- so the counts have to be read directly.
+    #
+    # blocked is the one worth watching. It means a client downloaded and
+    # verified an update, failed to install it three times, and has given up
+    # offering it. Antivirus is the usual cause, the user sees only a banner
+    # telling them to install by hand, and nothing else in this dashboard
+    # would ever surface it.
+    update_events = db.scalars(
+        select(TelemetryEvent).where(
+            TelemetryEvent.event_type == "update_event",
+            TelemetryEvent.occurred_at >= since,
+        )
+    )
+    upgrades = 0
+    blocked = 0
+    update_failures = Counter()
+    for event in update_events:
+        try:
+            payload = json.loads(event.payload)
+        except (ValueError, TypeError):
+            continue
+        outcome = payload.get("outcome")
+        if outcome == "installed":
+            upgrades += 1
+        elif outcome == "blocked":
+            blocked += 1
+        elif outcome == "failed":
+            # reason_code is a fixed token by construction; see the privacy note
+            # on update_event in routers/telemetry.py.
+            update_failures[payload.get("reason_code") or "unknown"] += 1
+
     versions = Counter(
         version for version in db.scalars(
             select(Installation.client_version).where(Installation.last_seen_at >= since)
@@ -292,6 +328,11 @@ def stats(
         task_success_rate_7d=success_rate,
         top_tool_errors_7d=[{"tool": name, "count": count} for name, count in tool_errors.most_common(10)],
         client_versions=[{"version": name, "count": count} for name, count in versions.most_common(10)],
+        update_upgrades_7d=upgrades,
+        update_blocked_7d=blocked,
+        top_update_failures_7d=[
+            {"reason": name, "count": count} for name, count in update_failures.most_common(10)
+        ],
     )
 
 
