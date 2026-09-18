@@ -156,6 +156,78 @@ def test_dashboard_reports_task_success_rate(admin_client):
     assert stats["client_versions"][0]["version"] == "0.5.0"
 
 
+def test_dashboard_reports_auto_update_health(admin_client):
+    """Whether the updater is working at all.
+
+    The client-version histogram cannot answer this: an updater that silently
+    stopped working looks exactly like "nobody has upgraded yet" -- same flat
+    version distribution, no errors anywhere. These counts are the only signal.
+
+    The counting is plain enough to get wrong without noticing. Miscounting
+    `started` as `installed` would inflate adoption; missing `blocked` would
+    hide the users who cannot install at all. Either way the dashboard stays
+    green and says nothing.
+    """
+    tokens = register(admin_client)
+    user_headers = auth_headers(tokens)
+
+    events = [
+        # Two machines finished an upgrade.
+        {"event_type": "update_event",
+         "payload": {"phase": "apply", "outcome": "installed",
+                     "from_version": "0.5.0", "to_version": "0.6.0"}},
+        {"event_type": "update_event",
+         "payload": {"phase": "apply", "outcome": "installed",
+                     "from_version": "0.5.0", "to_version": "0.6.0"}},
+        # One started an install and never reported back -- which is normal, the
+        # process that would report is the one Excel just closed. It must NOT
+        # count as an upgrade.
+        {"event_type": "update_event",
+         "payload": {"phase": "launch", "outcome": "started", "from_version": "0.5.0"}},
+        # One has given up after three failed installs: the case that needs a human.
+        {"event_type": "update_event",
+         "payload": {"phase": "launch", "outcome": "blocked",
+                     "reason_code": "max_attempts", "from_version": "0.5.0"}},
+        # Failures, grouped by classification code.
+        {"event_type": "update_event",
+         "payload": {"phase": "check", "outcome": "failed",
+                     "reason_code": "feed_timeout", "from_version": "0.5.0"}},
+        {"event_type": "update_event",
+         "payload": {"phase": "check", "outcome": "failed",
+                     "reason_code": "feed_timeout", "from_version": "0.5.0"}},
+        {"event_type": "update_event",
+         "payload": {"phase": "download", "outcome": "failed",
+                     "reason_code": "package_digest_mismatch", "from_version": "0.5.0"}},
+        # Routine "already current" must not be mistaken for a problem.
+        {"event_type": "update_event",
+         "payload": {"phase": "check", "outcome": "up_to_date", "from_version": "0.6.0"}},
+    ]
+    assert admin_client.post(
+        "/api/v1/telemetry", json={"events": events}, headers=user_headers
+    ).json()["accepted"] == len(events)
+
+    stats = admin_client.get("/admin/api/stats", headers=admin_token(admin_client)).json()
+
+    assert stats["update_upgrades_7d"] == 2
+    assert stats["update_blocked_7d"] == 1
+    assert stats["top_update_failures_7d"] == [
+        {"reason": "feed_timeout", "count": 2},
+        {"reason": "package_digest_mismatch", "count": 1},
+    ]
+
+
+def test_dashboard_reports_no_update_activity_as_zero(admin_client):
+    """Zero upgrades is a real, reportable state -- not missing data.
+
+    Unlike the success rate, which is None until there is something to divide,
+    "nobody upgraded this week" is itself the answer.
+    """
+    stats = admin_client.get("/admin/api/stats", headers=admin_token(admin_client)).json()
+    assert stats["update_upgrades_7d"] == 0
+    assert stats["update_blocked_7d"] == 0
+    assert stats["top_update_failures_7d"] == []
+
+
 def test_dashboard_reports_no_data_as_none_not_zero(admin_client):
     """A brand-new deployment must not read as "0% success"."""
     stats = admin_client.get("/admin/api/stats", headers=admin_token(admin_client)).json()

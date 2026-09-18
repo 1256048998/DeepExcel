@@ -81,6 +81,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 }
 /* 北极星指标单独强调：其余数字都是为了解释它 */
 .card-highlight { border-color: var(--accent); background: rgba(21, 101, 192, 0.04); }
+/* 需要人介入的数字：和"重要"区分开，否则运营扫一眼看不出该不该动手 */
+.card-warn { border-color: #d97706; background: rgba(217, 119, 6, 0.06); }
 .card-label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
 .card-value { font-size: 22px; font-weight: 600; }
 

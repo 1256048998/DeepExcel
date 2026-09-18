@@ -102,6 +102,15 @@ function Dashboard() {
           // 北极星指标：所有能力改动都该对着它评判
           highlight
         />
+        <Card label="7 天成功升级" value={String(stats.update_upgrades_7d)} />
+        <Card
+          label="更新装不上（已放弃）"
+          value={String(stats.update_blocked_7d)}
+          // 0 是正常，非 0 需要有人去处理：这些用户的客户端已经下载并验签
+          // 成功、装了三次都失败、不再提示了，多半被安全软件拦掉。看板上没有
+          // 第二个指标会反映这件事，所以它必须自己喊出来。
+          warn={stats.update_blocked_7d > 0}
+        />
       </div>
 
       <h3>工具失败 TOP 10（7 天）</h3>
@@ -119,6 +128,28 @@ function Dashboard() {
             {stats.top_tool_errors_7d.map((row) => (
               <tr key={row.tool}>
                 <td className="mono">{row.tool}</td>
+                <td>{row.count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      <h3>更新失败原因 TOP 10（7 天）</h3>
+      {stats.top_update_failures_7d.length === 0 ? (
+        <p className="muted">暂无失败记录</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>分类码</th>
+              <th>次数</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.top_update_failures_7d.map((row) => (
+              <tr key={row.reason}>
+                <td className="mono">{row.reason}</td>
                 <td>{row.count}</td>
               </tr>
             ))}
@@ -151,9 +182,14 @@ function Dashboard() {
   )
 }
 
-function Card({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
+function Card({ label, value, highlight, warn }: {
+  label: string; value: string; highlight?: boolean; warn?: boolean
+}) {
+  // warn 和 highlight 是两件事：highlight 表示"这个数最重要"，
+  // warn 表示"这个数现在不对，需要人去做点什么"。
+  const className = warn ? 'card card-warn' : highlight ? 'card card-highlight' : 'card'
   return (
-    <div className={highlight ? 'card card-highlight' : 'card'}>
+    <div className={className}>
       <span className="card-label">{label}</span>
       <span className="card-value">{value}</span>
     </div>

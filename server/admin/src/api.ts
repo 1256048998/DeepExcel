@@ -93,6 +93,11 @@ export interface Stats {
   task_success_rate_7d: number | null
   top_tool_errors_7d: { tool: string; count: number }[]
   client_versions: { version: string; count: number }[]
+  // 自动更新健康度。上面的版本分布说的是客户端现在在哪个版本，说不了是不是
+  // 更新机制把它们送过去的——一个悄悄失效的更新器看起来和"还没人升级"一样。
+  update_upgrades_7d: number
+  update_blocked_7d: number
+  top_update_failures_7d: { reason: string; count: number }[]
 }
 
 export interface Order {
