@@ -220,6 +220,40 @@ def main():
           not non_ascii,
           f"non-ASCII on lines {non_ascii[:5]}" if non_ascii else "")
 
+    # ---- the sandbox run can finish without a human -----------------------
+    # The verdict is written to a file and then the script holds the window with
+    # "Press Enter to close". That is right for someone watching and wrong for
+    # everyone else: an unattended run never returns, and the sandbox window
+    # outlives the run on somebody's desktop.
+    sandbox = sandbox_bytes.decode("ascii")
+
+    check("sandbox script accepts -NoPause", "[switch]$NoPause" in sandbox)
+    check("the closing hold honours -NoPause",
+          "if ((-not $NoPause) -and $env:COMPUTERNAME" in sandbox,
+          "otherwise the flag exists and changes nothing")
+
+    # The subtle one. The host builds a .wsb whose LogonCommand re-invokes this
+    # same script inside the guest. A flag added to the host half but left out
+    # of that command line is accepted, reported as set, and silently does
+    # nothing -- the guest never hears about it.
+    logon = next((line for line in sandbox.splitlines() if "<Command>" in line), "")
+    check("-NoPause reaches the guest through LogonCommand",
+          "$pauseArg" in logon,
+          "a flag missing from the LogonCommand is accepted and ignored")
+
+    # ---- the WPS prompt asks about something still unknown ----------------
+    # enable="enable_dev" was the prime suspect for months and is now ruled out
+    # twice over (Kingsoft's own wpsjs build.js emits it for end-user packages,
+    # and a sandbox run saw the ribbon tab appear). Leaving the old prompt in
+    # place would send whoever runs this next to re-answer a settled question
+    # instead of looking at the callbacks, which is where the real bug was.
+    check("the WPS prompt no longer treats enable_dev as open",
+          "is NOT under suspicion" in sandbox,
+          "the prompt should point at the callbacks, not at enable_dev")
+    check("the WPS prompt asks whether the buttons do anything",
+          "Open panel" in sandbox,
+          "a ribbon tab renders from ribbon.xml with no JS, so a tab proves nothing")
+
     # ---- balanced Pascal blocks (cheap syntax smoke test) -----------------
     code = iss[iss.index("[Code]"):] if "[Code]" in iss else ""
     begins = len(re.findall(r"\bbegin\b", code))

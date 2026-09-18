@@ -35,7 +35,12 @@ param(
     # sandbox is disposable, so an automatic download would re-fetch several
     # hundred MB on every run, and the download URL is not a stable contract.
     [string]$WpsSetupPath,
-    [string]$ResultPath = 'C:\DeepExcelVerify\result.txt'
+    [string]$ResultPath = 'C:\DeepExcelVerify\result.txt',
+    # Skip the "Press Enter to close" hold at the end. Without this the sandbox
+    # window sits there waiting for a keystroke long after the result file has
+    # been written, so an unattended run -- a release pipeline, or anyone who
+    # started it and walked away -- never actually finishes.
+    [switch]$NoPause
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,7 +49,8 @@ $ErrorActionPreference = 'Stop'
 # Host side: build the .wsb and launch
 # ---------------------------------------------------------------------------
 function Start-SandboxRun {
-    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup, [bool]$ComWpsTest, [bool]$AutoKeysTest)
+    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup, [bool]$ComWpsTest,
+          [bool]$AutoKeysTest, [bool]$NoPauseRun)
 
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     if (-not $Setup) { $Setup = Join-Path $repoRoot 'dist\DeepExcel.Setup.exe' }
@@ -75,6 +81,8 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
 
     $traceArg = ''
     if ($WithTrace) { $traceArg = ' -Trace' }
+    $pauseArg = ''
+    if ($NoPauseRun) { $pauseArg = ' -NoPause' }
 
     $keysArg = ''
     if ($AutoKeysTest) { $keysArg = ' -AutoKeys' }
@@ -107,7 +115,7 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg$comArg$keysArg</Command>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg$comArg$keysArg$pauseArg</Command>
   </LogonCommand>
 </Configuration>
 "@ | Set-Content -LiteralPath $wsb -Encoding UTF8
@@ -438,7 +446,8 @@ function Invoke-GuestRibbonClick {
 }
 
 function Invoke-GuestVerification {
-    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps, [bool]$ComWps, [bool]$AutoKeys)
+    param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps,
+          [bool]$ComWps, [bool]$AutoKeys, [bool]$NoPause)
 
     Write-Host '=== DeepExcel fresh-install verification ==='
     Write-Host "Setup: $Setup"
@@ -647,10 +656,22 @@ function Invoke-GuestVerification {
     Add-Check 'WPS add-in registered in publish.xml' $registered $detail
 
     # 5c. The manifest check above proves the entry was written. It cannot prove
-    #     WPS will honour it -- the entry says enable="enable_dev", and whether a
-    #     normal WPS loads a developer-mode entry is exactly the open question.
-    #     Only the ribbon can answer that, so hand the window to a human here,
+    #     the add-in actually works, so the window is handed to a human here,
     #     before the uninstall step tears everything down.
+    #
+    #     What is NOT in question any more: enable="enable_dev". That was the
+    #     prime suspect for months and it is now ruled out twice over --
+    #     Kingsoft's own wpsjs toolchain emits exactly that value from the code
+    #     path that builds end-user distribution packages (build.js,
+    #     CreatePublishXml), and an earlier sandbox run saw the ribbon tab
+    #     appear, which could not happen if WPS refused to load the entry.
+    #
+    #     The open question is now one step further in: the tab renders from
+    #     ribbon.xml with no JS at all, so a tab alone proves nothing about
+    #     whether the callbacks are wired. jsplugins.xml -- the manifest that
+    #     binds them -- was missing from the release payload until 85ea244, and
+    #     that is what produced the field report of "WPS installs but does not
+    #     work". So what needs looking at is whether the buttons DO something.
     # 5b-2. Decide whether main.js runs at all.
     #
     # The ribbon tab and its buttons come from ribbon.xml, which WPS renders
@@ -739,12 +760,24 @@ function Invoke-GuestVerification {
             # the closing quote and the whole script stops parsing.
             Write-Host ''
             Write-Host '--------------------------------------------------------------'
-            Write-Host ' Launching WPS Spreadsheets. Look at the ribbon:'
-            Write-Host ' is there a "DeepExcel" tab?'
+            Write-Host ' Launching WPS Spreadsheets. Two things to check,'
+            Write-Host ' in this order:'
             Write-Host ''
-            Write-Host '   YES -> enable_dev is fine; WPS breakage is something else'
-            Write-Host '   NO  -> enable="enable_dev" is the culprit; retry with'
-            Write-Host '          enable="enable" in publish.xml'
+            Write-Host '  1. Is there a "DeepExcel" tab, WITH its icons?'
+            Write-Host '     Icons come from a JS callback; the tab itself does not.'
+            Write-Host '     tab + icons     -> jsplugins.xml is being honoured'
+            Write-Host '     tab, no icons   -> the manifest is not loading'
+            Write-Host '     no tab at all   -> publish.xml never took effect'
+            Write-Host ''
+            Write-Host '  2. Click "Open panel". Does the task pane appear?'
+            Write-Host '     This is the check that matters: it is the exact'
+            Write-Host '     symptom a user reported (tab present, clicks dead)'
+            Write-Host '     and the one 85ea244 was meant to fix.'
+            Write-Host ''
+            Write-Host ' enable="enable_dev" is NOT under suspicion -- see 5c.'
+            Write-Host ' Also read wps-js-diag.log in the results folder: it says'
+            Write-Host ' whether main.js executed at all, which no amount of'
+            Write-Host ' looking at the ribbon can tell you.'
             Write-Host ''
             Write-Host ' Close WPS, then press Enter here to continue (uninstall check).'
             Write-Host '--------------------------------------------------------------'
@@ -950,8 +983,10 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
     Write-Host "Written to $ResultFile"
 
     # Windows Sandbox closes with the session; hold the window so a human can
-    # read the outcome when running interactively.
-    if ($env:COMPUTERNAME -and $Host.UI.RawUI) {
+    # read the outcome when running interactively. -NoPause turns that off for
+    # unattended runs, where nobody is there to press the key and the window
+    # would otherwise outlive the run indefinitely.
+    if ((-not $NoPause) -and $env:COMPUTERNAME -and $Host.UI.RawUI) {
         Write-Host ''
         Write-Host 'Press Enter to close.'
         try { Read-Host | Out-Null } catch { }
@@ -964,8 +999,8 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
     # Note: -Param:$switch.IsPresent does not parse (the member access is taken
     # as a separate token). These targets are [bool], so cast explicitly.
 if ($Launch) {
-    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath -ComWpsTest ([bool]$ComWps) -AutoKeysTest ([bool]$AutoKeys)
+    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath -ComWpsTest ([bool]$ComWps) -AutoKeysTest ([bool]$AutoKeys) -NoPauseRun ([bool]$NoPause)
 } else {
     if (-not $SetupPath) { throw 'Specify -SetupPath, or use -Launch to run this inside Windows Sandbox.' }
-    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps) -ComWps ([bool]$ComWps) -AutoKeys ([bool]$AutoKeys)
+    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps) -ComWps ([bool]$ComWps) -AutoKeys ([bool]$AutoKeys) -NoPause ([bool]$NoPause)
 }
