@@ -17,6 +17,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -264,6 +265,92 @@ def test_every_wps_source_file_is_packaged(module):
           "without it a missing manifest becomes a silent user-facing failure")
 
 
+def test_release_doc_covers_every_build_step(module):
+    """The release runbook must build everything the packager demands.
+
+    DEPLOYMENT.md went months missing build-repair.ps1 while three required
+    executables came only from it -- anyone following the runbook hit
+    "Required release item is missing" and had to work out why. Fixing the
+    document fixes that one omission; this stops the next one.
+
+    The mapping is derived, not listed: for each required .exe, find which
+    build script emits it, then require that script to appear in the runbook's
+    build section. Nothing here is hand-maintained, so nothing here can drift.
+    """
+    doc_path = os.path.join(ROOT, "docs", "DEPLOYMENT.md")
+    with open(doc_path, encoding="utf-8") as stream:
+        doc = stream.read()
+
+    marker = "## 生产构建"
+    if marker not in doc:
+        check("DEPLOYMENT.md has a build section", False, "heading moved or renamed")
+        return
+    # Up to the next top-level heading.
+    section = doc.split(marker, 1)[1]
+    section = section.split("\n## ", 1)[0]
+
+    # Which script emits which executable, read off the compiler's own /out:
+    # argument. An earlier version of this searched whole files for the name
+    # and was fooled immediately: _compile_only.ps1 mentions
+    # DeepExcel.Updater.exe in a comment explaining a reference, so the guard
+    # blamed the wrong script and would have sent someone to the wrong place.
+    scripts_dir = os.path.join(ROOT, "scripts")
+    producers = {}
+    for candidate in sorted(os.listdir(scripts_dir)):
+        if not candidate.endswith(".ps1"):
+            continue
+        with open(os.path.join(scripts_dir, candidate), encoding="utf-8",
+                  errors="replace") as stream:
+            for line in stream:
+                if "/out:" not in line:
+                    continue
+                match = re.search(r"([A-Za-z0-9_.]+\.exe)", line)
+                if match:
+                    producers.setdefault(match.group(1), candidate)
+
+    check("build scripts declare their executables", bool(producers),
+          ", ".join(f"{k} <- {v}" for k, v in sorted(producers.items())))
+
+    # What the runbook actually *runs*, not what it mentions. Prose counts as a
+    # mention: the section now explains that build-repair.ps1 was once missing,
+    # so a plain substring search passes even with the command deleted. That is
+    # the same trap that made this guard blame the wrong script a moment ago.
+    invoked = set()
+    for line in section.splitlines():
+        for pattern in (r"-File\s+scripts[\\/]([A-Za-z0-9_.-]+\.ps1)",
+                        r"python\s+scripts[\\/]([A-Za-z0-9_.-]+\.py)"):
+            found = re.search(pattern, line)
+            if found:
+                invoked.add(found.group(1))
+    check("the runbook contains runnable build commands", bool(invoked),
+          ", ".join(sorted(invoked)))
+
+    traced = 0
+    for name in module.EXCEL_REQUIRED_FILES:
+        if not isinstance(name, str) or not name.endswith(".exe"):
+            continue
+        exe = os.path.basename(name.replace("\\", "/"))
+        producer = producers.get(exe)
+        if producer is None:
+            # python.exe is downloaded by package-python.ps1, not compiled, so
+            # it has no /out:. Not a gap -- just outside what this can trace.
+            print(f"[SKIP] {exe} is not produced by a compiler step")
+            continue
+        traced += 1
+        check(f"DEPLOYMENT.md builds {exe} (via {producer})",
+              producer in invoked,
+              f"the runbook never runs {producer}, so packaging stops on {exe}")
+
+    check("at least one executable was traced to the runbook", traced > 0)
+
+    # The manifest is the other thing a release can silently omit. Unlike a
+    # missing executable it does not fail the build -- it just means nobody
+    # upgrades, which looks identical to nobody having upgraded yet.
+    check("DEPLOYMENT.md tells the releaser to publish update.json",
+          "update.json" in doc,
+          "without it an updated client base silently stops receiving releases")
+
+
 def test_update_manifest_guards(module):
     """The update manifest guards.
 
@@ -380,6 +467,7 @@ def main():
     test_signing_rejects_self_signed_sources(module)
     test_updater_is_packaged(module)
     test_every_wps_source_file_is_packaged(module)
+    test_release_doc_covers_every_build_step(module)
     test_update_manifest_guards(module)
 
     print()
