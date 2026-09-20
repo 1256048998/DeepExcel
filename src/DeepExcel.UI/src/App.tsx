@@ -13,6 +13,7 @@ import { PermissionDrawer } from './components/PermissionDrawer'
 import type { ChangePreviewData } from './components/ChangePreview'
 import { PromptManager } from './components/PromptManager'
 import { UpdateBanner } from './components/UpdateBanner'
+import { SetupNotice } from './components/SetupNotice'
 import type { Message, ModelConfig } from './types'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -155,6 +156,29 @@ export default function App() {
     loadModelConfig()
   }, [])
 
+  // ★ 启动时读一次登录状态。
+  //
+  // AccountPanel 也会读，但它只在面板被打开时才读——而这里必须在用户打开它
+  // 之前就知道路由模式：托管用户本地压根没有 API Key，不能把他们误判成
+  // "还没配置"然后拦住消息。`account_status` 只读内存里的会话状态，不发网络
+  // 请求，所以启动时多这一次很便宜。
+  useEffect(() => {
+    void (async () => {
+      try {
+        const resp = await sendToHostWithResponse(
+          { type: 'account_status', payload: {} },
+          'account_status'
+        )
+        if (resp?.type === 'account_status' && resp.payload) {
+          setAccountStatus(resp.payload as AccountStatus)
+        }
+      } catch {
+        // 读不到就保持 null，setupNeeded 因此不会成立——宁可不引导，
+        // 也不要误拦一个其实能正常使用的用户。
+      }
+    })()
+  }, [])
+
   // ★ ModelConfigPanel 关闭后刷新（用户可能测试连接/切换默认厂商/编辑 key）
   useEffect(() => {
     if (!modelConfigOpen) {
@@ -191,6 +215,23 @@ export default function App() {
     }
     return opts
   })()
+
+  // ★ 现在到底能不能发消息。
+  //
+  // 托管模式下用户不需要自己配 Key，模型流量走服务端代理。这里读的是
+  // accountStatus.mode——它由 GET /api/v1/session/endpoint 下发，客户端只是
+  // 应用它。**不要**改成从 plan / entitlement 反推路由，那会破坏出口路由契约
+  // （见交接文档约束 1）。
+  //
+  // 两个来源都必须先到齐再下结论，而且都是 fail-open：
+  //   modelConfig 还是 null  -> 配置没加载完，否则每次打开面板都会先闪一下
+  //                             "还没有可用的模型"，而多数用户早就配好了
+  //   accountStatus 还是 null -> 不知道是不是托管模式，而托管用户本地本来就
+  //                             没有 Key，这时候拦他们是纯误伤
+  // 任一请求失败也停在 null，结果是不引导——退回到改动前的行为，不会更糟。
+  const hostedRouting = accountStatus?.mode === 'hosted'
+  const setupNeeded = modelConfig !== null && accountStatus !== null
+    && !hostedRouting && modelOptions.length === 0
 
   // ★ 兜底：selectedModel 指向的模型可能不在选项里（比如该厂商 key 被删了）。
   // 这时 <select> 会自己显示第一个选项，但 state 还是旧值——显示和实际用的模型不一致。
@@ -369,6 +410,22 @@ export default function App() {
     if (!content || loading) return
 
     const userMessage: Message = { role: 'user', content }
+
+    // 没有可用模型就别把消息发出去。发出去的结局是用户收到一条来自模型 API 的
+    // 英文报错，既看不懂也不知道下一步做什么——而欢迎语恰恰在鼓励他们现在就试。
+    // 这里只是 UI 引导，不是安全边界（真正的权限判断在服务端）。
+    if (setupNeeded) {
+      setMessages(prev => [...prev, userMessage, {
+        role: 'assistant',
+        content: '还没有配置模型供应商，所以这条消息没有发出去。\n\n'
+          + '在「模型配置」里填入任一供应商的 API Key（Claude、DeepSeek 等都可以），'
+          + '配好之后重新发一次就行。'
+      }])
+      setInput('')
+      setModelConfigOpen(true)
+      return
+    }
+
     setMessages(prev => [...prev, userMessage])
     setInput('')
     setLoading(true)
@@ -692,6 +749,9 @@ export default function App() {
 
       {/* 只在新版本已下载并验签通过时出现，其余时间不占任何空间 */}
       <UpdateBanner />
+
+      {/* 没有可用模型时的引导。与 sendMessage 的拦截用的是同一个条件 */}
+      {setupNeeded && <SetupNotice onConfigure={() => setModelConfigOpen(true)} />}
 
       <MessageList
         messages={messages}
