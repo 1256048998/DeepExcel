@@ -17,6 +17,7 @@ import { SetupNotice } from './components/SetupNotice'
 import type { Message, ModelConfig } from './types'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
+import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
 
 // ★ AI Native 权限确认抽屉状态（PreToolUse hook 触发，从输入框上方 slide-up）
 interface PermissionState {
@@ -186,52 +187,12 @@ export default function App() {
     }
   }, [modelConfigOpen])
 
-  // ★ 从 modelConfig 构造下拉选项：列出已配置 API Key 的 provider 的所有模型。
-  // 注意：圆点仍按 connected（LastTestSuccess && hasApiKey）显示，但下拉只要求 hasApiKey——
-  // 否则默认厂商若未点测试连接就会被隐藏，与"默认厂商低成本模型为默认值"需求冲突。
-  // 顺序：默认厂商在前，其余按 providers 字典序
-  const modelOptions: ModelOption[] = (() => {
-    if (!modelConfig) return []
-    const defaultProvider = modelConfig.defaultProvider || modelConfig.currentProvider
-    const entries = Object.entries(modelConfig.providers)
-    // 默认厂商置顶
-    entries.sort((a, b) => {
-      if (a[0] === defaultProvider) return -1
-      if (b[0] === defaultProvider) return 1
-      return 0
-    })
-    const opts: ModelOption[] = []
-    for (const [key, p] of entries) {
-      if (!p.hasApiKey) continue  // ★ 只列已配 key 的（不强制要求测试通过）
-      for (const m of p.models) {
-        opts.push({
-          provider: key,
-          providerDisplayName: p.displayName,
-          model: m,
-          // 该厂商的主模型（模型优先级列表第 1 项）
-          isPrimary: m === p.defaultModel
-        })
-      }
-    }
-    return opts
-  })()
+  // ★ 输入框模型下拉选项。纯函数，有测试：src/utils/modelSelection.ts
+  const modelOptions: ModelOption[] = buildModelOptions(modelConfig)
 
-  // ★ 现在到底能不能发消息。
-  //
-  // 托管模式下用户不需要自己配 Key，模型流量走服务端代理。这里读的是
-  // accountStatus.mode——它由 GET /api/v1/session/endpoint 下发，客户端只是
-  // 应用它。**不要**改成从 plan / entitlement 反推路由，那会破坏出口路由契约
-  // （见交接文档约束 1）。
-  //
-  // 两个来源都必须先到齐再下结论，而且都是 fail-open：
-  //   modelConfig 还是 null  -> 配置没加载完，否则每次打开面板都会先闪一下
-  //                             "还没有可用的模型"，而多数用户早就配好了
-  //   accountStatus 还是 null -> 不知道是不是托管模式，而托管用户本地本来就
-  //                             没有 Key，这时候拦他们是纯误伤
-  // 任一请求失败也停在 null，结果是不引导——退回到改动前的行为，不会更糟。
-  const hostedRouting = accountStatus?.mode === 'hosted'
-  const setupNeeded = modelConfig !== null && accountStatus !== null
-    && !hostedRouting && modelOptions.length === 0
+  // ★ 该不该提示用户先去配个模型。两个数据源都 fail-open，
+  // 理由写在 computeSetupNeeded 的注释里（那里也有测试）。
+  const setupNeeded = computeSetupNeeded(modelConfig, accountStatus, modelOptions)
 
   // ★ 兜底：selectedModel 指向的模型可能不在选项里（比如该厂商 key 被删了）。
   // 这时 <select> 会自己显示第一个选项，但 state 还是旧值——显示和实际用的模型不一致。
