@@ -328,14 +328,15 @@ cp dist/update.json /srv/deepexcel/updates/stable.json
 2. 原生工具编译（`scripts\build-repair.ps1`：诊断修复 + 32 位探针 + 更新程序）；
 3. React 前端构建；
 4. C# 单元测试（`scripts\run-tests-csharp.ps1`）；
-5. 打包守卫测试（`python scripts\test_package_release.py`）；
-6. 更新链路端到端测试（`python scripts\test_updater_e2e.py`）；
-7. Sidecar 自然冷启动导入；
-8. WPS Ribbon/任务窗格回调测试；
-9. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
-10. `SHA256SUMS.txt` 与安装包一同发布；`update.json` 发布到更新源。
+5. 面板前端单元测试（`cd src\DeepExcel.UI && npm test`）；
+6. 打包守卫测试（`python scripts\test_package_release.py`）；
+7. 更新链路端到端测试（`python scripts\test_updater_e2e.py`）；
+8. Sidecar 自然冷启动导入；
+9. WPS Ribbon/任务窗格回调测试；
+10. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch -NoPause`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
+11. `SHA256SUMS.txt` 与安装包一同发布；`update.json` 发布到更新源。
 
-第 9 步是硬性要求。开发机永远装得上——它已经有注册表项、有运行时、没有下载来源标记。v0.4.11 → v0.4.17 连续七个版本栽在这里，就是因为没有在干净机器上验证过。
+第 10 步是硬性要求。开发机永远装得上——它已经有注册表项、有运行时、没有下载来源标记。v0.4.11 → v0.4.17 连续七个版本栽在这里，就是因为没有在干净机器上验证过。
 
 ## 常见问题
 
@@ -414,6 +415,15 @@ python scripts\test_updater_e2e.py
 ```
 
 `test_updater_e2e.py` 用一次性密钥现编 `DeepExcel.Updater.exe`（编到临时目录，不碰仓库里那份刻意留空的公钥），再逐条验证被篡改的包、被伪造的签名、陌生密钥、降级、错通道各自的退出码。
+
+面板前端（vitest）：
+
+```powershell
+cd src\DeepExcel.UI
+npm test
+```
+
+只测纯逻辑，不渲染组件：`utils/modelSelection.ts` 里的模型下拉构造与「该不该提示先去配模型」。后者的两个 fail-open 分支各有一条测试盯着——它的第一版把托管用户拦在了门外，那些人本地本来就没有 API Key。
 
 服务端测试：
 
