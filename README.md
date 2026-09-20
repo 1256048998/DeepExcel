@@ -425,6 +425,23 @@ npm test
 
 只测纯逻辑，不渲染组件：`utils/modelSelection.ts` 里的模型下拉构造与「该不该提示先去配模型」。后者的两个 fail-open 分支各有一条测试盯着——它的第一版把托管用户拦在了门外，那些人本地本来就没有 API Key。
 
+### 脱离 Excel 调面板
+
+```powershell
+cd src\DeepExcel.UI
+npm run dev
+```
+
+面板在 vite dev 下用假数据跑，不需要装进 Excel。几个状态在真机上很难复现——「一个 Key 都没配」只在全新安装的那几分钟里存在，「托管模式」要一个配好的服务端——所以用 URL 参数切：
+
+| 地址 | 场景 | 预期 |
+| --- | --- | --- |
+| `localhost:5173` | 已配 DeepSeek、未登录 | 正常可用 |
+| `localhost:5173/?mock=nokey` | 一个 Key 都没配、未登录 | 出现「先配置一个供应商」，发送被拦 |
+| `localhost:5173/?mock=hosted` | 一个 Key 都没配、托管模式 | **不出现**——本地无 Key 对托管用户是正常的 |
+
+最后那条是真出过事的：`setupNeeded` 的第一版把托管用户拦在了门外。
+
 服务端测试：
 
 ```powershell

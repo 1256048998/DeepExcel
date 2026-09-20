@@ -174,6 +174,21 @@ export const hostType: 'excel' | 'wps' | 'dev' = isInWebView ? 'excel' : isInWps
 
 // ============= 开发环境模拟响应 =============
 
+/**
+ * ★ 开发环境的场景开关：?mock=<scenario>
+ *
+ * 面板的不少状态在真机上很难复现——"一个 Key 都没配"只在全新安装的那几分钟
+ * 里存在，"托管模式"需要一个配好的服务端。结果就是这些分支只能靠脑补验证，
+ * 而其中一条（托管用户被 setupNeeded 误拦）真的漏出去过。
+ *
+ *   ?mock=nokey    一个 Key 都没配、未登录 -> 应当出现"先配置一个供应商"
+ *   ?mock=hosted   一个 Key 都没配、托管模式 -> **不应**出现（本地无 Key 是正常的）
+ *   其他/不带      已配 DeepSeek、未登录 -> 正常可用
+ */
+const mockScenario: string = isDev
+  ? new URLSearchParams(window.location.search).get('mock') || 'default'
+  : 'default'
+
 // ★ 开发环境的模型配置假数据：让"模型配置"弹窗（模型优先级 / 导入模型）在 vite dev 下可调试
 const mockProviders: Record<string, any> = {
   deepseek: {
@@ -194,10 +209,24 @@ function mockHostResponse(message: HostMessage) {
   const emit = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
 
   switch (message.type) {
+    case 'account_status':
+      // 没有这个 mock 的时候，App 启动时那次 account_status 会一直等到超时，
+      // 而 accountStatus 停在 null 就意味着 setupNeeded 永远不成立——dev 下
+      // 根本看不到那条引导。
+      emit('account_status', mockScenario === 'hosted'
+        ? { state: 'signedin', server_url: 'https://mock.local', email: 'dev@example.com',
+            mode: 'hosted', entitlement: { plan: 'pro', status: 'active', routing_mode: 'hosted',
+              task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null } }
+        : { state: 'signedout', server_url: null, email: null, mode: null, entitlement: null })
+      return
     case 'get_model_config':
       emit('model_config', {
         currentProvider: 'deepseek', currentModel: 'deepseek-v4-pro', defaultProvider: 'deepseek',
-        providers: mockProviders,
+        // nokey / hosted 两个场景都是"本地一个 Key 都没有"，差别只在路由模式。
+        providers: (mockScenario === 'nokey' || mockScenario === 'hosted')
+          ? Object.fromEntries(Object.entries(mockProviders).map(
+              ([k, v]) => [k, { ...v, hasApiKey: false, connected: false, apiKeyPreview: '' }]))
+          : mockProviders,
         general: { maxRetries: 2, requestTimeoutSeconds: 60, autoCreateSnapshot: true, requireConfirmation: true, maxConversationHistory: 10, maxTurns: 20 },
         ui: { theme: 'light', language: 'zh-CN', showTokenUsage: true, streamOutput: true }
       })
