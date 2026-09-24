@@ -14,16 +14,41 @@ import sys
 # C# 端 PythonSidecar.cs 已设置 StandardOutputEncoding=UTF8，Python 端必须匹配
 # ★ 同时 reconfigure stdin：系统语言为英文时 ANSI 代码页 cp1252 不支持中文，
 # C# → Python 方向的消息（如 tool_result）中的中文会在 stdin 读取时丢失
-try:
-    sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
-    sys.stderr.reconfigure(encoding='utf-8', line_buffering=True)
-    sys.stdin.reconfigure(encoding='utf-8', line_buffering=True)
-except Exception:
-    # Python < 3.7 没有 reconfigure，用 TextIOWrapper 兜底
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', line_buffering=True)
-    sys.stdin = io.TextIOWrapper(sys.stdin.buffer, encoding='utf-8', line_buffering=True)
+import io
+
+# 每个流独立处理：任何一个流失败都不能连累另外两个。
+# 早期版本把三个 reconfigure 放在同一个 try 里，stdin 失败（如 pytest 的
+# DontReadFromInput 没有 reconfigure）会导致已经成功的 stdout/stderr 被重新包一层
+# TextIOWrapper；新旧 wrapper 之一被 GC 时会关掉底层 buffer，
+# 表现为 "I/O operation on closed file"。
+_original_streams = []
+
+
+def _force_utf8(name: str) -> None:
+    stream = getattr(sys, name, None)
+    if stream is None:
+        return
+    try:
+        stream.reconfigure(encoding='utf-8', line_buffering=True)
+        return
+    except Exception:
+        # Python < 3.7 没有 reconfigure；或该流是测试替身
+        pass
+    buffer = getattr(stream, 'buffer', None)
+    if buffer is None:
+        # 没有底层字节流可包（测试替身等），保持原样，绝不替换
+        return
+    try:
+        wrapped = io.TextIOWrapper(buffer, encoding='utf-8', line_buffering=True)
+    except Exception:
+        return
+    # 保留原 stream 引用：否则它被 GC 时会连带关闭 buffer
+    _original_streams.append(stream)
+    setattr(sys, name, wrapped)
+
+
+for _stream_name in ('stdout', 'stderr', 'stdin'):
+    _force_utf8(_stream_name)
 
 import anyio
 import base64

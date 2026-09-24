@@ -414,6 +414,15 @@ python scripts\test_sidecar_permissions.py
 python scripts\test_updater_e2e.py
 ```
 
+Python 侧车单元测试：
+
+```powershell
+cd src\DeepExcel.Sidecar
+python -m pytest tests -q
+```
+
+`test_stream_encoding.py` 盯着 import 时的 UTF-8 流改写：三个流曾共用一个 try，stdin 一失败就把已成功的 stdout 重包一层，旧 wrapper 被回收时关掉底层 buffer，整个测试套件以「I/O operation on closed file」崩溃。
+
 `test_updater_e2e.py` 用一次性密钥现编 `DeepExcel.Updater.exe`（编到临时目录，不碰仓库里那份刻意留空的公钥），再逐条验证被篡改的包、被伪造的签名、陌生密钥、降级、错通道各自的退出码。
 
 面板前端（vitest）：
