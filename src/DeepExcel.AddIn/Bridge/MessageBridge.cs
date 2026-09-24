@@ -249,8 +249,9 @@ namespace DeepExcel.AddIn.Bridge
                     $"SendConfigToSession: wb={session.WorkbookName}, model={routing.Model}, " +
                     $"baseUrl={routing.BaseUrl}, mode={routing.Mode}, " +
                     $"hasKey={!string.IsNullOrEmpty(routing.ApiKey)}, " +
-                    $"hasToken={!string.IsNullOrEmpty(routing.AuthToken)}");
-                session.Sidecar.UpdateConfig(routing);
+                    $"hasToken={!string.IsNullOrEmpty(routing.AuthToken)}, " +
+                    $"maxTurns={cfg.General?.MaxTurns ?? 20}");
+                session.Sidecar.UpdateConfig(routing, cfg.General?.MaxTurns ?? 20);
             }
             catch (Exception ex)
             {

@@ -99,7 +99,9 @@ def _load_wps_local_config():
         api_key = win32crypt.CryptUnprotectData(protected, None, None, None, 0)[1].decode("utf-8")
         if not api_key:
             raise ValueError("empty API key")
-        return {"base_url": base_url, "model": model, "api_key": api_key}
+        general = config.get("General") or config.get("general") or {}
+        max_turns = general.get("MaxTurns") or general.get("maxTurns")
+        return {"base_url": base_url, "model": model, "api_key": api_key, "max_turns": max_turns}
     except Exception as exc:
         sys.stderr.write(f"[sidecar] WPS local config unavailable: {type(exc).__name__}: {exc}\n")
         sys.stderr.flush()
@@ -329,6 +331,27 @@ def build_env_config(cfg: dict, environ) -> tuple:
         env_config["ANTHROPIC_API_KEY"] = cfg.get("api_key") or ""
 
     return env_config, (cfg.get("model") or DEFAULT_MODEL)
+
+
+DEFAULT_MAX_TURNS = 20
+MAX_TURNS_CEILING = 50
+
+
+def resolve_max_turns(cfg) -> int:
+    """设置里的 MaxTurns → SDK 的 max_turns。
+
+    以前侧车写死 20，设置面板里的 MaxTurns 存下来却从没生效。
+    上限与 C# 端 HandleSaveModelConfig 的 50 一致（防 AI 无限循环烧 API 费用）；
+    缺省、非数字、越界都回落而不是报错——这个值错了不该让整个会话起不来。
+    """
+    raw = (cfg or {}).get("max_turns")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_TURNS
+    if value < 1:
+        return DEFAULT_MAX_TURNS
+    return min(value, MAX_TURNS_CEILING)
 
 
 def stale_env_keys(env_config: dict) -> list:
@@ -979,6 +1002,8 @@ async def main():
 
         routing_mode = (cfg or {}).get("routing_mode", "byok")
         env_config, model = build_env_config(cfg, os.environ)
+        max_turns = resolve_max_turns(cfg)
+        sys.stderr.write(f"[sidecar] max_turns={max_turns} (configured={(cfg or {}).get('max_turns')})\n")
 
         # ★ 关键修复：显式同步到 os.environ，覆盖 ~/.claude/settings.json 的 env 配置。
         # SDK 在 ClaudeSDKClient 创建时会读 settings.json 的 env 字段并 merge 进 process env，
@@ -1048,7 +1073,7 @@ async def main():
                 "screenshot_excel", "send_keys",
             ]],
             system_prompt=SYSTEM_PROMPT,
-            max_turns=20,
+            max_turns=max_turns,  # ★ 来自设置 MaxTurns，见 resolve_max_turns
             env=env_config,  # ★ DeepSeek 配置必须在这里传
             # ★ 关键修复：setting_sources=[] 禁用 SDK 读取 ~/.claude/settings.json 等
             # 文件系统 settings。否则 SDK CLI 子进程会读 settings.json 的 env 字段

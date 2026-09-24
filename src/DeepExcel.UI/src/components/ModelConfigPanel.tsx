@@ -813,8 +813,9 @@ export function ModelConfigPanel({ open, onClose }: Props) {
                           className="config-input config-input-narrow"
                           value={maxTurns}
                           min={1}
-                          max={200}
-                          onChange={e => setMaxTurns(parseInt(e.target.value) || 20)}
+                          max={50}
+                          // 与 C# HandleSaveModelConfig 的上限一致：超过 50 会被后端静默丢弃
+                          onChange={e => setMaxTurns(Math.min(50, Math.max(1, parseInt(e.target.value) || 20)))}
                         />
                       </div>
                     </div>

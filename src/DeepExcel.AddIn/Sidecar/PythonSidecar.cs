@@ -259,7 +259,11 @@ namespace DeepExcel.AddIn.Sidecar
         /// short-lived bearer token instead: the proxy authenticates the request,
         /// and the user's own provider key must never be sent to it.
         /// </summary>
-        public void UpdateConfig(Account.SidecarRouting routing)
+        /// <param name="maxTurns">
+        /// 设置里的 MaxTurns。以前从未下发，侧车写死 20，界面上的设置不生效；
+        /// 侧车端会再夹一次 1..50，这里原样传。
+        /// </param>
+        public void UpdateConfig(Account.SidecarRouting routing, int maxTurns = 20)
         {
             if (routing == null)
             {
@@ -273,7 +277,8 @@ namespace DeepExcel.AddIn.Sidecar
                 model = routing.Model,
                 api_key = routing.ApiKey ?? "",
                 auth_token = routing.AuthToken ?? "",
-                routing_mode = routing.Mode
+                routing_mode = routing.Mode,
+                max_turns = maxTurns
             };
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
         }
