@@ -169,9 +169,19 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
     """
     try:
         tool_name = input_data.get("tool_name", "")
-        # 只拦截 mcp__excel__ 前缀的工具
+        # ★ 非 mcp__excel__ 工具一律拒绝（纵深防御）。ClaudeAgentOptions 已用
+        # tools=[] 关掉 CLI 内置工具；这里兜底，防止以后有人去掉那一行后
+        # Read/Glob/Grep 这类 CLI 默认免授权的工具绕过沙箱读用户磁盘。
         if not tool_name.startswith("mcp__excel__"):
-            return {"continue_": True}
+            sys.stderr.write(f"[sidecar] PreToolUse: {tool_name} denied (not an excel tool)\n")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"{tool_name} 不是 DeepExcel 工具，不可用。请只使用 Excel 工具完成任务。",
+                },
+                "reason": "只允许 DeepExcel 工具",
+            }
         bare_name = tool_name.replace("mcp__excel__", "")
 
         # ★ Computer Use 门槛检查必须在高风险判断之前。
@@ -1009,6 +1019,12 @@ async def main():
 
         options = ClaudeAgentOptions(
             model=model,
+            # ★ 关掉 CLI 全部内置工具（→ --tools ""），只留下面的 MCP excel 工具。
+            # 不设时模型能看到 Bash/Read/Write/Edit/Glob/Grep/WebFetch/Task 等 25 个
+            # 内置工具（2026-09-23 实测 init 消息），完全绕过 CodeSandbox 与权限抽屉；
+            # 其中 Task* 被调用后无人处理，面板会一直停在 "..."。
+            # allowed_tools 只是"免确认"名单，不限制可见工具，所以必须用 tools。
+            tools=[],
             mcp_servers={"excel": server},
             allowed_tools=[f"mcp__excel__{t}" for t in [
                 "echo",

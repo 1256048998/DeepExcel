@@ -57,6 +57,17 @@ def hook_source():
     raise RuntimeError("_pre_tool_use_hook not found")
 
 
+def agent_options_call():
+    with open(SIDECAR, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=SIDECAR)
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "ClaudeAgentOptions"]
+    if len(calls) != 1:
+        raise RuntimeError(f"expected exactly one ClaudeAgentOptions(...) call, found {len(calls)}")
+    return calls[0]
+
+
 def main():
     sets = load_sets()
     high_risk = sets["_HIGH_RISK_TOOLS"]
@@ -106,6 +117,24 @@ def main():
           "send_keys" in deny_branch)
     check("send_keys is also high risk", "send_keys" in high_risk)
     check("send_keys grant is rememberable", "send_keys" in rememberable)
+
+    # ---- CLI built-in tools ---------------------------------------------
+    # Without tools=[] the model sees 25 Claude Code built-ins (Bash, Read,
+    # Write, Glob, Grep, WebFetch, Task...). Read/Glob/Grep need no approval in
+    # the CLI, so they bypass CodeSandbox and this hook entirely. allowed_tools
+    # does not restrict visibility; only `tools` does.
+    options_call = agent_options_call()
+    tools_kw = next((kw for kw in options_call.keywords if kw.arg == "tools"), None)
+    check("ClaudeAgentOptions disables CLI built-in tools (tools=[])",
+          tools_kw is not None
+          and isinstance(tools_kw.value, ast.List) and not tools_kw.value.elts,
+          "otherwise Read/Glob/Grep can read the user's disk without a prompt")
+
+    # Defence in depth: a non-excel tool reaching the hook must be denied,
+    # never passed through.
+    non_excel_branch = flat[:flat.find("bare_name")]
+    check("hook denies tools outside mcp__excel__",
+          "'deny'" in non_excel_branch and "continue_" not in non_excel_branch)
 
     print()
     if FAILURES:
