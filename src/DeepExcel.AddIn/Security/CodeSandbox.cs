@@ -57,6 +57,12 @@ namespace DeepExcel.AddIn.Security
             new Regex(@"\bpd\.read_excel\s*\(", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"\bpd\.ExcelWriter\s*\(", RegexOptions.IgnoreCase | RegexOptions.Compiled),
             new Regex(@"\b\.to_excel\s*\(", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            // ★ 禁止 Python 经 COM 驱动 Excel：与加载项所在的 Excel 主进程并发 COM 调用，
+            // 轻则"方法调用失败"，重则 Excel 整体崩溃退出、对话面板随之关闭。
+            // xlwings 底层同样走 COM。AI 应该用 DeepExcel 工具或 execute_vba（在 Excel 主线程执行）。
+            new Regex(@"\bimport\s+(win32com|comtypes|pythoncom|win32api|win32gui|win32process|xlwings)\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"\bfrom\s+(win32com|comtypes|pythoncom|win32api|win32gui|win32process|xlwings)(\.\w+)*\s+import\b", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+            new Regex(@"\b(win32com|comtypes|xlwings)\.", RegexOptions.IgnoreCase | RegexOptions.Compiled),
         };
 
         // VBA 危险模式：Shell / WScript.Shell / CreateObject(任意) / Kill / Open 等等
@@ -97,10 +103,20 @@ namespace DeepExcel.AddIn.Security
                     {
                         hint = "（工作簿被 Excel 锁定，openpyxl/pandas 无法读写。请用 read_range 读取数据，write_value/write_formula 写入数据，execute_vba 做复杂格式操作）";
                     }
+                    if (IsComAutomation(match.Value))
+                    {
+                        hint = "（Python 经 COM 操作 Excel 会与 Excel 主进程冲突，可能导致 Excel 崩溃。请用 write_value/write_formula/write_range/create_chart 等 DeepExcel 工具，复杂操作用 execute_vba）";
+                    }
                     return "Python 代码包含受限操作: " + match.Value.Trim() + hint;
                 }
             }
             return null;
+        }
+
+        private static bool IsComAutomation(string matched)
+        {
+            var m = matched.ToLowerInvariant();
+            return m.Contains("win32") || m.Contains("comtypes") || m.Contains("pythoncom") || m.Contains("xlwings");
         }
 
         /// <summary>

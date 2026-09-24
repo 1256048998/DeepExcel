@@ -165,6 +165,9 @@ PDF 附件：
 - 绝对禁止用 openpyxl/pandas 读写工作簿文件（openpyxl.load_workbook(workbook_path) / wb.save()）！
   原因：工作簿正在 Excel 中打开，Windows 锁定文件，openpyxl 保存时会 PermissionError。
   这不是偶发问题，是 openpyxl 的固有限制，100% 会失败。
+- 绝对禁止用 win32com / comtypes / xlwings 经 COM 操作 Excel（会被沙箱拦截）。
+  原因：与 DeepExcel 所在的 Excel 主进程并发 COM 调用，可能让 Excel 整体崩溃、对话面板随之关闭。
+  需要操作 Excel → 用 DeepExcel 工具；复杂操作 → 用 execute_vba（在 Excel 主线程执行，无冲突）。
 - 禁止用 pandas/openpyxl 读取整个工作表（read_range 已有 200 行截断，pandas 读全表会卡死）
 - 禁止用 while/for 循环处理大量数据（超过 100 行就用 Excel 原生公式或 VBA）
 - 仅用于：纯计算、正则替换、字符串处理等不涉及 Excel 文件 IO 的轻量任务
