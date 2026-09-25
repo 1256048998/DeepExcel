@@ -3344,6 +3344,10 @@ body {
   background: var(--de-bg);
   color: var(--de-text);
   font-size: var(--de-fs-sm);
+  line-height: 1.4;
+  /* 推荐标题带表名列名，窄面板里要能折行 */
+  white-space: normal;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 .starter-item:hover:not(:disabled) { border-color: var(--de-brand); color: var(--de-brand); }
