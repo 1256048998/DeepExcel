@@ -10,6 +10,7 @@ using Extensibility;
 using Microsoft.Office.Core;
 using Microsoft.Office.Interop.Excel;
 using DeepExcel.AddIn.Bridge;
+using DeepExcel.AddIn.Config;
 
 namespace DeepExcel.AddIn
 {
@@ -803,21 +804,45 @@ namespace DeepExcel.AddIn
             {
                 Log("InitializeWebView started (first window)");
 
-                // 指定用户数据文件夹到 LocalAppData，避免在 Excel 工作目录下创建失败 (E_ACCESSDENIED)
-                // 加上进程 ID 后缀，支持多个 Excel 实例同时加载 DeepExcel（WebView2 会独占锁定 userDataFolder）
-                string userDataFolder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "DeepExcel", "WebView2_" + System.Diagnostics.Process.GetCurrentProcess().Id);
-                Directory.CreateDirectory(userDataFolder);
-                Log("WebView2 userDataFolder=" + userDataFolder);
-
+                // 用户数据目录放 LocalAppData，避免在 Excel 工作目录下创建失败 (E_ACCESSDENIED)。
+                // 固定共享目录：多个 Excel 进程可以共用（环境参数一致即可），面板的
+                // localStorage 也因此跨重启保留。创建失败才回退到按 pid 的目录。见 WebViewDataFolder。
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
                 var options = new Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
                 {
                     AdditionalBrowserArguments = "--disable-features=RendererCodeIntegrity"
                 };
-                _webViewEnv = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
-                    null, userDataFolder, options);
-                Log("WebView2 environment created (cached for all windows)");
+                string userDataFolder = WebViewDataFolder.SharedPath(localAppData);
+                try
+                {
+                    Directory.CreateDirectory(userDataFolder);
+                    _webViewEnv = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
+                        null, userDataFolder, options);
+                }
+                catch (Exception shareEx)
+                {
+                    Log("WebView2 shared folder unavailable (" + shareEx.GetType().Name + ": " + shareEx.Message + "), falling back to per-process folder");
+                    userDataFolder = WebViewDataFolder.PerProcessPath(localAppData, pid);
+                    Directory.CreateDirectory(userDataFolder);
+                    _webViewEnv = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
+                        null, userDataFolder, options);
+                }
+                Log("WebView2 environment created (cached for all windows), userDataFolder=" + userDataFolder);
+
+                // 后台清理以前留下的 WebView2_<pid> 目录，不拖慢面板启动
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    try
+                    {
+                        int removed = WebViewDataFolder.CleanupStale(localAppData, pid, WebViewDataFolder.IsProcessAlive, Log);
+                        if (removed > 0) Log("WebView2 stale per-process folders removed: " + removed);
+                    }
+                    catch (Exception cleanupEx)
+                    {
+                        Log("WebView2 stale folder cleanup failed: " + cleanupEx.GetType().Name);
+                    }
+                });
 
                 // 初始化第一个窗口的 WebView
                 await InitializePaneWebViewAsync(_taskPane);

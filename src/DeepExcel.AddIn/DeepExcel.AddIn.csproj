@@ -79,6 +79,7 @@
     <Compile Include="Bridge\Messages.cs" />
     <Compile Include="Collaboration\OperationHistory.cs" />
     <Compile Include="Config\AppConfig.cs" />
+    <Compile Include="Config\WebViewDataFolder.cs" />
     <Compile Include="Diagnostics\Logger.cs" />
     <Compile Include="Executor\ExecutionResult.cs" />
     <Compile Include="Executor\PythonExecutor.cs" />
