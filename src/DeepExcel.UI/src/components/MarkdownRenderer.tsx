@@ -34,7 +34,7 @@ export function MarkdownRenderer({ content }: Props) {
     <div className="md-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
+        rehypePlugins={[[rehypeHighlight, { aliases: { vbnet: ['vba', 'vb'] } }]]}
         components={{
           // 代码块
           code: ({ node, className, children, ...props }) => {
