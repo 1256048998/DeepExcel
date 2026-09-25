@@ -13,6 +13,7 @@ namespace DeepExcel.AddIn.Sidecar
         public const string TypeConfig = "config";
         public const string TypeClarifyAnswer = "clarify_answer";
         public const string TypeRestoreHistory = "restore_history";
+        public const string TypeSetPermissionMode = "set_permission_mode";
 
         // Python → C#
         public const string TypeStreamDelta = "stream_delta";
@@ -26,5 +27,12 @@ namespace DeepExcel.AddIn.Sidecar
 
         // C# → Python（权限响应）
         public const string TypePermissionResponse = "permission_response";
+
+        /// <summary>
+        /// 权限模式（侧车 permission_modes.py）：每步确认 / 本次会话自动应用写入 / 只出方案。
+        /// 宿主只转发、不保存：「自动应用写入」只在当前会话有效。
+        /// </summary>
+        public static bool IsPermissionMode(string mode) =>
+            mode == "default" || mode == "accept_writes" || mode == "plan";
     }
 }

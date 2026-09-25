@@ -305,6 +305,24 @@ function mockHostResponse(message: HostMessage) {
       return
     }
 
+    // 模拟「只出方案」：交回一份方案卡片
+    if (message.payload.permission_mode === 'plan') {
+      setTimeout(() => {
+        listeners.forEach(l => l({ type: 'ui_event', payload: { v: 1, kind: 'plan_proposal',
+          summary: '把「明细」表的金额统一换算成万元，另起一列，不改原数据',
+          steps: [
+            { action: '检查金额列类型', target: '明细!D2:D500', detail: '找出文本型数字和带「元」的格' },
+            { action: '在 E 列写换算公式', target: '明细!E2:E500', detail: '=ROUND(D2/10000,2)，表头写「金额（万元）」' },
+            { action: '核对合计', target: '明细!E501', detail: 'E 列合计 × 10000 与 D 列合计相差不超过 0.5 元' },
+          ],
+          risks: ['E 列目前有 3 个手填的值会被覆盖', '第 88 行金额是文本「1.2万」，需要先确认'],
+        } }))
+        listeners.forEach(l => l({ type: 'stream_delta', payload: { delta: '方案已列在上面，批准后我按它执行。' } }))
+        listeners.forEach(l => l({ type: 'stream_end', payload: {} }))
+      }, 400)
+      return
+    }
+
     // 模拟流式输出
     const response = `收到你的需求："${content}"\n\n[开发模式 - 模拟响应]\n在生产环境中，这里会通过桥接层调用宿主 → 感知表格 → 调用AI模型 → 生成工具调用 → 执行操作。`
 

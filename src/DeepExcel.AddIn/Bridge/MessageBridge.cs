@@ -407,6 +407,10 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleUserMessage(session, msg);
                     case "cancel":
                         return HandleCancel(session);
+                    // 权限模式：任务进行中切换，立即转给侧车（不保存，见 SidecarProtocol.IsPermissionMode）
+                    case "set_permission_mode":
+                        session.Sidecar?.SendPermissionMode(ReadPermissionMode(msg));
+                        return MakeResponse("ack", new { received = true, kind = "permission_mode" });
                     // ★ AI Native 权限确认：前端抽屉用户点击"允许"/"拒绝"后回传
                     case "permission_response":
                         return HandlePermissionResponse(session, msg);
@@ -1373,6 +1377,23 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        /// <summary>面板消息里的 permission_mode（或 mode）；不认识的值返回 null，侧车保持原模式</summary>
+        internal static string ReadPermissionMode(Message msg)
+        {
+            if (msg?.Payload == null) return null;
+            var payload = msg.Payload.Value;
+            if (payload.ValueKind != JsonValueKind.Object) return null;
+            foreach (var key in new[] { "permission_mode", "mode" })
+            {
+                if (payload.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String &&
+                    SidecarProtocol.IsPermissionMode(el.GetString()))
+                {
+                    return el.GetString();
+                }
+            }
+            return null;
+        }
+
         private string HandleUserMessage(WorkbookSession session, Message msg)
         {
             try
@@ -1414,7 +1435,7 @@ namespace DeepExcel.AddIn.Bridge
                 var sessionId = session.NextSessionId();
                 session.IsBusy = true;
                 BeginTaskTrace(session.WorkbookKey, sessionId, content);
-                session.Sidecar.SendUserMessage(content, sessionId, context);
+                session.Sidecar.SendUserMessage(content, sessionId, context, ReadPermissionMode(msg));
 
                 // ★ 追加到历史
                 session.AppendUserMessage(content);

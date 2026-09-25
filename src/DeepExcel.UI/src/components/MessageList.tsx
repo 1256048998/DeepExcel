@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
-import type { Message, ToolStep, ToolStepChanges } from '../types'
+import type { Message, PermissionMode, ToolStep, ToolStepChanges } from '../types'
 import { formatDuration } from '../utils/uiEvents'
 import { useStickToBottom } from '../utils/useStickToBottom'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -17,6 +17,8 @@ interface Props {
   onSaveAsPrompt?: (content: string) => void
   // 「回到这一步之前」：任务进行中不可用
   rewind?: RewindControl
+  // 方案卡片：批准（按哪种模式执行）或继续修改
+  onPlanDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
 }
 
 export type RewindControl = {
@@ -45,18 +47,20 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind }: Props) {
+export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind, onPlanDecision }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
 
   // 回调每次 App 渲染都是新函数；包一层稳定引用，消息项才能 memo（流式输出时只重绘最后一条）
-  const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind })
-  latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind }
+  const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision })
+  latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision }
   const toggle = useCallback((i: number) => latest.current.onToggleToolGroup?.(i), [])
   const clarify = useCallback((a: string) => latest.current.onClarifyAnswer?.(a), [])
   const choose = useCallback((c: string) => latest.current.onChoiceSelect?.(c), [])
   const savePrompt = useCallback((c: string) => latest.current.onSaveAsPrompt?.(c), [])
   const onRewind = useCallback((step: ToolStep) => latest.current.onRewind?.(step), [])
+  const decidePlan = useCallback(
+    (i: number, d: PermissionMode | 'dismissed') => latest.current.onPlanDecision?.(i, d), [])
   const hasRewind = !!rewind
   const rewindDisabled = rewind?.disabled ?? true
   const rewindPending = rewind?.pendingId ?? null
@@ -87,6 +91,8 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
               onChoiceSelect={onChoiceSelect ? choose : undefined}
               onSaveAsPrompt={onSaveAsPrompt ? savePrompt : undefined}
               rewind={stableRewind}
+              onPlanDecision={onPlanDecision ? decidePlan : undefined}
+              busy={loading}
             />
           ))}
           {loading && (
@@ -119,7 +125,9 @@ const MessageItem = memo(function MessageItem({
   onClarifyAnswer,
   onChoiceSelect,
   onSaveAsPrompt,
-  rewind
+  rewind,
+  onPlanDecision,
+  busy
 }: {
   message: Message
   index: number
@@ -128,7 +136,14 @@ const MessageItem = memo(function MessageItem({
   onChoiceSelect?: (choice: string) => void
   onSaveAsPrompt?: (content: string) => void
   rewind?: RewindControl
+  onPlanDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
+  busy?: boolean
 }) {
+  // 方案卡片（present_plan）：涉及的表和区域、每一步、风险点，下面是批准按钮
+  if (message.type === 'plan_proposal' && message.plan) {
+    return <PlanCard message={message} index={index} busy={!!busy} onDecision={onPlanDecision} />
+  }
+
   // 本次会话实时收到的工具步骤：每步一行叙事（⏺ 读取 A1:D20 / ⎿ 20 行 × 4 列）
   if (message.role === 'tool' && message.toolSteps && message.toolSteps.length > 0) {
     return (
@@ -426,4 +441,55 @@ function summarizeTools(tools: string[]): string {
     parts.push(n > 1 ? `${name} ×${n}` : name)
   }
   return parts.join(', ')
+}
+
+const DECISION_TEXT: Record<string, string> = {
+  default: '已批准，按每步确认执行',
+  accept_writes: '已批准，本次会话自动应用写入',
+  plan: '已批准',
+  dismissed: '已放弃这个方案，可以继续说你的修改意见',
+}
+
+function PlanCard({ message, index, busy, onDecision }: {
+  message: Message
+  index: number
+  busy: boolean
+  onDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
+}) {
+  const plan = message.plan!
+  const decided = message.planDecision
+  return (
+    <div className={`message plan-card${decided ? ' decided' : ''}`}>
+      <div className="plan-card-title">方案待批准</div>
+      <div className="plan-card-summary">{plan.summary}</div>
+      <ol className="plan-card-steps">
+        {plan.steps.map((step, i) => (
+          <li key={i}>
+            <span className="plan-step-action">{step.action}</span>
+            {step.target && <span className="plan-step-target">{step.target}</span>}
+            {step.detail && <div className="plan-step-detail">{step.detail}</div>}
+          </li>
+        ))}
+      </ol>
+      {plan.risks.length > 0 && (
+        <div className="plan-card-risks">
+          <div className="plan-card-risks-title">风险点</div>
+          <ul>{plan.risks.map((r, i) => <li key={i}>{r}</li>)}</ul>
+        </div>
+      )}
+      {decided ? (
+        <div className="plan-card-decision">{DECISION_TEXT[decided] ?? '已处理'}</div>
+      ) : onDecision && (
+        <div className="plan-card-actions">
+          <button type="button" className="plan-btn primary" disabled={busy}
+            onClick={() => onDecision(index, 'default')}>批准并执行</button>
+          <button type="button" className="plan-btn" disabled={busy}
+            onClick={() => onDecision(index, 'accept_writes')}
+            title="本次会话里写入不再逐个确认；删除、跑代码仍会确认">批准并自动应用</button>
+          <button type="button" className="plan-btn ghost" disabled={busy}
+            onClick={() => onDecision(index, 'dismissed')}>继续修改</button>
+        </div>
+      )}
+    </div>
+  )
 }

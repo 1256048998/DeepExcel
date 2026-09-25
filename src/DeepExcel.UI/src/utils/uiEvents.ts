@@ -74,8 +74,8 @@ function appendStep(messages: Message[], step: ToolStep): Message[] {
   }]
 }
 
-// 这些工具有专门的展示位置（计划胶囊），不再作为一步显示在步骤列表里
-const HIDDEN_STEP_TOOLS = new Set(['todo_write'])
+// 这些工具有专门的展示位置（计划胶囊、方案卡片），不再作为一步显示在步骤列表里
+const HIDDEN_STEP_TOOLS = new Set(['todo_write', 'present_plan'])
 
 export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
   if ((event.kind === 'tool_gen' || event.kind === 'tool_start') && HIDDEN_STEP_TOOLS.has(event.name)) {
@@ -137,6 +137,13 @@ export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
         ? messages.map(m => (m.queued === 'pending' ? { ...m, queued: next } : m))
         : messages
     }
+    case 'plan_proposal':
+      return [...closeStreaming(messages), {
+        role: 'assistant',
+        type: 'plan_proposal',
+        content: event.summary,
+        plan: { summary: event.summary, steps: event.steps ?? [], risks: event.risks ?? [] },
+      }]
     case 'run_summary': {
       // 只在值得说的时候出现：失败、中断、达到轮次上限，或者做了不少步。
       // 一问一答的闲聊后面挂一行「完成」只是噪音。

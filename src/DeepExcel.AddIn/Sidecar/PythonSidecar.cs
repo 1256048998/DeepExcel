@@ -225,12 +225,22 @@ namespace DeepExcel.AddIn.Sidecar
 
         // ============= 发送消息（C# → Python）=============
 
-        public void SendUserMessage(string text, string sessionId, object context)
+        public void SendUserMessage(string text, string sessionId, object context, string permissionMode = null)
         {
             // 新的用户回合：本回合第一次写入前重新备份
             _dispatcher.BeginTurn();
-            var msg = new { type = SidecarProtocol.TypeUserMessage, text, session_id = sessionId, context };
+            // 面板当前的权限模式随每条消息带过去（侧车重启回到默认时也能对上）；旧面板不带就不发这个字段
+            object msg = SidecarProtocol.IsPermissionMode(permissionMode)
+                ? (object)new { type = SidecarProtocol.TypeUserMessage, text, session_id = sessionId, context, permission_mode = permissionMode }
+                : new { type = SidecarProtocol.TypeUserMessage, text, session_id = sessionId, context };
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
+        }
+
+        /// <summary>任务进行中切换权限模式：侧车下一次工具调用就按新模式判断。不持久化。</summary>
+        public void SendPermissionMode(string mode)
+        {
+            if (!SidecarProtocol.IsPermissionMode(mode)) return;
+            WriteLine(JsonSerializer.Serialize(new { type = SidecarProtocol.TypeSetPermissionMode, mode }, _jsonOptions));
         }
 
         /// <summary>

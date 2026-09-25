@@ -46,7 +46,7 @@ TEMPLATE = """# 工作簿记忆
 READ_ONLY_TOOLS = frozenset({
     "read_workbook", "read_selection", "read_range", "find", "list", "inspect_sheet",
     "explore_workbook", "read_attachment", "clarify_intent", "todo_write", "update_workbook_notes",
-    "load_skill", "screenshot_excel", "create_snapshot", "export_chart",
+    "load_skill", "present_plan", "screenshot_excel", "create_snapshot", "export_chart",
 })
 
 # 各工具里表示写入目标的参数（按优先级）

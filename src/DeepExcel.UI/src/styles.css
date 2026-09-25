@@ -3466,3 +3466,157 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ---------- 权限模式按钮（输入框左下，点击或 Shift+Tab 轮换） ---------- */
+.toolbar-mode {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  background: transparent;
+  color: var(--de-text-secondary);
+  font-size: var(--de-fs-xs);
+  font-family: var(--de-font);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toolbar-mode:hover {
+  border-color: var(--de-border-strong);
+}
+
+.toolbar-mode:focus-visible {
+  outline: none;
+  box-shadow: var(--de-focus-ring);
+}
+
+.toolbar-mode.mode-accept_writes {
+  color: var(--de-warning);
+  border-color: var(--de-warning-border);
+  background: var(--de-warning-soft);
+}
+
+.toolbar-mode.mode-plan {
+  color: var(--de-brand);
+  border-color: var(--de-brand-border);
+  background: var(--de-brand-soft);
+}
+
+/* ---------- 方案卡片（present_plan） ---------- */
+.message.plan-card {
+  padding: 10px 12px;
+  border: 1px solid var(--de-brand-border);
+  border-radius: var(--de-radius-lg);
+  background: var(--de-bg);
+  font-size: var(--de-fs-md);
+}
+
+.message.plan-card.decided {
+  border-color: var(--de-border);
+}
+
+.plan-card-title {
+  font-size: var(--de-fs-sm);
+  font-weight: 600;
+  color: var(--de-brand);
+  margin-bottom: 4px;
+}
+
+.plan-card.decided .plan-card-title {
+  color: var(--de-text-tertiary);
+}
+
+.plan-card-summary {
+  color: var(--de-text);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.plan-card-steps {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.plan-card-steps li {
+  margin: 4px 0;
+  line-height: 1.5;
+}
+
+.plan-step-target {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: var(--de-radius-sm);
+  background: var(--de-bg-muted);
+  color: var(--de-text-secondary);
+  font-family: var(--de-font-mono);
+  font-size: var(--de-fs-xs);
+  word-break: break-all;
+}
+
+.plan-step-detail {
+  color: var(--de-text-secondary);
+  font-size: var(--de-fs-sm);
+}
+
+.plan-card-risks {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: var(--de-radius-md);
+  background: var(--de-warning-soft);
+  font-size: var(--de-fs-sm);
+}
+
+.plan-card-risks-title {
+  color: var(--de-warning);
+  font-weight: 500;
+}
+
+.plan-card-risks ul {
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.plan-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.plan-btn {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  background: var(--de-bg);
+  color: var(--de-text);
+  font-size: var(--de-fs-sm);
+  font-family: var(--de-font);
+  cursor: pointer;
+}
+
+.plan-btn.primary {
+  border-color: var(--de-brand);
+  background: var(--de-brand);
+  color: var(--de-on-brand);
+}
+
+.plan-btn.primary:hover:not(:disabled) {
+  background: var(--de-brand-hover);
+}
+
+.plan-btn.ghost {
+  border-color: transparent;
+  color: var(--de-text-secondary);
+}
+
+.plan-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.plan-card-decision {
+  margin-top: 8px;
+  color: var(--de-text-tertiary);
+  font-size: var(--de-fs-sm);
+}

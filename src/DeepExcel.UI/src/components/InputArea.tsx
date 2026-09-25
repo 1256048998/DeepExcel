@@ -1,6 +1,7 @@
 import { useRef, useState, ChangeEvent, useEffect } from 'react'
 import { PromptDropdown } from './PromptDropdown'
 import type { PromptTemplate } from '../utils/prompts'
+import type { PermissionMode } from '../types'
 
 export interface AttachmentItem {
   fileName: string
@@ -50,6 +51,22 @@ interface Props {
   selectedModel?: string
   // ★ 切换模型：用户选择后调用，App.tsx 会在 stream_end 后真正切换
   onModelChange?: (provider: string, model: string) => void
+  // 权限模式：点按钮或 Shift+Tab 轮换（任务进行中也能切，立即生效）
+  permissionMode?: PermissionMode
+  onPermissionModeChange?: (mode: PermissionMode) => void
+}
+
+export const PERMISSION_MODE_ORDER: PermissionMode[] = ['default', 'accept_writes', 'plan']
+
+export const PERMISSION_MODE_TEXT: Record<PermissionMode, { label: string; hint: string }> = {
+  default: { label: '每步确认', hint: '批量写入、清洗、删除和执行代码前都先让你确认（Shift+Tab 切换）' },
+  accept_writes: { label: '自动应用写入', hint: '本次会话里写入不再逐个确认，每步都能回退；删除、清空和执行代码仍会确认。关掉面板就恢复每步确认' },
+  plan: { label: '只出方案', hint: '只读不写：AI 先出一份变更方案，你批准后才执行' },
+}
+
+export function nextPermissionMode(mode: PermissionMode): PermissionMode {
+  const i = PERMISSION_MODE_ORDER.indexOf(mode)
+  return PERMISSION_MODE_ORDER[(i + 1) % PERMISSION_MODE_ORDER.length]
 }
 
 export function InputArea({
@@ -59,6 +76,7 @@ export function InputArea({
   permissionPending = false,
   prompts = [], onCreatePrompt,
   modelOptions = [], selectedModel, onModelChange,
+  permissionMode = 'default', onPermissionModeChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -175,6 +193,12 @@ export function InputArea({
           value={value}
           onChange={e => onChange(e.target.value)}
           onKeyDown={e => {
+            // Shift+Tab 轮换权限模式（Claude Code 同款）
+            if (e.key === 'Tab' && e.shiftKey && onPermissionModeChange) {
+              e.preventDefault()
+              onPermissionModeChange(nextPermissionMode(permissionMode))
+              return
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               onSend()
@@ -190,6 +214,17 @@ export function InputArea({
       <div className="input-toolbar">
         {/* 左侧工具组：上传按钮 */}
         <div className="toolbar-left">
+          {onPermissionModeChange && (
+            <button
+              type="button"
+              className={`toolbar-mode mode-${permissionMode}`}
+              onClick={() => onPermissionModeChange(nextPermissionMode(permissionMode))}
+              title={PERMISSION_MODE_TEXT[permissionMode].hint}
+              aria-label={`权限模式：${PERMISSION_MODE_TEXT[permissionMode].label}，点击切换`}
+            >
+              {PERMISSION_MODE_TEXT[permissionMode].label}
+            </button>
+          )}
           {onUploadAttachment && (
             <button
               className="toolbar-btn"

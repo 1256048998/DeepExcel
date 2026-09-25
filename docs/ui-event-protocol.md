@@ -40,6 +40,7 @@ stdout 一行一个 JSON：
 | `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_jsa / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
 | `status` | `text`, `tool?` | 当前在做什么：等待用户确认、正在停止、看门狗（20 秒没动静「仍在等待模型响应」；某一步执行超过 15 秒「这一步执行中」；超过 120 秒提示可能被 Excel 对话框挡住、可以停止）。等用户确认 / 回答期间看门狗不催。`tool` 为 `explore_workbook` 时是分头摸底的进度（「分头摸底：1/3 个子任务完成（#2 find 应收）」），进度持续更新期间看门狗不发卡住提示。`text` 为空表示清除 |
 | `plan` | `items: [{content, status}]` | 模型用 `todo_write` 维护的计划（status：pending / in_progress / completed，最多一条 in_progress）。面板在输入框上方显示计划胶囊；`todo_write` 本身不作为一步显示 |
+| `plan_proposal` | `summary`, `steps: [{action, target?, detail?}]`, `risks: []` | 模型用 `present_plan` 提交的变更方案（「只出方案」模式下必须用它收尾）。面板显示方案卡片：批准并执行（每步确认）/ 批准并自动应用 / 继续修改；`present_plan` 本身不作为一步显示 |
 | `compaction` | `trigger`, `pre_tokens?`, `prev_pct?`, `curr_pct?` | 上下文被压缩。`trigger` 为 `auto`/`manual`（CLI 的 compact_boundary）或 `detected`（没收到 compact_boundary、但上下文占比骤降超过 40%） |
 | `error` | `code`, `message`, `hint`, `retryable`, `detail` | 整轮失败（API 报错、异常）。`message`/`hint` 是给用户的中文；`detail` 是原始报错前 500 字，只供诊断 |
 | `steer_delivered` | `count` | 任务进行中用户发的插话已在某个工具结果之后交给模型（PostToolUse 的 additionalContext） |
@@ -79,6 +80,16 @@ stdout 一行一个 JSON：
   （`steer_deferred`）。按了停止则插话一起作废。和插话同一批已经发出的工具调用撤不回来（Claude Code 也一样）。
 - C# 对插话不开新回合（不重置写前备份、不新建任务轨迹）；侧车只在确实有一轮在跑时才把 `steer` 当插话，
   空闲时当普通消息。
+
+## 权限模式
+
+面板 → 宿主 → 侧车，宿主只转发、不保存；三种取值 `default`（每步确认）/ `accept_writes`（本次会话自动应用写入）/ `plan`（只出方案），见 `src/DeepExcel.Sidecar/permission_modes.py`。
+
+- 每条 `user_message` 带 `permission_mode`：面板是唯一来源，侧车重启回到默认时也能对上。
+- 任务进行中切换发 `set_permission_mode {mode}`，侧车下一次工具调用就按新模式判断。
+- `accept_writes`：批量写入、清洗不再弹确认（每步照常有检查点）；删除、清空、回滚、执行代码仍然确认。
+- `plan`：只读工具、`clarify_intent`、`todo_write`、`load_skill`、`update_workbook_notes`、`present_plan` 之外一律在 PreToolUse 拒绝，`tool_end.error.code = "denied"`。
+- 模式不写进任何配置；面板重开回到 `default`。
 
 ## 与旧消息的关系
 

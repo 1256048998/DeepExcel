@@ -332,6 +332,63 @@ async def todo_write(args):
     return _wrap_result({"success": True, "data": {"message": f"计划已更新（{done}/{len(items)} 完成）"}})
 
 
+def normalize_plan(args: dict) -> dict:
+    """present_plan 的参数整理成面板要显示的方案；长度都有上限"""
+    def text(value, limit):
+        return str(value or "").strip()[:limit]
+
+    steps = []
+    for raw in (args.get("steps") or [])[:20]:
+        if isinstance(raw, dict):
+            action = text(raw.get("action"), 200)
+            if action:
+                steps.append({"action": action, "target": text(raw.get("target"), 120),
+                              "detail": text(raw.get("detail"), 400)})
+        elif str(raw or "").strip():
+            steps.append({"action": text(raw, 200), "target": "", "detail": ""})
+    risks = [text(r, 200) for r in (args.get("risks") or [])[:10] if str(r or "").strip()]
+    return {"summary": text(args.get("summary"), 400), "steps": steps, "risks": risks}
+
+
+@tool(
+    "present_plan",
+    "提交一份变更方案给用户批准（「只出方案」模式下必须用它收尾；其他模式下改动很大时也可以先用它对齐）。"
+    "summary：一句话说要做什么；steps：每一步 {action: 做什么, target: 表和区域, detail: 怎么做}；"
+    "risks：风险点（会覆盖什么、有什么不确定）。提交后本轮结束，等用户批准，不要接着执行",
+    {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {"type": "string"},
+                        "target": {"type": "string"},
+                        "detail": {"type": "string"},
+                    },
+                    "required": ["action"],
+                },
+            },
+            "risks": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "steps"],
+    },
+)
+async def present_plan(args):
+    import ui_events
+    from ipc import write_message
+    plan = normalize_plan(args)
+    if not plan["summary"] or not plan["steps"]:
+        return _wrap_result({"success": False, "error": "方案缺少 summary 或 steps",
+                             "suggestion": "summary 写一句话目标，steps 至少一步 {action, target, detail}"})
+    await write_message(ui_events.envelope("plan_proposal", **plan))
+    return _wrap_result({"success": True, "data": {
+        "message": f"方案已提交给用户（{len(plan['steps'])} 步），等待批准。本轮到此结束："
+                   "不要再调用工具，用一两句话说明方案要点，请用户批准。"}})
+
+
 @tool(
     "update_workbook_notes",
     "整份重写这个工作簿的记忆（NOTES.md，只存在用户电脑上，下次会话自动带给你）。"
@@ -880,7 +937,8 @@ WPS_HOST_TOOLS = frozenset({
 })
 
 # 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
-SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes", "load_skill"})
+SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes", "load_skill",
+                                   "present_plan"})
 
 # 宿主原语：宿主分发器里有这个分支，但不注册给模型，只由侧车工具调用
 WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
@@ -933,7 +991,7 @@ def register_all_tools(host: str = "excel") -> list:
         insert_rows, delete_rows, insert_columns, delete_columns,
         freeze_panes,
         apply_conditional_format, write_table,
-        clarify_intent, todo_write, update_workbook_notes, load_skill,
+        clarify_intent, todo_write, present_plan, update_workbook_notes, load_skill,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]

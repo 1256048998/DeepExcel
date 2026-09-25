@@ -64,7 +64,7 @@ SYSTEM_PROMPT = """<system-intro>
 代码执行：execute_vba / execute_jsa（仅 WPS）/ execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
 快照：修改类工具执行前会自动备份（结果里的 backup_snapshot_id）；撤销用 rollback，create_snapshot 只在需要额外检查点时用
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
-其他：clarify_intent / todo_write（三步以上的任务先列计划，边做边更新状态）
+其他：clarify_intent / todo_write（三步以上的任务先列计划，边做边更新状态）/ present_plan（提交变更方案等用户批准；「只出方案」模式下必须用它收尾）
 记忆：update_workbook_notes（整份重写这个工作簿的记忆 NOTES.md，下次打开会话时自动带给你）
 知识：load_skill（读 <knowledge-skills> 里列出的专业知识；任务涉及其中的主题时动手前先读）
 </available-tools>

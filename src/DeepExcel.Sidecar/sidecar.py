@@ -79,6 +79,7 @@ from claude_agent_sdk.types import (
 import explorer
 import selfcheck
 import knowledge_skills
+import permission_modes
 import workbook_memory
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
@@ -237,6 +238,19 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                     "reason": "禁区",
                 }
 
+        # ★ 只出方案：写入类工具代码层拒绝，低风险的写入也不例外
+        plan_refusal = permission_modes.plan_denial(bare_name)
+        if plan_refusal:
+            sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} denied (plan mode)\n")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": plan_refusal,
+                },
+                "reason": "只出方案模式",
+            }
+
         # 低风险工具必须显式 allow，不能 continue_。
         # continue_ 等于"钩子不表态"，交给 CLI 的权限系统：不在 allowed_tools 里的
         # 工具会被直接拒掉（"Claude requested permissions to use ..., but you haven't
@@ -248,6 +262,18 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow",
                     "permissionDecisionReason": "低风险工具",
+                }
+            }
+
+        # ★ 本次会话自动应用写入：批量写入 / 清洗不再逐个确认（每步照常有检查点）；
+        # 删除、清空、回滚、跑代码不在此列，继续往下走确认
+        if permission_modes.auto_applies(bare_name):
+            sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} auto-applied (accept_writes mode)\n")
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "本次会话自动应用写入",
                 }
             }
 
@@ -1134,6 +1160,11 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             final_text = memory_text + "\n\n" + final_text
             sys.stderr.write(f"[sidecar] workbook memory injected ({len(memory_text)} chars)\n")
             sys.stderr.flush()
+
+        # ★ 权限模式（只出方案 / 自动应用写入）：每轮都说，模型不用记
+        mode_note = permission_modes.turn_note()
+        if mode_note:
+            final_text = mode_note + final_text
 
         # ★ 历史上下文注入：如果 C# 发了 restore_history，把历史对话摘要拼到首条用户消息前。
         if has_history:

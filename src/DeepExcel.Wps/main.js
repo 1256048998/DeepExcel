@@ -625,11 +625,15 @@ function _handleFrontendMessage(message) {
       // ★ 记进当前对话，stream_end 时连同 AI 回复一起落盘
       var userSession = _session()
       if (userSession) userSession.conversation.appendUserMessage(content)
-      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext(), payload.steer === true)
+      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext(), payload.steer === true,
+        payload.permission_mode)
       break
     }
     case 'cancel':
       sidecar.sendCancel()
+      break
+    case 'set_permission_mode':
+      sidecar.sendPermissionMode(payload.mode)
       break
     case 'permission_response':
       sidecar.sendPermissionResponse(payload.request_id, payload.decision)

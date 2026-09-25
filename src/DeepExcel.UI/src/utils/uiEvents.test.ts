@@ -183,3 +183,18 @@ describe('todo_write', () => {
     expect(out).toEqual([])
   })
 })
+
+describe('present_plan', () => {
+  it('becomes a plan card instead of a step', () => {
+    const out = run([
+      start('p', 'present_plan', { summary: 'x', steps: [] }),
+      { v: 1, kind: 'plan_proposal', summary: '金额换算成万元',
+        steps: [{ action: '写公式', target: '明细!E2:E500' }], risks: ['会覆盖 E 列'] },
+    ])
+    expect(out).toHaveLength(1)
+    expect(out[0].type).toBe('plan_proposal')
+    expect(out[0].plan?.steps[0].target).toBe('明细!E2:E500')
+    expect(out[0].plan?.risks).toEqual(['会覆盖 E 列'])
+    expect(out[0].planDecision).toBeUndefined()
+  })
+})

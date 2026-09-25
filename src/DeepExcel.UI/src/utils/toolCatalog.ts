@@ -149,6 +149,7 @@ export const TOOL_LABELS: Record<string, Label> = {
   // 交互
   clarify_intent: () => '向你确认需求',
   todo_write: () => '更新计划',
+  present_plan: () => '提交方案',
   update_workbook_notes: () => '更新工作簿记忆',
   load_skill: a => `查阅知识「${SKILL_TITLES[s(a.name)] || s(a.name)}」`,
   screenshot_excel: () => '截取 Excel 窗口',

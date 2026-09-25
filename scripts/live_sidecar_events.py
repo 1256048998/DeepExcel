@@ -17,6 +17,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --explore    # 大工作簿派只读子 agent 分头摸底，只交回结论
     python scripts/live_sidecar_events.py --memory     # 工作簿记忆：记下偏好和禁区，新会话里模型已经知道
     python scripts/live_sidecar_events.py --skill      # 知识技能：身份证号被科学计数法吞掉，先读技能再如实告知
+    python scripts/live_sidecar_events.py --modes      # 权限模式：只出方案不写、交方案；批准后自动应用写入不弹确认
 """
 
 from __future__ import annotations
@@ -690,6 +691,85 @@ def memory_scenario() -> int:
     return 1 if problems else 0
 
 
+def modes_scenario() -> int:
+    """权限模式：第一轮「只出方案」——宿主不能收到任何写入，模型用 present_plan 交方案；
+    第二轮批准后按「自动应用写入」执行——写入不弹确认，宿主收到写入。同一个进程（同一会话）。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    values = [["日期", "产品", "数量", "单价"]] + [[f"2026-09-{d:02d}", "A", d, 10] for d in range(1, 6)]
+    context = {"workbookName": "销售.xlsx", "activeSheet": "明细"}
+
+    def turn(text: str, mode: str) -> dict:
+        send({"type": "user_message", "text": text, "context": context, "permission_mode": mode})
+        seen = {"tools": [], "writes": [], "asked": [], "proposals": [], "denied": [], "text": ""}
+        t0 = time.time()
+        for raw in proc.stdout:
+            if time.time() - t0 > 240:
+                print("TIMEOUT")
+                break
+            msg = json.loads(raw.decode("utf-8"))
+            kind = msg.get("type")
+            if kind == "tool_call":
+                name = msg["tool"]
+                if name.startswith(("write", "fill", "set_", "add_", "clear", "delete", "execute")):
+                    seen["writes"].append(name)
+                result = ({"success": True, "data": {"address": "明细!A1:D6", "values": values}}
+                          if name in ("read_range", "read_selection") else {"success": True, "data": {}})
+                send({"type": "tool_result", "call_id": msg["call_id"], "context": {}, **result})
+            elif kind == "permission_request":
+                seen["asked"].append(msg.get("tool"))
+                send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+            elif kind == "ui_event":
+                ev = msg["event"]
+                if ev["kind"] == "tool_start":
+                    seen["tools"].append(ev["name"])
+                    print(f"[{mode}] tool", ev["name"], json.dumps(ev.get("args") or {}, ensure_ascii=False)[:150])
+                elif ev["kind"] == "tool_end" and not ev.get("ok") and (ev.get("error") or {}).get("code") == "denied":
+                    seen["denied"].append(ev["name"])
+                elif ev["kind"] == "plan_proposal":
+                    seen["proposals"].append(ev)
+            elif kind == "stream_delta":
+                seen["text"] += msg.get("text", "")
+            elif kind == "stream_end":
+                break
+        return seen
+
+    print("=== 第一轮：只出方案 ===")
+    first = turn("在 E 列加一列「金额」= 数量 × 单价，并在 E7 写合计。", "plan")
+    print("--- 回复 ---\n" + first["text"][-400:])
+    print("=== 第二轮：批准，自动应用写入 ===")
+    second = turn("方案已批准，请按方案执行。", "accept_writes")
+    print("--- 回复 ---\n" + second["text"][-400:])
+    proc.kill()
+
+    problems = []
+    if first["writes"]:
+        problems.append(f"plan mode let writes reach the host: {first['writes']}")
+    if not first["proposals"]:
+        problems.append("plan mode ended without present_plan")
+    elif not first["proposals"][0].get("steps"):
+        problems.append("the proposal has no steps")
+    if not second["writes"]:
+        problems.append("approved plan was not executed")
+    asked_for_writes = [t for t in second["asked"] if t not in ("execute_vba", "execute_jsa", "execute_python",
+                                                                  "delete_rows", "delete_columns", "delete_sheet",
+                                                                  "clear_range", "rollback")]
+    if asked_for_writes:
+        problems.append(f"accept_writes still asked for: {asked_for_writes}")
+    print(f"\nfirst: tools={first['tools']} denied={first['denied']}\nsecond: writes={second['writes']} asked={second['asked']}")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 def skill_scenario() -> int:
     """知识技能：身份证号被存成了数字。模型应当先 load_skill 读中文数据清洗，
     然后告诉用户后几位已经丢了、要从源文件重新导入，而不是自己补全。"""
@@ -726,6 +806,8 @@ def skill_scenario() -> int:
 
 
 if __name__ == "__main__":
+    if "--modes" in sys.argv:
+        sys.exit(modes_scenario())
     if "--skill" in sys.argv:
         sys.exit(skill_scenario())
     if "--memory" in sys.argv:

@@ -14,6 +14,8 @@ const fs = require('fs')
 const readline = require('readline')
 const ToolDispatcher = require('./tool-dispatcher')
 
+const PERMISSION_MODES = ['default', 'accept_writes', 'plan']
+
 class SidecarHost {
   constructor(options = {}) {
     this.pythonPath = options.pythonPath || this._detectPython()
@@ -90,10 +92,17 @@ class SidecarHost {
   // 协议与 C# 端完全一致：每行一个 JSON 对象
 
   // steer=true：任务进行中的插话，侧车在下一个工具结果后交给模型（空闲时当普通消息）
-  sendUserMessage(text, sessionId, context, steer) {
-    this._writeLine(JSON.stringify({
-      type: 'user_message', text, session_id: sessionId, context, steer: steer === true,
-    }))
+  sendUserMessage(text, sessionId, context, steer, permissionMode) {
+    const msg = { type: 'user_message', text, session_id: sessionId, context, steer: steer === true }
+    // 面板当前的权限模式随每条消息带过去；只认三个值，只转发不保存
+    if (PERMISSION_MODES.includes(permissionMode)) msg.permission_mode = permissionMode
+    this._writeLine(JSON.stringify(msg))
+  }
+
+  // 任务进行中切换权限模式（每步确认 / 本次会话自动应用写入 / 只出方案）
+  sendPermissionMode(mode) {
+    if (!PERMISSION_MODES.includes(mode)) return
+    this._writeLine(JSON.stringify({ type: 'set_permission_mode', mode }))
   }
 
   sendCancel() {

@@ -19,7 +19,7 @@ import { SetupNotice } from './components/SetupNotice'
 import { PlanPill } from './components/PlanPill'
 import { HeaderMenu } from './components/HeaderMenu'
 import type { HeaderMenuItem } from './components/HeaderMenu'
-import type { Message, ModelConfig, PlanItem, ToolStep, UiEvent } from './types'
+import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -405,16 +405,25 @@ export default function App() {
     return unsubscribe
   }, [])
 
-  const sendMessage = async (text?: string) => {
+  // 权限模式：只在内存里（不写 localStorage、不进配置），面板重开就回到每步确认
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
+  const changePermissionMode = (mode: PermissionMode) => {
+    setPermissionMode(mode)
+    // 任务进行中切换：立即告诉侧车，下一次工具调用就按新模式判断
+    if (loading) sendToHost({ type: 'set_permission_mode', payload: { mode } }).catch(() => {})
+  }
+
+  const sendMessage = async (text?: string, modeOverride?: PermissionMode) => {
     const content = (text ?? input).trim()
     if (!content) return
+    const mode = modeOverride ?? permissionMode
 
     // ★ 任务进行中发的话：不打断，作为插话在下一个工具结果后交给 AI
     if (loading) {
       setMessages(prev => [...prev, { role: 'user', content, queued: 'pending' }])
       setInput('')
       try {
-        await sendToHost({ type: 'user_message', payload: { content, steer: true } })
+        await sendToHost({ type: 'user_message', payload: { content, steer: true, permission_mode: mode } })
       } catch (err) {
         setMessages(prev => [...prev, { role: 'assistant', content: `❌ 发送失败: ${err}` }])
       }
@@ -448,7 +457,7 @@ export default function App() {
     try {
       await sendToHost({
         type: 'user_message',
-        payload: { content }
+        payload: { content, permission_mode: mode }
       })
     } catch (err) {
       clearLoadingTimeout()
@@ -469,6 +478,14 @@ export default function App() {
       setLoading(false)
       setStatusText(null)
     }, 25_000)
+  }
+
+  // 方案卡片：批准 → 切到选定的模式并开始执行；继续修改 → 留在只出方案，等用户说修改意见
+  const handlePlanDecision = (index: number, decision: PermissionMode | 'dismissed') => {
+    setMessages(prev => prev.map((m, i) => (i === index ? { ...m, planDecision: decision } : m)))
+    if (decision === 'dismissed') return
+    setPermissionMode(decision)
+    sendMessage('方案已批准，请按方案执行。', decision)
   }
 
   // 切换工具组的折叠/展开状态
@@ -747,6 +764,7 @@ export default function App() {
         onChoiceSelect={handleChoiceSelect}
         onSaveAsPrompt={handleSaveAsPrompt}
         rewind={{ onRewind: handleRewind, disabled: loading, pendingId: rewindingId }}
+        onPlanDecision={handlePlanDecision}
       />
 
       {/* ★ AI Native 权限确认抽屉：从输入框上方 slide-up 显示，类似 Claude Code/Trae/Codex */}
@@ -780,6 +798,8 @@ export default function App() {
         modelOptions={modelOptions}
         selectedModel={effectiveSelectedModel}
         onModelChange={handleModelChange}
+        permissionMode={permissionMode}
+        onPermissionModeChange={changePermissionMode}
       />
 
       <HistoryPanel

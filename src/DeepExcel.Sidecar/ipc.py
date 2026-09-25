@@ -94,7 +94,16 @@ def route_message(msg: dict) -> None:
     elif t == "clarify_answer":
         _message_buffer["clarify_answer"] = msg.get("answer", "")
         _log("route_message: clarify_answer stored")
+    elif t == "set_permission_mode":
+        # 任务进行中切换模式：立即生效，下一次工具调用就按新模式判断
+        import permission_modes
+        permission_modes.set_mode(msg.get("mode"))
+        _log(f"route_message: permission mode -> {permission_modes.current()}")
     elif t == "user_message":
+        # 每条消息都带着面板当前的模式（面板是唯一来源；侧车重启回到默认也能对上）
+        if "permission_mode" in msg:
+            import permission_modes
+            permission_modes.set_mode(msg.get("permission_mode"))
         if msg.get("steer") and _message_buffer.get("turn_active"):
             _message_buffer["steer"].append(msg)
             _log(f"route_message: steer message held for injection, pending={len(_message_buffer['steer'])}")
