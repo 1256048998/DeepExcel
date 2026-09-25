@@ -60,6 +60,11 @@ stdout 一行一个 JSON：
 `model_not_found`、`timeout`、`network`、`cli_missing`、`unknown`。分类规则在
 `src/DeepExcel.Sidecar/ui_events.py` 的 `_ERROR_RULES`。
 
+引擎起不来（启动自检，`src/DeepExcel.Sidecar/selfcheck.py`）：`os_too_old`（Windows 早于 10 1809）、
+`cli_missing`、`cli_blocked`（杀毒 / 应用管控拦截）、`cli_incompatible`、`cli_timeout`、`cli_crashed`、
+`connect_failed`。侧车启动时立即发一次，此后每条用户消息都回同一个诊断并发 `stream_end`；
+`retryable` 恒为 false，`detail` 里是原始错误。
+
 工具错误（`tool_end.error`）：C# 结果里带 `error_code` 时用它，否则 `tool_failed`；
 被拒绝为 `denied`；侧车补发的为 `interrupted` / `aborted` / `no_result`。
 

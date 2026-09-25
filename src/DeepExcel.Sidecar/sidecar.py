@@ -77,6 +77,7 @@ from claude_agent_sdk.types import (
 )
 
 import explorer
+import selfcheck
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
 from model_windows import apply_context_window
@@ -1166,6 +1167,17 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             await defer_leftover_steer()
 
 
+async def serve_startup_failure(finding) -> None:
+    """引擎起不来：立即报一次诊断；之后每条用户消息都回同一个诊断并收尾，面板不会停在「没有回复」。"""
+    await write_message(ui_events.envelope("error", **finding.event_fields()))
+    while True:
+        msg = await _message_buffer["user_message"].get()
+        if msg is None:
+            return
+        await write_message(ui_events.envelope("error", **finding.event_fields()))
+        await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
+
+
 async def main():
     _init_buffer()
     sys.stderr.write("[sidecar] main() started\n")
@@ -1287,9 +1299,36 @@ async def main():
         # ★ 检测模型是否支持 vision（image/document block）
         base_url_for_check = env_config.get("ANTHROPIC_BASE_URL", "")
         vision_ok = _supports_vision(base_url_for_check, model)
+        # ★ 启动自检：引擎起不来时给出诊断码（系统太旧 / 文件缺失 / 被拦截…），而不是面板上没有回复
+        cli_path = selfcheck.bundled_cli()
+        findings = selfcheck.preflight(os.environ, cli_path, selfcheck.windows_build())
+        for finding in findings:
+            sys.stderr.write(f"[sidecar] selfcheck: {finding.code} ({finding.detail})\n")
+            if finding.code == "git_bash_path_stale":
+                # 失效的变量会让 CLI 直接 exit(1)；tools=[] 根本不需要 shell，去掉即可
+                os.environ.pop(selfcheck.GIT_BASH_ENV, None)
+        sys.stderr.flush()
+        fatal = next((f for f in findings if f.fatal), None)
+        if fatal is not None:
+            await serve_startup_failure(fatal)
+            tg.cancel_scope.cancel()
+            return
+
         sys.stderr.write(f"[sidecar] creating ClaudeSDKClient, model={model}, base_url={base_url_for_check}, supports_vision={vision_ok}\n")
         sys.stderr.flush()
-        async with ClaudeSDKClient(options=options) as client:
+        client = ClaudeSDKClient(options=options)
+        try:
+            await client.connect()
+        except Exception as exc:
+            sys.stderr.write(f"[sidecar] ClaudeSDKClient connect failed: {type(exc).__name__}: {exc}\n")
+            sys.stderr.flush()
+            finding = await anyio.to_thread.run_sync(selfcheck.diagnose, exc, cli_path, dict(os.environ))
+            sys.stderr.write(f"[sidecar] selfcheck diagnosis: {finding.code} ({finding.detail})\n")
+            sys.stderr.flush()
+            await serve_startup_failure(finding)
+            tg.cancel_scope.cancel()
+            return
+        try:
             # ★ 诊断日志：SDK 创建 client 后再次打印 os.environ，确认 SDK 是否把
             # settings.json 的 env 重新 merge 回 os.environ（如果是，run_agent_loop 期间
             # 这些值会被 SDK 实际使用，覆盖我们的 env_config）
@@ -1309,6 +1348,8 @@ async def main():
             sys.stderr.flush()
             # 在 task_group 里跑主循环，reader 继续在后台跑
             await run_agent_loop(client, supports_vision=vision_ok, model=model, base_url=base_url_for_check)
+        finally:
+            await client.disconnect()
 
         # 主循环退出后，取消 reader
         tg.cancel_scope.cancel()
