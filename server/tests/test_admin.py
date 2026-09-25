@@ -254,3 +254,28 @@ def test_heartbeat_associates_an_install_with_an_account(admin_client):
 def test_admin_endpoints_require_a_token(admin_client):
     for path in ["/admin/api/users", "/admin/api/stats", "/admin/api/invites", "/admin/api/audit"]:
         assert admin_client.get(path).status_code == 401
+
+
+def test_tool_errors_export_groups_by_tool_and_code(admin_client):
+    """What scripts/knowledge_errors.py reads to rewrite the skills' common-errors sections."""
+    user_headers = auth_headers(register(admin_client))
+    events = (
+        [{"event_type": "tool_error", "payload": {"tool_name": "write_formula", "error_code": "formula_name"}}] * 3
+        + [{"event_type": "tool_error", "payload": {"tool_name": "write_formula", "error_code": "formula_ref"}}]
+        + [{"event_type": "tool_error", "payload": {"tool_name": "clean_amount", "error_code": "type_mismatch"}}] * 2
+    )
+    admin_client.post("/api/v1/telemetry", json={"events": events}, headers=user_headers)
+
+    export = admin_client.get("/admin/api/tool-errors?days=30", headers=admin_token(admin_client)).json()
+
+    assert export["days"] == 30
+    assert export["errors"] == [
+        {"tool_name": "write_formula", "error_code": "formula_name", "count": 3},
+        {"tool_name": "clean_amount", "error_code": "type_mismatch", "count": 2},
+        {"tool_name": "write_formula", "error_code": "formula_ref", "count": 1},
+    ]
+
+
+def test_tool_errors_export_is_admin_only(admin_client):
+    user_headers = auth_headers(register(admin_client))
+    assert admin_client.get("/admin/api/tool-errors", headers=user_headers).status_code == 401

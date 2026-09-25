@@ -3,6 +3,7 @@ name: delivery-quality
 title: 交付质量与验证
 description: 改完工作簿、准备告诉用户「做好了」之前读：怎么证明结果是对的，怎么如实汇报做了什么、没做什么
 version: 1
+tools: write_formula, write_value, write_range, fill_formula_down, replace_formula, execute_vba, execute_jsa
 ---
 
 # 交付质量与验证

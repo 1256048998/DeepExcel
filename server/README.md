@@ -120,6 +120,10 @@ cp knowledge_pack.json /srv/deepexcel/updates/knowledge_pack.json
 - `pack_version` 默认取当前时间戳，客户端只接受比本机更新的包，回放旧包无效。
 - 包里去掉的技能会从缓存消失，安装包自带的那份仍在。WPS 没有账号 / 服务端连接，只读 Excel 端同步下来的同一个缓存目录。
 
+技能里「用户实际遇到的报错」一节由遥测驱动：`GET /admin/api/tool-errors?days=30`（管理员）导出工具 × 报错类别 × 次数，
+`python scripts/knowledge_errors.py --errors tool-errors.json` 按每个技能 frontmatter 里的 `tools:` 改写那一节并把版本号加一，
+审过 diff 再 `knowledge_pack.py build` 签名发布。导出里只有工具名和固定的类别代码，不含报错原文。
+
 **镜像必须真的构建过一次才算数。** `requirements.txt` 的版本号是从可用环境导出的，不是手写的——
 手写过一次 `alembic==1.16.6`，那个版本根本不存在，直到第一次 docker build 才暴露。`httpx` 也曾
 只列在 dev 依赖里（本地由 pytest 带入），生产镜像一 import 代理模块就启动失败。

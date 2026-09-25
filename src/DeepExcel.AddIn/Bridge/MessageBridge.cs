@@ -1830,6 +1830,7 @@ namespace DeepExcel.AddIn.Bridge
             var session = FindSessionBySidecar(sender);
             if (session == null) return;
             ReportEngineFailureOnce(sender, uiEvent);
+            ReportToolEnd(uiEvent);
             if (uiEvent.TryGetProperty("kind", out var kindEl) && kindEl.GetString() == "run_summary" &&
                 uiEvent.TryGetProperty("outcome", out var outcomeEl))
             {

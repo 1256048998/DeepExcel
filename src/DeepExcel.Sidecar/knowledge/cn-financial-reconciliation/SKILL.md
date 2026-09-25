@@ -3,6 +3,7 @@ name: cn-financial-reconciliation
 title: 财务报表勾稽核对
 description: 核对资产负债表、利润表、现金流量表、科目余额表之间的勾稽关系（中国企业会计准则口径），或者搭建核对表之前读
 version: 1
+tools: write_formula, fill_formula_down, add_sheet
 ---
 
 # 财务报表勾稽核对（中国企业会计准则口径）

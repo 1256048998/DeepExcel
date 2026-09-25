@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using DeepExcel.AddIn.Account;
 using DeepExcel.AddIn.Config;
 using DeepExcel.AddIn.Diagnostics;
@@ -260,6 +262,65 @@ namespace DeepExcel.AddIn.Bridge
         }
 
         /// <summary>
+        /// 从面板事件里的失败步骤（tool_end ok=false）上报 tool_error。
+        /// 侧车给的 error.code 是固定词表时直接用；泛泛的 tool_failed 才按报错文本归类。
+        /// 用户按停止（interrupted）不是工具的问题，不报。
+        /// </summary>
+        internal void ReportToolEnd(JsonElement uiEvent)
+        {
+            string name = ToolErrorFromUiEvent(uiEvent, out string code);
+            if (name != null)
+            {
+                var reporter = Telemetry;
+                if (reporter == null) return;
+                try
+                {
+                    reporter.Record("tool_error", new Dictionary<string, object>
+                    {
+                        ["tool_name"] = name,
+                        ["error_code"] = code,
+                    });
+                }
+                catch (Exception) { }
+            }
+        }
+
+        private static readonly Regex ToolNamePattern =
+            new Regex(@"^[a-z][a-z0-9_]{0,39}$");
+
+        /// <summary>失败步骤的（工具名, 错误类别）；不是失败步骤或不该上报时返回 null</summary>
+        internal static string ToolErrorFromUiEvent(JsonElement uiEvent, out string code)
+        {
+            code = null;
+            if (uiEvent.ValueKind != JsonValueKind.Object ||
+                !uiEvent.TryGetProperty("kind", out var kind) || kind.GetString() != "tool_end" ||
+                !uiEvent.TryGetProperty("ok", out var ok) || ok.ValueKind != JsonValueKind.False ||
+                !uiEvent.TryGetProperty("name", out var nameEl) || nameEl.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+            string name = (nameEl.GetString() ?? "").Replace("mcp__excel__", "");
+            if (!ToolNamePattern.IsMatch(name))
+            {
+                return null;
+            }
+            string given = null, message = null;
+            if (uiEvent.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
+            {
+                if (error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String) given = c.GetString();
+                if (error.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String) message = m.GetString();
+            }
+            if (given == "interrupted")
+            {
+                return null;
+            }
+            code = !string.IsNullOrEmpty(given) && given != "tool_failed" && ToolNamePattern.IsMatch(given)
+                ? given
+                : ClassifyError(message);
+            return name;
+        }
+
+        /// <summary>
         /// Something stopped the assistant from working at all: the sidecar
         /// died, or its engine self-check failed. Recorded synchronously into
         /// the outbox, so it survives Excel going down right after. Only the
@@ -297,6 +358,19 @@ namespace DeepExcel.AddIn.Bridge
                 return "unknown";
             }
             var text = message.ToLowerInvariant();
+            // 领域类别在前：知识技能的「常见报错」按这些类别聚合（scripts/knowledge_errors.py）
+            if (text.Contains("禁区")) return "protected_zone";
+            if (text.Contains("还没有读过") || text.Contains("not been read")) return "unread_target";
+            if (text.Contains("input validation error") || text.Contains("required property") ||
+                text.Contains("缺少必传参数")) return "bad_arguments";
+            if (text.Contains("#name?")) return "formula_name";
+            if (text.Contains("#value!")) return "formula_value";
+            if (text.Contains("#ref!")) return "formula_ref";
+            if (text.Contains("#div/0!")) return "formula_div0";
+            if (text.Contains("#n/a")) return "formula_na";
+            if (text.Contains("#spill!")) return "formula_spill";
+            if (text.Contains("类型不匹配") || text.Contains("type mismatch")) return "type_mismatch";
+            if (text.Contains("编译错误") || text.Contains("compile error")) return "vba_compile";
             if (text.Contains("timeout") || text.Contains("timed out")) return "timeout";
             if (text.Contains("permission") || text.Contains("denied") || text.Contains("拒绝")) return "permission_denied";
             if (text.Contains("not registered") || text.Contains("regdb")) return "com_not_registered";

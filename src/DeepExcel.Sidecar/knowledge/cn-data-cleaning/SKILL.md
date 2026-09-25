@@ -3,6 +3,7 @@ name: cn-data-cleaning
 title: 中文数据清洗
 description: 清洗中文业务数据（全半角、中文日期、万元/亿元金额、身份证和银行卡号被科学计数法吞掉、各种写法的空值、看不见的字符）之前读
 version: 1
+tools: clean_data, clean_amount, remove_special_chars, collapse_spaces, fill_blank_cells, split_text_to_columns, delete_blank_rows
 ---
 
 # 中文数据清洗

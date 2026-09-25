@@ -336,6 +336,46 @@ def stats(
     )
 
 
+@router.get("/tool-errors")
+def tool_errors(
+    days: int = Query(default=30, ge=1, le=180),
+    limit: int = Query(default=200, ge=1, le=1000),
+    admin: Admin = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Tool failures by (tool, error code), most frequent first.
+
+    The input to scripts/knowledge_errors.py, which rewrites the "common
+    errors" section of each knowledge skill from real failures rather than
+    from what someone guessed would go wrong. Both fields are fixed tokens by
+    construction (see tool_error in routers/telemetry.py), so this export
+    carries nothing that identifies a user or a workbook.
+    """
+    since = utcnow() - dt.timedelta(days=days)
+    counts: Counter = Counter()
+    for event in db.scalars(
+        select(TelemetryEvent).where(
+            TelemetryEvent.event_type == "tool_error",
+            TelemetryEvent.occurred_at >= since,
+        )
+    ):
+        try:
+            payload = json.loads(event.payload)
+        except (ValueError, TypeError):
+            continue
+        name = payload.get("tool_name")
+        if name:
+            counts[(name, payload.get("error_code") or "unknown")] += 1
+    return {
+        "days": days,
+        "generated_at": utcnow().isoformat(),
+        "errors": [
+            {"tool_name": name, "error_code": code, "count": count}
+            for (name, code), count in counts.most_common(limit)
+        ],
+    }
+
+
 @router.get("/audit")
 def audit_log(
     limit: int = Query(default=100, ge=1, le=500),

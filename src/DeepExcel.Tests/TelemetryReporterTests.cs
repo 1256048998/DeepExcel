@@ -127,6 +127,65 @@ namespace DeepExcel.Tests
             Assert.Equal(expected, MessageBridge.TraceOutcomeFromRunSummary(runOutcome));
         }
 
+        [Theory]
+        [InlineData("写入后出现 #NAME? 错误 3 处", "formula_name")]
+        [InlineData("B2 返回 #VALUE!", "formula_value")]
+        [InlineData("新增 #REF! 1 处", "formula_ref")]
+        [InlineData("「汇总」在工作簿记忆的禁区里，已拒绝写入", "protected_zone")]
+        [InlineData("目标区域 A1:C3 已有内容，但你还没有读过它，本次未写入。", "unread_target")]
+        [InlineData("Input validation error: 'file' is a required property", "bad_arguments")]
+        [InlineData("运行时错误 13：类型不匹配", "type_mismatch")]
+        [InlineData("编译错误：缺少 End Sub（第 12 行）", "vba_compile")]
+        public void DomainErrorsGetTheirOwnCategory(string message, string expected)
+        {
+            // 知识技能的「常见报错」按这些类别聚合，泛泛的 other 用不上
+            Assert.Equal(expected, MessageBridge.ClassifyError(message));
+        }
+
+        private static System.Text.Json.JsonElement Event(string json) =>
+            System.Text.Json.JsonDocument.Parse(json).RootElement;
+
+        [Fact]
+        public void FailedToolEndBecomesAToolError()
+        {
+            string name = MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"id\":\"t1\",\"name\":\"mcp__excel__write_formula\",\"ok\":false," +
+                "\"error\":{\"code\":\"tool_failed\",\"message\":\"写入后 C2 出现 #NAME?\"}}"), out string code);
+
+            Assert.Equal("write_formula", name);
+            Assert.Equal("formula_name", code);
+        }
+
+        [Fact]
+        public void SpecificSidecarCodesAreKeptAndStopsAreNotReported()
+        {
+            Assert.Equal("find", MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"name\":\"find\",\"ok\":false,\"error\":{\"code\":\"denied\",\"message\":\"x\"}}"),
+                out string denied));
+            Assert.Equal("denied", denied);
+
+            Assert.Null(MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"name\":\"find\",\"ok\":false,\"error\":{\"code\":\"interrupted\"}}"), out _));
+            Assert.Null(MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"name\":\"find\",\"ok\":true}"), out _));
+            Assert.Null(MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_start\",\"name\":\"find\"}"), out _));
+            // 工具名不合规（可能夹带内容）就不报
+            Assert.Null(MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"name\":\"C:\\\\Users\\\\alice\",\"ok\":false}"), out _));
+        }
+
+        [Fact]
+        public void ToolErrorNeverCarriesTheMessage()
+        {
+            MessageBridge.ToolErrorFromUiEvent(Event(
+                "{\"kind\":\"tool_end\",\"name\":\"write_value\",\"ok\":false," +
+                "\"error\":{\"code\":\"Cannot write 128000 to alice\",\"message\":\"Cannot write 128000 to alice\"}}"),
+                out string code);
+            Assert.DoesNotContain("alice", code);
+            Assert.DoesNotContain(" ", code);
+        }
+
         [Fact]
         public void ClassificationNeverEchoesTheOriginalMessage()
         {

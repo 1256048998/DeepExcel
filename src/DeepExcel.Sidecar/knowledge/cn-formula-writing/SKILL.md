@@ -3,6 +3,7 @@ name: cn-formula-writing
 title: 中文用户的公式写入
 description: 给中文用户写公式之前读：函数名和标点、版本兼容（XLOOKUP / FILTER 等新函数）、万元显示、大写金额、财务取整、查找返回 #N/A 的常见原因；WPS 的差异见 wps.md
 version: 1
+tools: write_formula, fill_formula_down, replace_formula
 ---
 
 # 中文用户的公式写入
