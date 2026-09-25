@@ -39,7 +39,7 @@ namespace DeepExcel.AddIn.Tools
             try
             {
                 var app = _app;
-                var fromRange = app.Range[fromAddress];
+                var fromRange = DeepExcel.AddIn.Executor.ExcelTarget.Range(app, fromAddress);
                 var toRange = fromRange.Resize[rowCount, fromRange.Columns.Count];
                 fromRange.AutoFill(toRange, XlAutoFillType.xlFillDefault);
                 return new ToolResult { Name = "fill_formula", Success = true };
@@ -58,7 +58,7 @@ namespace DeepExcel.AddIn.Tools
             try
             {
                 var app = _app;
-                var range = app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(app, rangeAddress);
                 int count = 0;
 
                 foreach (Range cell in range.Cells)
@@ -90,7 +90,7 @@ namespace DeepExcel.AddIn.Tools
             try
             {
                 var app = _app;
-                var range = app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(app, rangeAddress);
                 var analysis = new FormulaAnalysis();
                 var formulaCells = new List<FormulaCellInfo>();
 

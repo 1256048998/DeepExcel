@@ -129,15 +129,42 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
-        public void Writing_is_refused_when_the_user_has_switched_to_another_workbook()
+        public void Writes_go_to_the_bound_workbook_after_the_user_switches_to_another()
         {
+            // 以前整体拒绝；现在工具被重定向到会话那本，备份的也是那本
             var fake = new FakeExcelActions { ActiveWorkbookKey = @"C:\data\other.xlsx" };
             var r = Dispatcher(fake).Execute("write_value", Args(("address", "A1"), ("value", "x")));
 
+            Assert.True(r.Success);
+            Assert.Equal(new[] { Book }, fake.TargetCalls);
+            Assert.Equal(Book, fake.BackupCalls.Single().Key);
+            Assert.Contains("write_value", fake.Timeline);
+        }
+
+        [Theory]
+        [InlineData("execute_vba")]
+        [InlineData("execute_python")]
+        [InlineData("read_selection")]
+        [InlineData("freeze_panes")]
+        [InlineData("send_keys")]
+        public void Foreground_only_tools_are_refused_after_the_user_switches(string tool)
+        {
+            var fake = new FakeExcelActions { ActiveWorkbookKey = @"C:\data\other.xlsx" };
+            var r = Dispatcher(fake).Execute(tool, Args(("address", "A1"), ("code", "x"), ("macro_name", "A"), ("keys", "{F9}")));
+
             Assert.False(r.Success);
             Assert.Contains("book.xlsx", r.Error);
+            Assert.Contains("前台", r.Error);
             Assert.Empty(fake.BackupCalls);
-            Assert.DoesNotContain("write_value", fake.Timeline);
+            Assert.Empty(fake.TargetCalls);
+        }
+
+        [Fact]
+        public void Nothing_is_redirected_while_the_bound_workbook_is_in_front()
+        {
+            var fake = new FakeExcelActions();
+            Dispatcher(fake).Execute("write_value", Args(("address", "A1"), ("value", "x")));
+            Assert.Empty(fake.TargetCalls);
         }
 
         [Fact]
@@ -146,15 +173,39 @@ namespace DeepExcel.Tests
             var fake = new FakeExcelActions { ActiveWorkbookKey = @"c:\DATA\BOOK.xlsx" };
             var r = Dispatcher(fake).Execute("write_value", Args(("address", "A1"), ("value", "x")));
             Assert.True(r.Success);
+            Assert.Empty(fake.TargetCalls);
+        }
+
+        [Fact]
+        public void A_closed_bound_workbook_refuses_instead_of_writing_elsewhere()
+        {
+            var fake = new FakeExcelActions { ActiveWorkbookKey = @"C:\data\other.xlsx" };
+            fake.OpenWorkbooks.Clear();
+            var r = Dispatcher(fake).Execute("write_value", Args(("address", "A1"), ("value", "x")));
+
+            Assert.False(r.Success);
+            Assert.Contains("已经关闭", r.Error);
+            Assert.DoesNotContain("write_value", fake.Timeline);
+            Assert.Empty(fake.BackupCalls);
         }
 
         [Fact]
         public void No_open_workbook_refuses_the_write()
         {
             var fake = new FakeExcelActions { ActiveWorkbookKey = null };
+            fake.OpenWorkbooks.Clear();
             var r = Dispatcher(fake).Execute("write_value", Args(("address", "A1"), ("value", "x")));
             Assert.False(r.Success);
             Assert.DoesNotContain("write_value", fake.Timeline);
+        }
+
+        [Fact]
+        public void Attachments_can_be_read_even_if_the_bound_workbook_was_closed()
+        {
+            var fake = new FakeExcelActions { ActiveWorkbookKey = @"C:\data\other.xlsx" };
+            fake.OpenWorkbooks.Clear();
+            var r = Dispatcher(fake).Execute("read_attachment", Args(("file_name", "a.csv")));
+            Assert.DoesNotContain("已经关闭", r.Error ?? "");
         }
 
         [Theory]

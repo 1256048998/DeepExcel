@@ -81,6 +81,7 @@
     <Compile Include="Config\AppConfig.cs" />
     <Compile Include="Config\WebViewDataFolder.cs" />
     <Compile Include="Diagnostics\Logger.cs" />
+    <Compile Include="Executor\ExcelTarget.cs" />
     <Compile Include="Executor\ExecutionResult.cs" />
     <Compile Include="Executor\PythonExecutor.cs" />
     <Compile Include="Executor\SnapshotManager.cs" />

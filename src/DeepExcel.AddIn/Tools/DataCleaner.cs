@@ -28,7 +28,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int convertedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -83,7 +83,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int removedCount = 0;
 
                 // 从最后一行往上遍历比较
@@ -134,7 +134,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int highlightedCount = 0;
                 var color = ColorTranslator.FromHtml(colorHex);
                 var oleColor = ColorTranslator.ToOle(color);
@@ -174,7 +174,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int trimmedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -212,7 +212,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int changedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -261,7 +261,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int convertedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -303,7 +303,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int rows = range.Rows.Count;
                 int cols = range.Columns.Count;
                 int deletedCount = 0;
@@ -356,7 +356,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int startCol = range.Column;
                 int startRow = range.Row;
                 int rows = range.Rows.Count;
@@ -389,12 +389,12 @@ namespace DeepExcel.AddIn.Tools
                 {
                     for (int j = 0; j < splitData[i].Count; j++)
                     {
-                        var cell = (Range)_app.Cells[startRow + i, startCol + j];
+                        var cell = (Range)range.Worksheet.Cells[startRow + i, startCol + j];
                         cell.Value = splitData[i][j];
                     }
                     for (int j = splitData[i].Count; j < maxParts; j++)
                     {
-                        var cell = (Range)_app.Cells[startRow + i, startCol + j];
+                        var cell = (Range)range.Worksheet.Cells[startRow + i, startCol + j];
                         cell.Value = "";
                     }
                 }
@@ -424,7 +424,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int rows = range.Rows.Count;
                 int cols = range.Columns.Count;
                 int filledCount = 0;
@@ -476,7 +476,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int highlightedCount = 0;
                 var color = ColorTranslator.FromHtml(colorHex);
                 var oleColor = ColorTranslator.ToOle(color);
@@ -532,7 +532,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int cleanedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -584,7 +584,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int cleanedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -633,7 +633,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int rows = range.Rows.Count;
                 int cols = range.Columns.Count;
                 int mergedCount = 0;
@@ -645,7 +645,7 @@ namespace DeepExcel.AddIn.Tools
                 }
                 else
                 {
-                    targetCol = _app.Range[targetColumn + "1"].Column;
+                    targetCol = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, targetColumn + "1").Column;
                 }
 
                 for (int r = 1; r <= rows; r++)
@@ -660,7 +660,7 @@ namespace DeepExcel.AddIn.Tools
                             parts.Add(val.ToString());
                         }
                     }
-                    var targetCell = (Range)_app.Cells[range.Row + r - 1, targetCol];
+                    var targetCell = (Range)range.Worksheet.Cells[range.Row + r - 1, targetCol];
                     targetCell.Value = string.Join(delimiter, parts);
                     mergedCount++;
                 }
@@ -690,7 +690,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int renamedCount = 0;
 
                 for (int i = 0; i < newNames.Length && i < range.Columns.Count; i++)
@@ -725,7 +725,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var range = _app.Range[rangeAddress];
+                var range = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, rangeAddress);
                 int cleanedCount = 0;
 
                 foreach (Range cell in range.Cells)
@@ -798,7 +798,7 @@ namespace DeepExcel.AddIn.Tools
             {
                 foreach (var col in columns)
                 {
-                    var cell = (Range)_app.Cells[row, startCol + col - 1];
+                    var cell = (Range)range.Worksheet.Cells[row, startCol + col - 1];
                     key += cell.Value2?.ToString() + "|";
                 }
             }
@@ -806,7 +806,7 @@ namespace DeepExcel.AddIn.Tools
             {
                 for (int c = 0; c < colCount; c++)
                 {
-                    var cell = (Range)_app.Cells[row, startCol + c];
+                    var cell = (Range)range.Worksheet.Cells[row, startCol + c];
                     key += cell.Value2?.ToString() + "|";
                 }
             }

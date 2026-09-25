@@ -11,6 +11,7 @@ using System.Windows.Forms;
 using DeepExcel.AddIn.Bridge;
 using DeepExcel.AddIn.Diagnostics;
 using SnapshotScope = DeepExcel.AddIn.Executor.SnapshotScope;
+using ExcelTarget = DeepExcel.AddIn.Executor.ExcelTarget;
 using SnapshotAttempt = DeepExcel.AddIn.Executor.SnapshotAttempt;
 using SnapshotManager = DeepExcel.AddIn.Executor.SnapshotManager;
 using Stopwatch = System.Diagnostics.Stopwatch;
@@ -128,14 +129,63 @@ namespace DeepExcel.AddIn.Sidecar
             IsExecuting = true;
             try
             {
-                var result = ExecuteGuarded(toolName, args);
-                AttachUserEditNotice(result);
-                return result;
+                var refusal = ResolveTarget(toolName, out var target);
+                if (refusal != null) return refusal;
+                using (target)
+                {
+                    var result = ExecuteGuarded(toolName, args);
+                    AttachUserEditNotice(result);
+                    return result;
+                }
             }
             finally
             {
                 IsExecuting = false;
             }
+        }
+
+        /// <summary>
+        /// 必须在前台窗口里做的工具：VBA / Python 代码里的 ActiveSheet、选区、截图、冻结窗格、
+        /// 模拟按键都只认前台。用户切到别的工作簿时这些工具拒绝执行，其余工具照常写会话那本。
+        /// </summary>
+        internal static readonly HashSet<string> ForegroundOnlyTools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "execute_vba", "execute_python", "execute_jsa", "send_keys",
+            "read_selection", "screenshot_excel", "freeze_panes",
+        };
+
+        /// <summary>不碰工作簿内容的工具：会话那本关了也能用</summary>
+        private static readonly HashSet<string> WorkbookIndependentTools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "read_attachment", "rollback", "create_snapshot", "clarify_intent", "todo_write",
+        };
+
+        /// <summary>
+        /// 目标工作簿 = 会话绑定的那本。它就在前台时什么都不用做；用户切走了，就把工具
+        /// 重定向到它（ExcelTarget），而不是像以前那样写到前台那本或整体拒绝。
+        /// </summary>
+        private ToolResult ResolveTarget(string toolName, out IDisposable target)
+        {
+            target = null;
+            var bound = BoundWorkbookKey?.Invoke();
+            if (string.IsNullOrEmpty(bound) || WorkbookIndependentTools.Contains(toolName ?? "")) return null;
+            var active = _excel.GetActiveWorkbookKey();
+            if (WorkbookIdentity.SameKey(active, bound)) return null;
+
+            if (ForegroundOnlyTools.Contains(toolName ?? ""))
+            {
+                return RefuseWrite(toolName,
+                    $"这个操作只能在前台窗口进行，而当前活动窗口是另一个工作簿（本次对话属于「{DisplayName(bound)}」），本次未执行。",
+                    $"请告诉用户切回「{DisplayName(bound)}」后再继续；读写单元格的其他工具不受影响，可以继续用。");
+            }
+            target = _excel.UseTargetWorkbook(bound);
+            if (target == null)
+            {
+                return RefuseWrite(toolName,
+                    $"本次对话所属的工作簿「{DisplayName(bound)}」已经关闭，本次未执行。",
+                    "请告诉用户重新打开它后再继续，不要改用其他工作簿。");
+            }
+            return null;
         }
 
         /// <summary>模型读过 / 写过的区域与用户手动改过的区域（先读后写、读后被改检测）。</summary>
@@ -377,19 +427,12 @@ namespace DeepExcel.AddIn.Sidecar
         {
             backupId = null;
             checkpointId = null;
-            var active = _excel.GetActiveWorkbookKey();
-            if (string.IsNullOrEmpty(active))
+            // 备份的是工具要写的那本：会话绑定的工作簿（用户切到别的窗口也不变），没有绑定时才用前台那本
+            var book = BoundWorkbookKey?.Invoke();
+            if (string.IsNullOrEmpty(book)) book = _excel.GetActiveWorkbookKey();
+            if (string.IsNullOrEmpty(book))
             {
                 return RefuseWrite(toolName, "没有打开的工作簿，无法在修改前备份，本次未执行", null);
-            }
-
-            // 所有工具都写 ActiveWorkbook。用户中途切到别的工作簿时，继续执行就会改错文件。
-            var bound = BoundWorkbookKey?.Invoke();
-            if (!string.IsNullOrEmpty(bound) && !WorkbookIdentity.SameKey(active, bound))
-            {
-                return RefuseWrite(toolName,
-                    $"当前活动窗口已切换到另一个工作簿，而本次对话属于「{DisplayName(bound)}」。为避免改错文件，本次修改未执行。",
-                    "请告诉用户切回原工作簿后再继续，不要换用其他工具重试。");
             }
 
             var scope = ToolMutationPolicy.ResolveScope(toolName,
@@ -397,9 +440,9 @@ namespace DeepExcel.AddIn.Sidecar
                 () => _excel.GetActiveSheetName());
 
             // 1. 更早的检查点（含本回合备份）都要覆盖这次写入涉及的表，回退时才不漏
-            _turnBackups.TryGetValue(active, out var turnBackup);
+            _turnBackups.TryGetValue(book, out var turnBackup);
             var turnBackupCovered = turnBackup != null;
-            var list = CheckpointsOf(active);
+            var list = CheckpointsOf(book);
             if (turnBackup != null && !list.Any(c => c.Id == turnBackup))
             {
                 turnBackupCovered = _excel.ExtendSnapshotScope(turnBackup, scope);
@@ -429,7 +472,7 @@ namespace DeepExcel.AddIn.Sidecar
             var watch = Stopwatch.StartNew();
             try
             {
-                attempt = _excel.BackupWorkbook(active, $"AI 修改前自动备份（{toolName}）", scope);
+                attempt = _excel.BackupWorkbook(book, $"AI 修改前自动备份（{toolName}）", scope);
             }
             catch (Exception ex) when (turnBackupCovered)
             {
@@ -468,7 +511,7 @@ namespace DeepExcel.AddIn.Sidecar
             }
             if (!turnBackupCovered)
             {
-                _turnBackups[active] = checkpointId;
+                _turnBackups[book] = checkpointId;
                 turnBackup = checkpointId;
                 Logger.Instance.Info("ToolDispatcher", $"Turn backup created before {toolName}: {checkpointId}");
             }
@@ -1014,6 +1057,10 @@ namespace DeepExcel.AddIn.Sidecar
         {
             try
             {
+                // 用户切到了别的工作簿：前台那本的上下文不属于这次对话，宁可不给
+                var bound = BoundWorkbookKey?.Invoke();
+                if (!string.IsNullOrEmpty(bound) && !WorkbookIdentity.SameKey(_excel.GetActiveWorkbookKey(), bound)) return null;
+
                 // 计算工作簿指纹：sheet 数量 + 每个 sheet 的 UsedRange 地址
                 string fingerprint = ComputeWorkbookFingerprint();
 
@@ -1297,7 +1344,7 @@ namespace DeepExcel.AddIn.Sidecar
             try
             {
                 var app = _excelApp;
-                var fromRange = app.Range[fromAddress];
+                var fromRange = ExcelTarget.Range(app, fromAddress);
                 var toRange = fromRange.Resize[rowCount, fromRange.Columns.Count];
                 fromRange.AutoFill(toRange, XlAutoFillType.xlFillDefault);
                 return new ToolResult { Name = "fill_formula_down", Success = true };
@@ -1319,7 +1366,7 @@ namespace DeepExcel.AddIn.Sidecar
             try
             {
                 var app = _excelApp;
-                var range = app.Range[rangeAddress];
+                var range = ExcelTarget.Range(app, rangeAddress);
                 int count = 0;
 
                 foreach (Range cell in range.Cells)

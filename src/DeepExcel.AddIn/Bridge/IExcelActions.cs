@@ -81,6 +81,11 @@ namespace DeepExcel.AddIn.Bridge
         List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max);
         /// <summary>内联 diff：区域的 Formula（0 起始 [行, 列]）；超过 maxCells 格或地址无效返回 null</summary>
         object[,] ReadFormulas(string address, int maxCells);
+        /// <summary>
+        /// 在返回的范围内，所有读写都落到这本工作簿（按 key 找已打开的），而不是前台那本；
+        /// 找不到返回 null。
+        /// </summary>
+        IDisposable UseTargetWorkbook(string workbookKey);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

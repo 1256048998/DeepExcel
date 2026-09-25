@@ -19,7 +19,7 @@ namespace DeepExcel.AddIn.Perception
 
         public WorkbookStructure Analyze()
         {
-            var wb = _app.ActiveWorkbook;
+            var wb = DeepExcel.AddIn.Executor.ExcelTarget.Workbook(_app);
             if (wb == null) return null;
 
             return new WorkbookStructure
@@ -29,7 +29,7 @@ namespace DeepExcel.AddIn.Perception
                 Worksheets = AnalyzeWorksheets(wb),
                 NamedRanges = AnalyzeNamedRanges(wb),
                 HasVBAProject = SafeGet(() => wb.HasVBProject, false),
-                ActiveSheet = SafeGet(() => (_app.ActiveSheet as Worksheet)?.Name, "")
+                ActiveSheet = SafeGet(() => DeepExcel.AddIn.Executor.ExcelTarget.ActiveSheet(_app)?.Name, "")
             };
         }
 

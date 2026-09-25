@@ -33,7 +33,7 @@ namespace DeepExcel.AddIn.Tools
             Logger.Instance.Info("ChartTool", $"CreateChart: dataRange={dataRange}, chartType={chartType}, title={title}");
             try
             {
-                var dataRng = _app.Range[dataRange];
+                var dataRng = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, dataRange);
                 Worksheet ws = dataRng.Worksheet;
                 Logger.Instance.Info("ChartTool", $"  worksheet={ws.Name}, range address={dataRng.Address}");
 
@@ -41,7 +41,7 @@ namespace DeepExcel.AddIn.Tools
                 Chart chart;
                 if (!string.IsNullOrEmpty(chartSheet))
                 {
-                    chart = (Chart)_app.Charts.Add();
+                    chart = (Chart)DeepExcel.AddIn.Executor.ExcelTarget.Workbook(_app).Charts.Add();
                     chart.Name = chartSheet;
                 }
                 else
@@ -126,7 +126,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var wsSource = _app.Range[sourceRange].Worksheet;
+                var wsSource = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, sourceRange).Worksheet;
                 var wb = wsSource.Parent as Workbook;
 
                 // 创建目标工作表
@@ -328,7 +328,7 @@ namespace DeepExcel.AddIn.Tools
         {
             try
             {
-                var dataRng = _app.Range[dataRange];
+                var dataRng = DeepExcel.AddIn.Executor.ExcelTarget.Range(_app, dataRange);
                 Worksheet ws = dataRng.Worksheet;
                 Logger.Instance.Info("ChartTool", $"CreateComboChart: dataRange={dataRange}");
 
@@ -444,13 +444,13 @@ namespace DeepExcel.AddIn.Tools
             {
                 try
                 {
-                    Chart chartObj = (Chart)_app.Charts[chartName];
+                    Chart chartObj = (Chart)DeepExcel.AddIn.Executor.ExcelTarget.Workbook(_app).Charts[chartName];
                     if (chartObj != null) return chartObj;
                 }
                 catch { }
             }
 
-            Worksheet ws = _app.ActiveSheet as Worksheet;
+            Worksheet ws = DeepExcel.AddIn.Executor.ExcelTarget.ActiveSheet(_app);
             if (ws == null) return null;
 
             Shape firstChartShape = null;
@@ -710,10 +710,10 @@ namespace DeepExcel.AddIn.Tools
             Worksheet ws = null;
             if (!string.IsNullOrEmpty(sheetName))
             {
-                try { ws = (Worksheet)_app.Sheets[sheetName]; }
+                try { ws = (Worksheet)DeepExcel.AddIn.Executor.ExcelTarget.Workbook(_app).Sheets[sheetName]; }
                 catch { }
             }
-            if (ws == null) ws = _app.ActiveSheet as Worksheet;
+            if (ws == null) ws = DeepExcel.AddIn.Executor.ExcelTarget.ActiveSheet(_app);
             if (ws == null) return null;
 
             dynamic pivotTables = ws.PivotTables();

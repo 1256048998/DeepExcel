@@ -2250,7 +2250,7 @@ namespace DeepExcel.AddIn.Bridge
 
             if (sheetName != null)
             {
-                var wb = _app.ActiveWorkbook;
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null)
                 {
                     error = "没有活动工作簿";
@@ -2276,7 +2276,7 @@ namespace DeepExcel.AddIn.Bridge
 
             try
             {
-                return _app.Range[address];
+                return ExcelTarget.Range(_app, address);
             }
             catch (Exception ex)
             {
@@ -2330,7 +2330,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var wb = _app.ActiveWorkbook;
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null) return new { error = "No active workbook" };
 
                 var sheet = wb.Worksheets[name] as Worksheet;
@@ -2574,7 +2574,7 @@ namespace DeepExcel.AddIn.Bridge
 
         public string GetActiveSheetName()
         {
-            try { return (_app.ActiveSheet as Worksheet)?.Name; }
+            try { return ExcelTarget.ActiveSheet(_app)?.Name; }
             catch { return null; }
         }
 
@@ -2596,7 +2596,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var wb = _app.ActiveWorkbook;
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null) return null;
                 var health = new HealthSnapshot();
                 try { health.CalculationManual = _app.Calculation == XlCalculation.xlCalculationManual; } catch { }
@@ -2649,6 +2649,12 @@ namespace DeepExcel.AddIn.Bridge
                 Logger.Instance.Warning("ExcelActions", "CaptureHealth failed: " + ex.Message);
                 return null;
             }
+        }
+
+        public IDisposable UseTargetWorkbook(string workbookKey)
+        {
+            var wb = _snapshotManager?.FindOpenWorkbook(workbookKey);
+            return wb == null ? null : ExcelTarget.Use(wb);
         }
 
         public object[,] ReadFormulas(string address, int maxCells)
@@ -2739,7 +2745,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.Worksheets.Add();
+                var ws = (Worksheet)ExcelTarget.Workbook(_app).Worksheets.Add();
                 try { ws.Name = name; }
                 catch
                 {
@@ -2757,7 +2763,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var wb = _app.ActiveWorkbook;
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null) return new ToolResult { Name = "delete_sheet", Success = false, Error = "No active workbook" };
                 if (wb.Worksheets.Count <= 1)
                     return new ToolResult { Name = "delete_sheet", Success = false, Error = "工作簿至少要保留一个工作表" };
@@ -2783,7 +2789,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var wb = _app.ActiveWorkbook;
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null) return new ToolResult { Name = "rename_sheet", Success = false, Error = "No active workbook" };
 
                 var sheet = wb.Worksheets[oldName] as Worksheet;
@@ -3378,7 +3384,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 // ★ 必须用 EntireRow.Insert() 插入整行，所有列才会一起下移。
                 // 错误做法：ws.Range["A"+row].Insert(xlShiftDown) 只会下移 A 列，
                 // 其他列（如 B 列）数据保持原位，导致列错位。
@@ -3402,7 +3408,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 for (int i = 0; i < count; i++)
                 {
                     ((Range)ws.Rows[row]).Delete();
@@ -3419,7 +3425,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 var colLetter = ColumnIndexToLetter(column);
                 var range = ws.Range[colLetter + "1"];
                 // ★ 必须用 EntireColumn.Insert() 插入整列，所有行才会一起右移。
@@ -3444,7 +3450,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 for (int i = 0; i < count; i++)
                 {
                     ((Range)ws.Columns[column]).Delete();
@@ -3628,7 +3634,7 @@ namespace DeepExcel.AddIn.Bridge
 
             try
             {
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 var usedRange = ws.UsedRange;
                 if (usedRange == null) return null;
                 int colCount = usedRange.Columns.Count;
@@ -3680,11 +3686,11 @@ namespace DeepExcel.AddIn.Bridge
         {
             try
             {
-                var range = _app.Range[address];
-                var wb = _app.ActiveWorkbook;
+                var range = ExcelTarget.Range(_app, address);
+                var wb = ExcelTarget.Workbook(_app);
                 if (wb == null) return new ToolResult { Name = "write_table", Success = false, Error = "No active workbook" };
 
-                var ws = (Worksheet)_app.ActiveSheet;
+                var ws = ExcelTarget.ActiveSheet(_app);
                 var table = ws.ListObjects.Add(
                     SourceType: XlListObjectSourceType.xlSrcRange,
                     Source: range,

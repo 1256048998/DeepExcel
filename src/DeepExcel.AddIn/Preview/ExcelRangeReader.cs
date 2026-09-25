@@ -132,9 +132,9 @@ namespace DeepExcel.AddIn.Preview
             {
                 if (string.IsNullOrEmpty(sheet))
                 {
-                    return _app.ActiveSheet as Worksheet;
+                    return DeepExcel.AddIn.Executor.ExcelTarget.ActiveSheet(_app);
                 }
-                return _app.ActiveWorkbook?.Worksheets[sheet] as Worksheet;
+                return DeepExcel.AddIn.Executor.ExcelTarget.Workbook(_app)?.Worksheets[sheet] as Worksheet;
             }
             catch (Exception)
             {

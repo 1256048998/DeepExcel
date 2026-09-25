@@ -44,6 +44,9 @@ namespace DeepExcel.Tests
         public List<string> SampleCellsCalls { get; } = new List<string>();
         /// <summary>默认 null：不做内联 diff</summary>
         public Func<string, object[,]> ReadFormulasFn { get; set; } = _ => null;
+        /// <summary>重定向到的工作簿；OpenWorkbooks 里没有就返回 null（已关闭）</summary>
+        public List<string> TargetCalls { get; } = new List<string>();
+        public HashSet<string> OpenWorkbooks { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"C:\data\book.xlsx" };
         public Func<List<DeepExcel.AddIn.Executor.SnapshotMeta>> ListSnapshotsFn { get; set; }
             = () => new List<DeepExcel.AddIn.Executor.SnapshotMeta>();
         public Func<string, bool> DeleteSnapshotFn { get; set; } = _ => true;
@@ -201,6 +204,14 @@ namespace DeepExcel.Tests
         public DeepExcel.AddIn.Sidecar.HealthSnapshot CaptureHealth(int maxCollected) => CaptureHealthFn();
 
         public object[,] ReadFormulas(string address, int maxCells) => ReadFormulasFn(address);
+
+        public IDisposable UseTargetWorkbook(string workbookKey)
+        {
+            TargetCalls.Add(workbookKey);
+            return OpenWorkbooks.Contains(workbookKey) ? new NoopScope() : null;
+        }
+
+        private sealed class NoopScope : IDisposable { public void Dispose() { } }
 
         public List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max)
         {
