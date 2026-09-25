@@ -44,6 +44,10 @@ class ToolDispatcher {
         case 'list':
           return this._wrapRead(WpsActions.listObjects(this._getArg(args, 'kind', 'sheets')))
 
+        // 侧车 inspect_sheet 的取数原语：不对模型开放，分析在侧车 perception 包里做
+        case 'sheet_snapshot':
+          return this._wrapRead(WpsActions.sheetSnapshot(this._getArg(args, 'sheet', ''), this._getInt(args, 'max_cells') || 0))
+
         case 'write_formula': {
           const addr = this._getArg(args, 'address', '')
           const formula = this._getArg(args, 'formula', '')

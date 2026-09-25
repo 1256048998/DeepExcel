@@ -95,6 +95,11 @@ namespace DeepExcel.AddIn.Bridge
         object FindCells(string query, bool inFormulas, IList<string> sheets, bool wholeCell, int maxResults);
         /// <summary>list：列出 sheets / names / tables / pivots / charts</summary>
         object ListObjects(string kind);
+        /// <summary>
+        /// sheet_snapshot：一次批量读出一张表的有界快照（值、R1C1 公式、合并、溢出区域、对象），
+        /// 给侧车 perception 包做结构分析。sheetName 为空时用目标工作簿的活动表。
+        /// </summary>
+        object SheetSnapshot(string sheetName, int maxCells);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

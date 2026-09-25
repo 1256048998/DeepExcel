@@ -91,6 +91,7 @@
     <Compile Include="Perception\RangeAnalyzer.cs" />
     <Compile Include="Perception\RangeInfo.cs" />
     <Compile Include="Perception\RangePaging.cs" />
+    <Compile Include="Perception\SnapshotEncoder.cs" />
     <Compile Include="Perception\WorkbookAnalyzer.cs" />
     <Compile Include="Perception\WorkbookStructure.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />

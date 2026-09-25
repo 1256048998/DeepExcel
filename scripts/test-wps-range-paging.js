@@ -76,9 +76,12 @@ function parseA1(text) {
   return { row1, col1, row2: m[4] ? +m[4] : row1, col2: m[3] ? colNumber(m[3]) : col1 }
 }
 
-function makeSheet(name, index, cells) {
-  // cells: { 'A1': { value, formula } }
+function makeSheet(name, index, cells, options = {}) {
+  // cells: { 'A1': { value, formula, r1c1 } }；options.merges: ['A1:C1', ...]；options.formats: { 2: 'yyyy-mm-dd' }（列号 → 格式）
   const sheet = { Name: name, Index: index, Visible: -1, ProtectContents: false }
+  const mergeBoxes = (options.merges || []).map(parseA1)
+  const formats = options.formats || {}
+  const overlaps = (a, b) => a.row1 <= b.row2 && b.row1 <= a.row2 && a.col1 <= b.col2 && b.col1 <= a.col2
   const cellAt = (r, c) => cells[colLetters(c) + r] || null
   const makeRange = (box) => {
     const rows = box.row2 - box.row1 + 1
@@ -113,15 +116,41 @@ function makeSheet(name, index, cells) {
     let lastHits = []
     const range = {
       Row: box.row1, Column: box.col1,
-      Rows: { Count: rows }, Columns: Object.assign((c) => makeRange({ row1: box.row1, col1: box.col1 + c - 1, row2: box.row2, col2: box.col1 + c - 1 }), { Count: cols }),
+      Columns: Object.assign((c) => makeRange({ row1: box.row1, col1: box.col1 + c - 1, row2: box.row2, col2: box.col1 + c - 1 }), { Count: cols }),
       Areas: { Count: 1 },
       Worksheet: sheet,
       Address: (ra, ca) => address(ra !== false),
       get Value2() { return grid(cell => (cell ? cell.value : null)) },
       get Formula() { return grid(cell => (cell ? (cell.formula || String(cell.value)) : '')) },
-      NumberFormat: 'General',
+      get FormulaR1C1() { return grid(cell => (cell ? (cell.r1c1 || cell.formula || String(cell.value)) : '')) },
+      get HasFormula() {
+        let any = false; let all = true
+        for (let r = box.row1; r <= box.row2; r++) {
+          for (let c = box.col1; c <= box.col2; c++) {
+            const has = !!(cellAt(r, c) && (cellAt(r, c).formula || cellAt(r, c).r1c1))
+            any = any || has; all = all && has
+          }
+        }
+        return all ? true : any ? null : false
+      },
+      get MergeCells() {
+        const hits = mergeBoxes.filter(m => overlaps(m, box))
+        if (!hits.length) return false
+        return hits.length === 1 && hits[0].row1 === box.row1 && hits[0].col1 === box.col1 &&
+          hits[0].row2 === box.row2 && hits[0].col2 === box.col2 ? true
+          : (rows === 1 && cols === 1 ? true : null)
+      },
+      get MergeArea() {
+        const m = mergeBoxes.find(mb => overlaps(mb, box))
+        return makeRange(m || box)
+      },
+      Rows: Object.assign((r) => makeRange({ row1: box.row1 + r - 1, col1: box.col1, row2: box.row1 + r - 1, col2: box.col2 }), { Count: rows }),
+      get NumberFormat() {
+        const set = new Set()
+        for (let c = box.col1; c <= box.col2; c++) set.add(formats[c] || 'General')
+        return set.size === 1 ? [...set][0] : null
+      },
       get Text() { const cell = cellAt(box.row1, box.col1); return cell ? String(cell.value) : '' },
-      get HasFormula() { const cell = cellAt(box.row1, box.col1); return !!(cell && cell.formula) },
       Cells: (r, c) => makeRange({ row1: box.row1 + r - 1, col1: box.col1 + c - 1, row2: box.row1 + r - 1, col2: box.col1 + c - 1 }),
       Find(what, after, lookIn, lookAt) {
         lastHits = hits(what, lookIn === -4123, lookAt === 1)
@@ -244,6 +273,55 @@ const dispatcher = new ToolDispatcher()
   assert.strictEqual(r.data.kind, 'sheets')
 
   r = await dispatcher.execute('list', { kind: 'widgets' })
+  assert.strictEqual(r.success, false)
+
+  // sheet_snapshot：与 C# 端同样的编码（日期 {d}、错误 {e}、0 起行列的 R1C1 与合并）
+  assert.deepStrictEqual(Paging.planSnapshotWindow(90000, 300, 0), { rows: 600, columns: 100 })
+  assert.strictEqual(Paging.isDateFormat('yyyy-mm-dd'), true)
+  assert.strictEqual(Paging.isDateFormat('yyyy"年"m"月"d"日"'), true)
+  assert.strictEqual(Paging.isDateFormat('[$-F800]dddd, mmmm dd, yyyy'), true)
+  assert.strictEqual(Paging.isDateFormat('h:mm:ss'), false)
+  assert.strictEqual(Paging.isDateFormat('#,##0.00'), false)
+  assert.strictEqual(Paging.isDateFormat('General'), false)
+  assert.strictEqual(Paging.serialToIso(45382), '2024-03-31')
+  assert.strictEqual(Paging.serialToIso(45382.5), '2024-03-31 12:00')
+  assert.deepStrictEqual(Paging.encodeValue(-2146826281, false), { e: '#DIV/0!' })
+  assert.deepStrictEqual(Paging.encodeValue('#N/A', false), { e: '#N/A' })
+  assert.deepStrictEqual(Paging.encodeValue(45382, true), { d: '2024-03-31' })
+  assert.strictEqual(Paging.encodeValue(45382, false), 45382)
+  assert.strictEqual(Paging.encodeValue('', false), null)
+
+  const payroll = makeSheet('工资', 3, {
+    A1: { value: '9 月工资表' },
+    A2: { value: '姓名' }, B2: { value: '入职日期' }, C2: { value: '扣款' }, E2: { value: '实发' },
+    C3: { value: '养老' }, D3: { value: '医疗' },
+    A4: { value: '张三' }, B4: { value: 45382 }, C4: { value: 100 }, D4: { value: 50 }, E4: { value: 7850, r1c1: '=8000-RC[-2]-RC[-1]' },
+    A5: { value: '李四' }, B5: { value: 45383 }, C5: { value: 120 }, D5: { value: 60 }, E5: { value: -2146826281, r1c1: '=1/0' },
+  }, { merges: ['A1:E1', 'A2:A3', 'B2:B3', 'C2:D2', 'E2:E3'], formats: { 2: 'yyyy-mm-dd' } })
+  sheets.push(payroll)
+  workbook.Worksheets.Count = 3
+
+  r = await dispatcher.execute('sheet_snapshot', { sheet: '工资' })
+  assert.strictEqual(r.success, true)
+  const snap = r.data
+  assert.strictEqual(snap.sheet, '工资')
+  assert.strictEqual(snap.used, 'A1:E5')
+  assert.deepStrictEqual(snap.origin, [1, 1])
+  assert.strictEqual(snap.truncated, false)
+  assert.strictEqual(snap.cells[0][0], '9 月工资表')
+  assert.deepStrictEqual(snap.cells[3][1], { d: '2024-03-31' })
+  assert.deepStrictEqual(snap.cells[4][4], { e: '#DIV/0!' })
+  assert.deepStrictEqual(snap.formulas, [[3, 4, '=8000-RC[-2]-RC[-1]'], [4, 4, '=1/0']])
+  assert.deepStrictEqual(snap.merges.map(m => m.join(',')).sort(), ['0,0,0,4', '1,0,2,0', '1,1,2,1', '1,2,1,3', '1,4,2,4'].sort())
+  assert.deepStrictEqual(snap.spills, [])
+  assert.deepStrictEqual(snap.objects, { tables: [], charts: [], pivots: [] })
+
+  r = await dispatcher.execute('sheet_snapshot', { sheet: 'data', max_cells: 300 })
+  assert.strictEqual(r.data.truncated, true)
+  assert.strictEqual(r.data.cells.length, 100)
+  assert.strictEqual(r.data.total_rows, 450)
+
+  r = await dispatcher.execute('sheet_snapshot', { sheet: '不存在' })
   assert.strictEqual(r.success, false)
 
   console.log('WPS range-paging / find / list tests passed')

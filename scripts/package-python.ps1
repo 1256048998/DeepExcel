@@ -100,7 +100,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Python dependencies failed to install.' }
 $sidecarSource = Join-Path $PSScriptRoot '..\src\DeepExcel.Sidecar'
 $sidecarDestination = Join-Path $OutputDir 'sidecar'
 New-Item -ItemType Directory -Path $sidecarDestination -Force | Out-Null
-Copy-Item -Path (Join-Path $sidecarSource '*.py') -Destination $sidecarDestination -Force
+# 与 _compile_only.ps1 相同：整棵侧车源码树（顶层 .py + perception 等子包），只排除测试与缓存。
+# 只复制顶层 *.py 会漏掉子包。
+Get-ChildItem -LiteralPath $sidecarSource -Force | Where-Object {
+    $_.Name -notin @('tests', '__pycache__', '.pytest_cache') -and
+    ($_.PSIsContainer -or $_.Extension -in @('.py', '.md', '.json'))
+} | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $sidecarDestination -Recurse -Force
+}
 
 Get-ChildItem -LiteralPath $OutputDir -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force

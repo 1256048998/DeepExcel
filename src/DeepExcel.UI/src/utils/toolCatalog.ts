@@ -61,6 +61,7 @@ export const TOOL_LABELS: Record<string, Label> = {
     return `查找${a.scope === 'formulas' ? '公式里的' : ''}「${clip(s(a.query), 20)}」${where}`
   },
   list: a => `列出${LIST_KINDS[s(a.kind)] || '工作表'}`,
+  inspect_sheet: a => at('分析表结构', a.sheet),
   read_attachment: a => at('读取附件', a.file_name),
 
   // 写

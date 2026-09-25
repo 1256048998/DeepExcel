@@ -215,6 +215,14 @@ namespace DeepExcel.Tests
             return FindCellsFn(query);
         }
 
+        public List<(string Sheet, int MaxCells)> SnapshotCalls { get; } = new List<(string, int)>();
+        public Func<string, object> SheetSnapshotFn { get; set; } = s => new { sheet = s ?? "Sheet1", cells = new object[0] };
+        public object SheetSnapshot(string sheetName, int maxCells)
+        {
+            SnapshotCalls.Add((sheetName, maxCells));
+            return SheetSnapshotFn(sheetName);
+        }
+
         public List<string> ListCalls { get; } = new List<string>();
         public Func<string, object> ListObjectsFn { get; set; } = k => new { kind = k, count = 0, items = new object[0] };
 

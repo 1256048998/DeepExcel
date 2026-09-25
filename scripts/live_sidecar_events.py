@@ -12,6 +12,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --steer      # 工具执行期间插话，模型照做
     python scripts/live_sidecar_events.py --codegen    # 写 VBA 时边写边显示（tool_gen）
     python scripts/live_sidecar_events.py --plan       # 多步任务用 todo_write 列计划并更新
+    python scripts/live_sidecar_events.py --inspect    # 陌生的表先 inspect_sheet，能转述异常候选
 """
 
 from __future__ import annotations
@@ -333,7 +334,69 @@ def plan_scenario() -> int:
     return 1 if problems else 0
 
 
+def inspect_scenario() -> int:
+    """「检查这张工资表」：模型应当调用 inspect_sheet，并把埋进去的问题（C10 合计漏行、
+    E7 被改成死值）说出来。快照用真 Excel 导出的 fixture，宿主只回 sheet_snapshot。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    fixture = os.path.join(ROOT, "src", "DeepExcel.Sidecar", "tests", "fixtures", "snapshot_payroll.json")
+    with open(fixture, encoding="utf-8") as stream:
+        snapshot = json.load(stream)
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "context": {},
+          "text": "帮我检查一下 Data 这张工资表的公式和合计有没有问题，先别改，告诉我哪里可疑。"})
+    host_calls, text, t0 = [], [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            host_calls.append(msg["tool"])
+            print("host   ", msg["tool"], json.dumps(msg.get("args") or {}, ensure_ascii=False)[:120])
+            if msg["tool"] == "sheet_snapshot":
+                result = {"success": True, "data": snapshot}
+            elif msg["tool"] == "list":
+                result = {"success": True, "data": {"kind": "sheets", "count": 1,
+                                                    "items": [{"name": "Data", "used_range": "A1:F10"}]}}
+            else:
+                result = {"success": False, "error": "这个场景只提供 inspect_sheet / list",
+                          "suggestion": "用 inspect_sheet(sheet=\"Data\")"}
+            send({"type": "tool_result", "call_id": msg["call_id"],
+                  "context": {}, **result})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "deny"})
+        elif kind == "stream_delta":
+            text.append(msg.get("text", ""))
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    answer = "".join(text)
+    print("\n--- 回复 ---\n" + answer)
+    problems = []
+    if "sheet_snapshot" not in host_calls:
+        problems.append("model never called inspect_sheet")
+    for cell in ("C10", "E7"):
+        if cell not in answer:
+            problems.append(f"answer does not mention {cell}")
+    if any(t in host_calls for t in ("write_value", "write_formula", "write_range")):
+        problems.append("model modified the sheet although told not to")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--inspect" in sys.argv:
+        sys.exit(inspect_scenario())
     if "--plan" in sys.argv:
         sys.exit(plan_scenario())
     if "--codegen" in sys.argv:

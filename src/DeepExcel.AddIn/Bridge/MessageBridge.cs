@@ -2421,6 +2421,49 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        /// <summary>一张表上的表格（ListObject）：名称、区域、数据行数、前 30 个列名</summary>
+        private static void TablesOn(Worksheet ws, List<object> items)
+        {
+            foreach (ListObject t in ws.ListObjects)
+            {
+                var headers = new List<string>();
+                try { foreach (ListColumn c in t.ListColumns) { headers.Add(c.Name); if (headers.Count >= 30) break; } } catch { }
+                int dataRows = 0;
+                try { dataRows = t.ListRows.Count; } catch { }
+                items.Add(new { name = t.Name, sheet = ws.Name, range = t.Range.Address[false, false], rows = dataRows, columns = headers });
+                if (items.Count >= MaxListEntries) break;
+            }
+        }
+
+        private static void PivotsOn(Worksheet ws, List<object> items)
+        {
+            PivotTables pivots;
+            try { pivots = (PivotTables)ws.PivotTables(); } catch { return; }
+            for (var i = 1; i <= pivots.Count && items.Count < MaxListEntries; i++)
+            {
+                var p = pivots.Item(i);
+                string location = null, source = null;
+                try { location = p.TableRange1.Address[false, false]; } catch { }
+                try { source = Convert.ToString(p.SourceData); } catch { }
+                items.Add(new { name = p.Name, sheet = ws.Name, location, source = ClipText(source, 200) });
+            }
+        }
+
+        private static void ChartsOn(Worksheet ws, List<object> items)
+        {
+            ChartObjects charts;
+            try { charts = (ChartObjects)ws.ChartObjects(); } catch { return; }
+            for (var i = 1; i <= charts.Count && items.Count < MaxListEntries; i++)
+            {
+                var co = (ChartObject)charts.Item(i);
+                string title = null, type = null, anchor = null;
+                try { if (co.Chart.HasTitle) title = co.Chart.ChartTitle.Text; } catch { }
+                try { type = co.Chart.ChartType.ToString(); } catch { }
+                try { anchor = co.TopLeftCell.Address[false, false]; } catch { }
+                items.Add(new { name = co.Name, sheet = ws.Name, type, title, top_left = anchor, chart_sheet = false });
+            }
+        }
+
         public object ListObjects(string kind)
         {
             try
@@ -2462,46 +2505,22 @@ namespace DeepExcel.AddIn.Bridge
                     case "tables":
                         foreach (Worksheet ws in wb.Worksheets)
                         {
-                            foreach (ListObject t in ws.ListObjects)
-                            {
-                                var headers = new List<string>();
-                                try { foreach (ListColumn c in t.ListColumns) { headers.Add(c.Name); if (headers.Count >= 30) break; } } catch { }
-                                int dataRows = 0;
-                                try { dataRows = t.ListRows.Count; } catch { }
-                                items.Add(new { name = t.Name, sheet = ws.Name, range = t.Range.Address[false, false], rows = dataRows, columns = headers });
-                                if (items.Count >= MaxListEntries) break;
-                            }
+                            if (items.Count >= MaxListEntries) break;
+                            TablesOn(ws, items);
                         }
                         break;
                     case "pivots":
                         foreach (Worksheet ws in wb.Worksheets)
                         {
-                            PivotTables pivots;
-                            try { pivots = (PivotTables)ws.PivotTables(); } catch { continue; }
-                            for (var i = 1; i <= pivots.Count; i++)
-                            {
-                                var p = pivots.Item(i);
-                                string location = null, source = null;
-                                try { location = p.TableRange1.Address[false, false]; } catch { }
-                                try { source = Convert.ToString(p.SourceData); } catch { }
-                                items.Add(new { name = p.Name, sheet = ws.Name, location, source = ClipText(source, 200) });
-                            }
+                            if (items.Count >= MaxListEntries) break;
+                            PivotsOn(ws, items);
                         }
                         break;
                     case "charts":
                         foreach (Worksheet ws in wb.Worksheets)
                         {
-                            ChartObjects charts;
-                            try { charts = (ChartObjects)ws.ChartObjects(); } catch { continue; }
-                            for (var i = 1; i <= charts.Count; i++)
-                            {
-                                var co = (ChartObject)charts.Item(i);
-                                string title = null, type = null, anchor = null;
-                                try { if (co.Chart.HasTitle) title = co.Chart.ChartTitle.Text; } catch { }
-                                try { type = co.Chart.ChartType.ToString(); } catch { }
-                                try { anchor = co.TopLeftCell.Address[false, false]; } catch { }
-                                items.Add(new { name = co.Name, sheet = ws.Name, type, title, top_left = anchor, chart_sheet = false });
-                            }
+                            if (items.Count >= MaxListEntries) break;
+                            ChartsOn(ws, items);
                         }
                         foreach (Chart chartSheet in wb.Charts)
                         {
@@ -2519,6 +2538,149 @@ namespace DeepExcel.AddIn.Bridge
                     count = items.Count,
                     truncated = items.Count >= MaxListEntries,
                     items,
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { error = ex.Message };
+            }
+        }
+
+        public object SheetSnapshot(string sheetName, int maxCells)
+        {
+            try
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var wb = ExcelTarget.Workbook(_app);
+                if (wb == null) return new { error = "没有打开的工作簿" };
+                Worksheet ws;
+                if (string.IsNullOrWhiteSpace(sheetName))
+                {
+                    ws = ExcelTarget.ActiveSheet(_app);
+                    if (ws == null) return new { error = "当前活动的不是工作表（可能是图表页）", suggestion = "传入 sheet 参数，先用 list(kind=sheets) 看有哪些表" };
+                }
+                else
+                {
+                    ws = wb.Worksheets.Cast<Worksheet>().FirstOrDefault(w => string.Equals(w.Name, sheetName.Trim(), StringComparison.OrdinalIgnoreCase));
+                    if (ws == null) return new { error = "找不到工作表：" + sheetName, suggestion = "先用 list(kind=sheets) 看有哪些表" };
+                }
+
+                var used = ws.UsedRange;
+                int row1 = used.Row, col1 = used.Column, totalRows = used.Rows.Count, totalColumns = used.Columns.Count;
+                var window = SnapshotEncoder.PlanWindow(totalRows, totalColumns, maxCells);
+                var cells = new List<object[]>();
+                var formulas = new List<object[]>();
+                var merges = new List<int[]>();
+                var spills = new List<int[]>();
+                bool formulasTruncated = false, mergesTruncated = false;
+                var usedAddress = used.Address[false, false];
+                // 空表的 UsedRange 是 A1 一格且没有值
+                var empty = totalRows == 1 && totalColumns == 1 && used.Value2 == null && !(used.HasFormula is bool hf && hf);
+
+                if (!empty && window.Rows > 0)
+                {
+                    var range = ws.Range[ws.Cells[row1, col1], ws.Cells[row1 + window.Rows - 1, col1 + window.Columns - 1]];
+
+                    // 值：一次 COM 调用。Value（不是 Value2）才能分出日期
+                    var raw = range.Value;
+                    for (var r = 0; r < window.Rows; r++)
+                    {
+                        var row = new object[window.Columns];
+                        for (var c = 0; c < window.Columns; c++)
+                        {
+                            row[c] = SnapshotEncoder.EncodeValue(raw is object[,] grid ? grid[r + 1, c + 1] : raw);
+                        }
+                        cells.Add(row);
+                    }
+
+                    // 公式：整块没有公式时（HasFormula=false）不读
+                    var hasFormula = range.HasFormula;
+                    if (!(hasFormula is bool noneOrAll && !noneOrAll))
+                    {
+                        var r1c1 = range.FormulaR1C1;
+                        for (var r = 0; r < window.Rows && !formulasTruncated; r++)
+                        {
+                            for (var c = 0; c < window.Columns; c++)
+                            {
+                                var f = r1c1 is object[,] fg ? fg[r + 1, c + 1] as string : r1c1 as string;
+                                if (f == null || f.Length < 2 || f[0] != '=') continue;
+                                if (formulas.Count >= SnapshotEncoder.MaxFormulas) { formulasTruncated = true; break; }
+                                formulas.Add(new object[] { r, c, SnapshotEncoder.ClipFormula(f) });
+                            }
+                        }
+                    }
+
+                    // 合并：整块 MergeCells=false 时跳过；否则逐行问，只有含合并的行才逐格找
+                    var mergeState = range.MergeCells;
+                    if (!(mergeState is bool anyMerge && !anyMerge))
+                    {
+                        var seen = new HashSet<string>();
+                        for (var r = 1; r <= window.Rows && !mergesTruncated; r++)
+                        {
+                            var rowRange = (Range)range.Rows[r];
+                            if (rowRange.MergeCells is bool rowMerge && !rowMerge) continue;
+                            for (var c = 1; c <= window.Columns; c++)
+                            {
+                                var cell = (Range)range.Cells[r, c];
+                                if (!(cell.MergeCells is bool m && m)) continue;
+                                var area = cell.MergeArea;
+                                var key = area.Address[false, false];
+                                var areaCols = area.Columns.Count;
+                                if (seen.Add(key))
+                                {
+                                    if (merges.Count >= SnapshotEncoder.MaxMerges) { mergesTruncated = true; break; }
+                                    merges.Add(new[] { area.Row - row1, area.Column - col1,
+                                        area.Row + area.Rows.Count - 1 - row1, area.Column + areaCols - 1 - col1 });
+                                }
+                                c = area.Column + areaCols - 1 - col1 + 1;  // 跳过这块合并区域剩下的列
+                            }
+                        }
+                    }
+
+                    // 动态数组溢出区域：只问可能溢出的公式；旧版 Excel 没有 HasSpill，第一次失败就不再问
+                    var checks = 0;
+                    foreach (var entry in formulas)
+                    {
+                        if (!SnapshotEncoder.MaySpill((string)entry[2])) continue;
+                        if (++checks > SnapshotEncoder.MaxSpillChecks) break;
+                        try
+                        {
+                            dynamic cell = ws.Cells[row1 + (int)entry[0], col1 + (int)entry[1]];
+                            if (!(bool)cell.HasSpill) continue;
+                            Range spill = cell.SpillingToRange;
+                            spills.Add(new[] { spill.Row - row1, spill.Column - col1,
+                                spill.Row + spill.Rows.Count - 1 - row1, spill.Column + spill.Columns.Count - 1 - col1 });
+                        }
+                        catch
+                        {
+                            break;
+                        }
+                    }
+                }
+
+                var tables = new List<object>();
+                var charts = new List<object>();
+                var pivots = new List<object>();
+                try { TablesOn(ws, tables); } catch { }
+                try { ChartsOn(ws, charts); } catch { }
+                try { PivotsOn(ws, pivots); } catch { }
+
+                return new
+                {
+                    sheet = ws.Name,
+                    used = empty ? null : usedAddress,
+                    origin = new[] { row1, col1 },
+                    total_rows = empty ? 0 : totalRows,
+                    total_columns = empty ? 0 : totalColumns,
+                    truncated = !empty && (window.Rows < totalRows || window.Columns < totalColumns),
+                    cells,
+                    formulas,
+                    formulas_truncated = formulasTruncated,
+                    merges,
+                    merges_truncated = mergesTruncated,
+                    spills,
+                    objects = new { tables, charts, pivots },
+                    elapsed_ms = clock.ElapsedMilliseconds,
                 };
             }
             catch (Exception ex)

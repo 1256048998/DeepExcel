@@ -7,6 +7,8 @@ import excel_tools
 import sidecar
 from excel_tools import (
     SIDECAR_CHANNEL_TOOLS,
+    SIDECAR_COMPUTED_TOOLS,
+    WPS_HOST_PRIMITIVES,
     WPS_HOST_TOOLS,
     host_supports_tool,
     register_all_tools,
@@ -27,7 +29,18 @@ def test_wps_host_tools_match_the_js_dispatcher():
     js = (ROOT / "src" / "DeepExcel.Wps" / "tool-dispatcher.js").read_text(encoding="utf-8")
     cases = set(re.findall(r"case '(\w+)':", js))
     assert cases, "没解析到任何 case 分支，正则可能过时了"
-    assert cases == set(WPS_HOST_TOOLS)
+    assert cases == set(WPS_HOST_TOOLS) | set(WPS_HOST_PRIMITIVES)
+
+
+def test_sidecar_computed_tools_follow_their_host_primitive():
+    """inspect_sheet 在侧车里算，只要宿主实现了 sheet_snapshot 就能用；原语本身不给模型"""
+    for name, primitive in SIDECAR_COMPUTED_TOOLS.items():
+        assert host_supports_tool("excel", name)
+        assert host_supports_tool("wps", name) == (primitive in WPS_HOST_PRIMITIVES)
+    for host in ("excel", "wps"):
+        names = _names(register_all_tools(host))
+        assert "inspect_sheet" in names
+        assert not names & set(WPS_HOST_PRIMITIVES)
 
 
 def test_wps_session_only_sees_tools_wps_can_run():

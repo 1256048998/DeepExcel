@@ -596,6 +596,11 @@ namespace DeepExcel.AddIn.Sidecar
                     case "list":
                         return WrapReadResult(toolName, _excel.ListObjects(GetArg<string>(args, "kind") ?? "sheets"));
 
+                    case "sheet_snapshot":
+                        // 侧车 inspect_sheet 的取数原语：不对模型开放，分析在侧车 perception 包里做
+                        return WrapReadResult(toolName, _excel.SheetSnapshot(
+                            GetArg<string>(args, "sheet"), OptionalInt(args, "max_cells") ?? 0));
+
                     case "write_formula":
                         var cellAddress = GetArg<string>(args, "address");
                         var formula = GetArg<string>(args, "formula");

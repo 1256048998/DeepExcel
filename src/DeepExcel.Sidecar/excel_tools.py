@@ -102,6 +102,46 @@ async def list_objects(args):
     return _wrap_result(result)
 
 
+@tool(
+    "inspect_sheet",
+    "分析一张工作表的结构（接手陌生或复杂的表时先用它）：blocks 层给出表上有几块数据、每块的标题、"
+    "多级表头（列名路径如「扣款/养老」）、数据行范围、合计行、每列类型；formulas 层按 R1C1 归纳公式模式"
+    "（如 =[数量]*[单价] 覆盖 D2:D500）、标出同列公式不一致，并列出异常候选（合计漏行、被改成死值、"
+    "孤立偏离、断链引用）；objects 层列表格/图表/透视表；dependencies 层列跨表和外部工作簿引用。"
+    "每层带 status：complete 是全表结论，partial 表示大表只读了一部分；header_uncertain=true 时"
+    "先用 read_range 读前几行确认表头。异常只是候选，改之前先问用户。",
+    {
+        "type": "object",
+        "properties": {
+            "sheet": {"type": "string", "description": "工作表名；不传用当前活动表"},
+            "layers": {
+                "type": "array",
+                "items": {"type": "string", "enum": ["blocks", "formulas", "objects", "dependencies", "all"]},
+                "description": "要哪些层，默认 blocks + formulas；all 表示全部",
+            },
+        },
+        "required": [],
+    },
+)
+async def inspect_sheet(args):
+    import perception
+    payload = {}
+    if args.get("sheet"):
+        payload["sheet"] = args["sheet"]
+    snapshot = await call_csharp("sheet_snapshot", payload)
+    if not isinstance(snapshot, dict) or snapshot.get("success") is False:
+        return _wrap_result(snapshot)
+    try:
+        report = perception.inspect(snapshot.get("data") or {}, args.get("layers"))
+    except Exception as exc:  # noqa: BLE001 — 分析失败不能拖垮会话，给出可继续的路
+        return _wrap_result({
+            "success": False,
+            "error": f"结构分析失败：{type(exc).__name__}: {exc}",
+            "suggestion": "改用 list(kind=sheets) 和 read_range 直接读取",
+        })
+    return _wrap_result({"success": True, "data": report})
+
+
 @tool("write_formula", "向指定单元格写入 Excel 公式（以 = 开头）", {"address": str, "formula": str})
 async def write_formula(args):
     result = await call_csharp("write_formula", {
@@ -668,11 +708,19 @@ WPS_HOST_TOOLS = frozenset({
 # 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
 SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write"})
 
+# 宿主原语：宿主分发器里有这个分支，但不注册给模型，只由侧车工具调用
+WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
+
+# 在侧车里计算、只依赖宿主原语的工具 → 它需要的原语
+SIDECAR_COMPUTED_TOOLS = {"inspect_sheet": "sheet_snapshot"}
+
 
 def host_supports_tool(host: str, name: str) -> bool:
     if _HOST_ONLY_TOOLS.get(name, host) != host:
         return False
     if host == "wps":
+        if name in SIDECAR_COMPUTED_TOOLS:
+            return SIDECAR_COMPUTED_TOOLS[name] in WPS_HOST_PRIMITIVES
         return name in WPS_HOST_TOOLS or name in SIDECAR_CHANNEL_TOOLS
     return True
 
@@ -684,7 +732,7 @@ def register_all_tools(host: str = "excel") -> list:
     system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
     """
     tools = [
-        read_workbook, read_selection, read_range, find, list_objects, read_attachment,
+        read_workbook, read_selection, read_range, find, list_objects, inspect_sheet, read_attachment,
         write_formula, write_value, write_range, fill_formula_down, replace_formula,
         clean_data,
         delete_blank_rows, split_text_to_columns, fill_blank_cells,

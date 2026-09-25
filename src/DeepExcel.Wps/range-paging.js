@@ -1,6 +1,6 @@
 // src/DeepExcel.Wps/range-paging.js
-// read_range 分页与 find 汇总的纯逻辑（对应 C# 端 Perception/RangePaging.cs 与
-// ExcelActionsImpl.FindCells 的计数规则）。不碰 wps 对象，便于 node 直接测试：
+// read_range 分页、find 汇总、sheet_snapshot 编码的纯逻辑（对应 C# 端 Perception/RangePaging.cs、
+// ExcelActionsImpl.FindCells 的计数规则、Perception/SnapshotEncoder.cs）。不碰 wps 对象，便于 node 直接测试：
 // node scripts/test-wps-range-paging.js（build-wps.ps1 会自动调用）
 
 'use strict'
@@ -111,7 +111,75 @@ function clipText(value, max) {
   return text.length > limit ? text.slice(0, limit) + '…' : text
 }
 
+// ============ sheet_snapshot（对应 C# Perception/SnapshotEncoder.cs） ============
+
+const SNAPSHOT_DEFAULT_CELLS = 60000
+const SNAPSHOT_HARD_MAX_CELLS = 100000
+const SNAPSHOT_MAX_COLUMNS = 100
+const SNAPSHOT_MAX_FORMULAS = 20000
+const SNAPSHOT_MAX_MERGES = 500
+const SNAPSHOT_MAX_TEXT = 60
+const SNAPSHOT_MAX_FORMULA = 300
+
+// CVErr 的数值 = -2146826288 + (xlErr 常量 - 2000)
+const ERROR_TEXT = {
+  2000: '#NULL!', 2007: '#DIV/0!', 2015: '#VALUE!', 2023: '#REF!', 2029: '#NAME?', 2036: '#NUM!',
+  2042: '#N/A', 2043: '#GETTING_DATA', 2045: '#SPILL!', 2046: '#CONNECT!', 2047: '#BLOCKED!',
+  2048: '#UNKNOWN!', 2049: '#FIELD!', 2050: '#CALC!',
+}
+const ERROR_LITERAL = /^#(NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|GETTING_DATA|SPILL!|CONNECT!|BLOCKED!|UNKNOWN!|FIELD!|CALC!)$/
+
+function planSnapshotWindow(totalRows, totalColumns, maxCells) {
+  if (totalRows <= 0 || totalColumns <= 0) return { rows: 0, columns: 0 }
+  let budget = maxCells > 0 ? maxCells : SNAPSHOT_DEFAULT_CELLS
+  budget = Math.min(budget, SNAPSHOT_HARD_MAX_CELLS)
+  const columns = Math.min(totalColumns, SNAPSHOT_MAX_COLUMNS)
+  const rows = Math.min(totalRows, Math.max(1, Math.floor(budget / columns)))
+  return { rows, columns }
+}
+
+/** 数字格式是不是日期（去掉引号里的字面量和 [..] 段后看有没有 y / d，或不带 h、s 的 m） */
+function isDateFormat(format) {
+  if (typeof format !== 'string' || !format) return false
+  const bare = format.replace(/"[^"]*"/g, '').replace(/\[[^\]]*\]/g, '').replace(/\\./g, '')
+  if (/general|@/i.test(bare) && !/[yd]/i.test(bare)) return false
+  return /[yd]/i.test(bare) || (/m/i.test(bare) && !/[hs]/i.test(bare))
+}
+
+/** Excel 日期序列号 → 'yyyy-MM-dd'（有时间时 'yyyy-MM-dd HH:mm'） */
+function serialToIso(serial) {
+  const ms = Math.round((serial - 25569) * 86400000)  // 25569 = 1970-01-01 的序列号
+  const d = new Date(ms)
+  const pad = n => String(n).padStart(2, '0')
+  const date = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
+  const minutes = d.getUTCHours() * 60 + d.getUTCMinutes()
+  return minutes ? `${date} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}` : date
+}
+
+/** Value2 的一格 → null / 数字 / 布尔 / 截断文本 / {d} / {e}。asDate：这一列是日期格式 */
+function encodeValue(value, asDate) {
+  if (value === null || value === undefined) return null
+  if (value instanceof Date) return { d: serialToIso(value.getTime() / 86400000 + 25569) }
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return null
+    const code = value + 2146828288
+    if (Number.isInteger(value) && ERROR_TEXT[code]) return { e: ERROR_TEXT[code] }
+    return asDate && value > 0 && value < 2958466 ? { d: serialToIso(value) } : value
+  }
+  const text = String(value)
+  if (!text) return null
+  if (ERROR_LITERAL.test(text)) return { e: text }
+  return text.length > SNAPSHOT_MAX_TEXT ? text.slice(0, SNAPSHOT_MAX_TEXT) + '…' : text
+}
+
+function clipFormula(formula) {
+  return formula.length > SNAPSHOT_MAX_FORMULA ? formula.slice(0, SNAPSHOT_MAX_FORMULA) + '…' : formula
+}
+
 module.exports = {
   DEFAULT_ROWS, MAX_ROWS, MAX_CELLS, MAX_COLUMNS, MAX_FIND_SCAN_PER_SHEET,
   clip, boxRows, boxColumns, plan, hint, qualifiedAddress, collectMatches, findHint, clipText,
+  SNAPSHOT_MAX_FORMULAS, SNAPSHOT_MAX_MERGES,
+  planSnapshotWindow, isDateFormat, serialToIso, encodeValue, clipFormula,
 }

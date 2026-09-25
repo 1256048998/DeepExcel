@@ -247,6 +247,115 @@ const WpsActions = {
   },
 
   /**
+   * 一张表的有界快照（对应 C# SheetSnapshot），交给侧车 perception 包做结构分析。
+   * 格式见 src/DeepExcel.Sidecar/perception/grid.py。WPS 的 Value2 分不出日期，
+   * 所以按列读一次 NumberFormat，日期格式的列把序列号转成日期。溢出区域不读（spills 为空）。
+   */
+  sheetSnapshot(sheetName, maxCells) {
+    const wb = wps.Application.ActiveWorkbook
+    if (!wb) return { error: '没有打开的工作簿' }
+    let ws = null
+    if (sheetName && String(sheetName).trim()) {
+      const wanted = String(sheetName).trim().toLowerCase()
+      for (let i = 1; i <= wb.Worksheets.Count; i++) {
+        const candidate = wb.Worksheets(i)
+        if (String(candidate.Name).toLowerCase() === wanted) { ws = candidate; break }
+      }
+      if (!ws) return { error: '找不到工作表：' + sheetName, suggestion: '先用 list(kind=sheets) 看有哪些表' }
+    } else {
+      ws = wps.Application.ActiveSheet
+      if (!ws) return { error: '当前没有活动的工作表', suggestion: '传入 sheet 参数' }
+    }
+
+    const used = ws.UsedRange
+    const row1 = used.Row
+    const col1 = used.Column
+    const totalRows = used.Rows.Count
+    const totalColumns = used.Columns.Count
+    const usedValue = totalRows === 1 && totalColumns === 1 ? used.Value2 : 1
+    const empty = totalRows === 1 && totalColumns === 1 && (usedValue === null || usedValue === undefined || usedValue === '') && !used.HasFormula
+    const window = Paging.planSnapshotWindow(totalRows, totalColumns, maxCells)
+    const cells = []
+    const formulas = []
+    const merges = []
+    let formulasTruncated = false
+    let mergesTruncated = false
+
+    if (!empty && window.rows > 0) {
+      const range = ws.Range(ws.Cells(row1, col1), ws.Cells(row1 + window.rows - 1, col1 + window.columns - 1))
+      const dateColumns = []
+      for (let c = 1; c <= window.columns; c++) {
+        let format = null
+        try { format = range.Columns(c).NumberFormat } catch (e) { format = null }
+        dateColumns.push(Paging.isDateFormat(format))
+      }
+      const values = this._as2d(range.Value2)
+      for (let r = 0; r < window.rows; r++) {
+        const row = []
+        for (let c = 0; c < window.columns; c++) {
+          row.push(Paging.encodeValue(values[r] ? values[r][c] : null, dateColumns[c]))
+        }
+        cells.push(row)
+      }
+
+      if (range.HasFormula !== false) {
+        const r1c1 = this._as2d(range.FormulaR1C1)
+        for (let r = 0; r < window.rows && !formulasTruncated; r++) {
+          for (let c = 0; c < window.columns; c++) {
+            const f = r1c1[r] ? r1c1[r][c] : null
+            if (typeof f !== 'string' || f.length < 2 || f[0] !== '=') continue
+            if (formulas.length >= Paging.SNAPSHOT_MAX_FORMULAS) { formulasTruncated = true; break }
+            formulas.push([r, c, Paging.clipFormula(f)])
+          }
+        }
+      }
+
+      if (range.MergeCells !== false) {
+        const seen = new Set()
+        for (let r = 1; r <= window.rows && !mergesTruncated; r++) {
+          let rowMerge = null
+          try { rowMerge = range.Rows(r).MergeCells } catch (e) { rowMerge = null }
+          if (rowMerge === false) continue
+          for (let c = 1; c <= window.columns; c++) {
+            const cell = range.Cells(r, c)
+            if (cell.MergeCells !== true) continue
+            const area = cell.MergeArea
+            const key = this._address(area, true)
+            const areaColumns = area.Columns.Count
+            if (!seen.has(key)) {
+              seen.add(key)
+              if (merges.length >= Paging.SNAPSHOT_MAX_MERGES) { mergesTruncated = true; break }
+              merges.push([area.Row - row1, area.Column - col1,
+                area.Row + area.Rows.Count - 1 - row1, area.Column + areaColumns - 1 - col1])
+            }
+            c = area.Column + areaColumns - 1 - col1 + 1  // 跳过这块合并区域剩下的列
+          }
+        }
+      }
+    }
+
+    const onThisSheet = kind => {
+      const listed = this.listObjects(kind)
+      return (listed.items || []).filter(item => item.sheet === ws.Name)
+    }
+    return {
+      sheet: ws.Name,
+      used: empty ? null : this._address(used, true),
+      origin: [row1, col1],
+      total_rows: empty ? 0 : totalRows,
+      total_columns: empty ? 0 : totalColumns,
+      truncated: !empty && (window.rows < totalRows || window.columns < totalColumns),
+      cells,
+      formulas,
+      formulas_truncated: formulasTruncated,
+      merges,
+      merges_truncated: mergesTruncated,
+      spills: [],
+      objects: { tables: onThisSheet('tables'), charts: onThisSheet('charts'), pivots: onThisSheet('pivots') },
+    }
+  },
+
+  /**
    * 读取整个工作簿结构（所有 sheet + UsedRange 信息）
    */
   readWorkbook() {

@@ -311,6 +311,32 @@ def test_wps_sidecar_and_web_come_from_excel_payload(module):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def test_sidecar_copies_keep_subpackages(module):
+    """Every script that copies the sidecar must copy the whole tree.
+
+    package-python.ps1 used to copy only the top-level *.py files. That was
+    harmless while the sidecar was flat; once perception/ became a
+    subpackage, any copy made that way would import-fail on a user's machine
+    while the developer's machine, running from the source tree, never
+    noticed. The same rule is checked in all three copy sites.
+    """
+    del module
+    sidecar = os.path.join(ROOT, "src", "DeepExcel.Sidecar")
+    subpackages = [
+        name for name in os.listdir(sidecar)
+        if name not in ("tests", "__pycache__", ".pytest_cache")
+        and os.path.isfile(os.path.join(sidecar, name, "__init__.py"))
+    ]
+    check("the sidecar has subpackages to protect", bool(subpackages), ", ".join(subpackages))
+    for script in ("_compile_only.ps1", "package-python.ps1", "build-wps.ps1"):
+        with open(os.path.join(ROOT, "scripts", script), encoding="utf-8-sig") as stream:
+            text = stream.read()
+        flat_copy = re.search(r"Join-Path\s+\$sidecar\w*\s+'\*\.py'", text, re.IGNORECASE)
+        check("%s copies the sidecar tree, not just *.py" % script,
+              not flat_copy and "PSIsContainer" in text,
+              flat_copy.group(0) if flat_copy else "")
+
+
 def test_release_doc_covers_every_build_step(module):
     """The release runbook must build everything the packager demands.
 
@@ -514,6 +540,7 @@ def main():
     test_updater_is_packaged(module)
     test_every_wps_source_file_is_packaged(module)
     test_wps_sidecar_and_web_come_from_excel_payload(module)
+    test_sidecar_copies_keep_subpackages(module)
     test_release_doc_covers_every_build_step(module)
     test_update_manifest_guards(module)
 
