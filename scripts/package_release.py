@@ -107,6 +107,8 @@ WPS_ITEMS = [
     "jsa-executor.js",
     # 首次使用：工作簿结构 / 插入示例数据
     "starter-host.js",
+    # 先读后写 + 读后被改检测（对应 C# ReadLedger）
+    "read-ledger.js",
     # 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
     "config-store.js",
     "credential-store.js",

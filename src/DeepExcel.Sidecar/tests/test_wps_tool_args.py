@@ -38,6 +38,9 @@ def forwarded_keys():
 
 def wps_reads():
     source = DISPATCHER.read_text(encoding="utf-8")
+    # 只看真正执行工具的那个 switch（_writeTarget 里也有按工具名的 case）
+    start = source.index("async _executeCore(")
+    source = source[start:]
     out = {}
     for chunk in re.split(r"\n\s*case '", source)[1:]:
         name = chunk.split("'", 1)[0]

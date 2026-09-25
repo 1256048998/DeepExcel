@@ -610,6 +610,16 @@ const WpsActions = {
     fromRange.AutoFill(toRange, 0) // xlFillDefault=0
   },
 
+  /** 区域里有没有任何内容（先读后写：没读过的空白区域可以直接写）。读不了当作没有，与 C# 端一致 */
+  rangeHasContent(address) {
+    try {
+      const range = this._getRange(address)
+      return wps.Application.WorksheetFunction.CountA(range) > 0
+    } catch (e) {
+      return false
+    }
+  },
+
   // ============= 工具方法 =============
 
   /**

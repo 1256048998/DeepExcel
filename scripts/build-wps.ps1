@@ -101,6 +101,8 @@ $requiredFiles = @(
     "jsa-executor.js",
     # 首次使用：工作簿结构 / 插入示例数据
     "starter-host.js",
+    # 先读后写 + 读后被改检测
+    "read-ledger.js",
     # ★ 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
     "config-store.js",
     "credential-store.js",
@@ -172,6 +174,9 @@ if ($LASTEXITCODE -ne 0) { throw 'WPS starter test failed' }
 
 & node (Join-Path $scriptDir 'test-wps-tools.js')
 if ($LASTEXITCODE -ne 0) { throw 'WPS tool dispatch test failed' }
+
+& node (Join-Path $scriptDir 'test-wps-ledger.js')
+if ($LASTEXITCODE -ne 0) { throw 'WPS read ledger test failed' }
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green

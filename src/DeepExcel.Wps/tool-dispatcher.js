@@ -8,19 +8,164 @@
 
 const WpsActions = require('./wps-actions')
 const JsaExecutor = require('./jsa-executor')
+const Ledger = require('./read-ledger')
 
 class ToolDispatcher {
   constructor() {
     this.jsaExecutor = new JsaExecutor()
+    // 先读后写：每个工作簿一本账（与 C# 端每个会话一本一致）
+    this._ledgers = new Map()
+    // 正在执行工具：这期间的 SheetChange 是我们自己的写入，不算用户改动
+    this.isExecuting = false
   }
 
   /**
-   * 执行工具（异步，对应 ToolDispatcher.Execute）
+   * 执行工具（异步，对应 ToolDispatcher.Execute）：先读后写把关 → 执行 → 记账 → 附上用户改动提醒
    * @param {string} toolName
    * @param {object} args
-   * @returns {Promise<{success: boolean, data: any, error: string, suggestion: string}>}
+   * @returns {Promise<{success: boolean, data: any, error: string, suggestion: string, warning?: string}>}
    */
   async execute(toolName, args) {
+    const target = this._writeTarget(toolName, args || {})
+    if (target) {
+      const refusal = this._checkLedger(toolName, target)
+      if (refusal) return this._withNotices(refusal)
+    }
+    let result
+    this.isExecuting = true
+    try {
+      result = await this._executeCore(toolName, args)
+    } finally {
+      this.isExecuting = false
+    }
+    this._recordLedger(toolName, args || {}, result, target)
+    return this._withNotices(result)
+  }
+
+  /** main.js 的 SheetChange 监听调用：不是我们的工具引起的改动，记为用户改动 */
+  recordUserEdit(sheetName, address) {
+    if (this.isExecuting || !address) return
+    for (const part of String(address).split(',')) {
+      const rect = Ledger.parseRect(part, sheetName)
+      if (rect) this._ledger().recordUserEdit(rect)
+    }
+  }
+
+  _ledger() {
+    let key = 'workbook_unknown'
+    try {
+      const wb = wps.Application.ActiveWorkbook
+      key = (wb && (wb.FullName || wb.Name)) || key
+    } catch (e) { /* 读不到就用同一本账 */ }
+    if (!this._ledgers.has(key)) this._ledgers.set(key, new Ledger.ReadLedger())
+    return this._ledgers.get(key)
+  }
+
+  _activeSheetName() {
+    try { return wps.Application.ActiveSheet.Name } catch (e) { return '' }
+  }
+
+  /**
+   * 会改单元格内容、且目标区域明确的工具 → 目标区域（与 C# TryResolveWriteTarget 一致，
+   * 只列 WPS 实现了的工具）。格式类、结构类、代码类不检查；地址解析不了也不检查。
+   */
+  _writeTarget(toolName, args) {
+    const sheet = this._activeSheetName()
+    const parse = key => Ledger.parseRect(this._getArg(args, key, ''), sheet)
+    switch (toolName) {
+      case 'write_value':
+      case 'write_formula':
+      case 'merge_cells':
+        return parse('address')
+      case 'clear_range':
+        return String(this._getArg(args, 'clear_type', 'all')).toLowerCase() === 'formats' ? null : parse('address')
+      case 'write_range': {
+        const rect = parse('address')
+        if (!rect) return null
+        const values = this._getArg(args, 'values', null)
+        const rows = Array.isArray(values) ? values.length : 1
+        const cols = Array.isArray(values) && values.length
+          ? Math.max(...values.map(r => (Array.isArray(r) ? r.length : 1)))
+          : 1
+        return Ledger.resize(rect, rows, cols)
+      }
+      case 'fill_formula_down': {
+        const rect = parse('from_address')
+        if (!rect) return null
+        const count = Math.max(1, this._getInt(args, 'row_count') || 1)
+        return Ledger.resize(rect, count + 1, rect.col2 - rect.col1 + 1)
+      }
+      case 'copy_range': {
+        const source = parse('source_address')
+        const dest = parse('dest_address')
+        if (!source || !dest) return null
+        return Ledger.resize(dest, source.row2 - source.row1 + 1, source.col2 - source.col1 + 1)
+      }
+      case 'sort_data':
+        return parse('range_address')
+      default:
+        return null
+    }
+  }
+
+  _checkLedger(toolName, target) {
+    const address = Ledger.toA1(target)
+    const { verdict, changed } = this._ledger().check(target, () => WpsActions.rangeHasContent(address))
+    if (verdict === Ledger.Verdict.STALE_READ) {
+      return this._refuse(toolName,
+        `你上次读取之后，用户手动改动了 ${changed.join('、')}。你手里的是旧内容，本次未写入。`,
+        `先重新 read_range 读取 ${address}，确认最新内容后再决定怎么写；不要把用户刚改的内容覆盖掉。`)
+    }
+    if (verdict === Ledger.Verdict.NOT_READ) {
+      return this._refuse(toolName,
+        `目标区域 ${address} 已有内容，但你还没有读过它，本次未写入。`,
+        `先用 read_range 读取 ${address}（或包含它的区域），确认可以覆盖后再写。`)
+    }
+    return null
+  }
+
+  _recordLedger(toolName, args, result, target) {
+    if (!result || !result.success) return
+    try {
+      if (toolName === 'read_range') {
+        // 返回的地址不带表名：表名取参数里写的，没写就是活动表
+        const requested = Ledger.parseRect(this._getArg(args, 'address', ''), this._activeSheetName())
+        const sheet = requested ? requested.sheet : this._activeSheetName()
+        const rect = Ledger.parseRect(result.data && result.data.address, sheet)
+        if (rect) this._ledger().recordRead(rect)
+      } else if (toolName === 'read_selection') {
+        const data = result.data || {}
+        const rect = Ledger.parseRect(data.address, data.worksheet || this._activeSheetName())
+        if (rect) this._ledger().recordRead(rect)
+      } else if (target) {
+        this._ledger().recordOwnWrite(target)
+      }
+    } catch (e) {
+      console.warn('[ToolDispatcher] ledger record failed:', e && e.message)
+    }
+  }
+
+  /** 用户在模型工作期间手动改了单元格：附在这次工具结果里告诉模型（每处只说一次） */
+  _withNotices(result) {
+    if (!result) return result
+    const ledger = this._ledger()
+    const parts = ledger.takeNotices()
+    const edits = ledger.takeUnreportedUserEdits()
+    if (edits.length > 0) {
+      parts.push(`用户刚刚手动修改了 ${edits.join('、')}（不是你的操作）。和这些单元格相关的数据请重新读取，不要用之前读到的旧值覆盖。`)
+    }
+    if (parts.length === 0) return result
+    const notice = parts.join(' ')
+    result.warning = result.warning ? result.warning + ' ' + notice : notice
+    return result
+  }
+
+  _refuse(toolName, error, suggestion) {
+    console.warn(`[ToolDispatcher] Write refused: tool=${toolName}, reason=${error}`)
+    return { success: false, data: null, error, suggestion }
+  }
+
+  async _executeCore(toolName, args) {
     console.log(`[ToolDispatcher] Execute: ${toolName}, args keys=${Object.keys(args || {}).join(',')}`)
     try {
       switch (toolName) {

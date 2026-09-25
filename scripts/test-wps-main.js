@@ -75,6 +75,7 @@ class FakeSidecar {
   constructor() {
     this.pythonPath = 'python'
     this.onEvent = null
+    this.dispatcher = { edits: [], recordUserEdit(sheet, address) { this.edits.push([sheet, address]) } }
     FakeSidecar.lastInstance = this
   }
   start() { sidecarStarts++ }
@@ -106,7 +107,9 @@ const application = {
   GetTaskPane: () => pane,
   Enum: { msoCTPDockPositionRight: 2 },
   ActiveWorkbook: workbook,
+  ApiEvent: { AddApiEventListener: (name, fn) => { apiListeners[name] = fn } },
 }
+const apiListeners = {}
 
 const windowObject = {
   Application: application,
@@ -148,6 +151,12 @@ assert.strictEqual(pane.Visible, true)
 assert.strictEqual(sidecarStarts, 1)
 assert.strictEqual(context.window.GetImage({ Id: 'btnTogglePanel' }), 'images/panel.svg')
 assert.strictEqual(context.window.GetImage({ Id: 'btnHelp' }), 'images/help.svg')
+
+// 读后被改检测：sidecar 启动时订阅 SheetChange，用户改动（去掉 $）交给调度器的账本
+assert.strictEqual(typeof apiListeners.SheetChange, 'function', 'SheetChange listener should be registered')
+apiListeners.SheetChange({ Name: 'Sheet1' }, { Address: (rowAbs, colAbs) => (rowAbs || colAbs ? '$B$2:$C$3' : 'B2:C3') })
+apiListeners.SheetChange({ Name: 'Sheet1' }, { Address: '$D$4' })
+assert.deepStrictEqual(FakeSidecar.lastInstance.dispatcher.edits, [['Sheet1', 'B2:C3'], ['Sheet1', 'D4']])
 
 // sidecar 启动后应立刻收到一份模型配置（否则 sidecar 没有 base_url / model）
 assert.ok(sidecarConfigs.length >= 1, 'sidecar should receive config on start')

@@ -74,6 +74,7 @@ function _ensureSidecar() {
       _forwardToTaskpane(event)
     }
     sidecar.start()
+    _ensureSheetChangeListener()
     // ★ 启动后立刻下发模型配置，否则 sidecar 拿不到 base_url / model / api_key
     if (_ensureConfigStore()) {
       configStore.credentials.setPythonPath(sidecar.pythonPath)
@@ -84,6 +85,30 @@ function _ensureSidecar() {
     console.error('[DeepExcel] sidecar start failed:', error)
     sidecar = null
     return false
+  }
+}
+
+// ★ 先读后写的「读后被改检测」：用户在 WPS 里手动改了单元格，记进调度器的账本，
+// 模型下次写到这里时会被要求先重读（与 C# 端 SheetChange → ReadLedger.RecordUserEdit 一致）。
+// 我们自己的工具写入期间 dispatcher.isExecuting 为真，那时的改动不算。
+var _sheetChangeListening = false
+function _ensureSheetChangeListener() {
+  if (_sheetChangeListening) return
+  var app = _application()
+  try {
+    if (!app || !app.ApiEvent || typeof app.ApiEvent.AddApiEventListener !== 'function') return
+    app.ApiEvent.AddApiEventListener('SheetChange', function (sheet, target) {
+      try {
+        if (!sidecar || !sidecar.dispatcher || !target) return
+        var address = typeof target.Address === 'function' ? target.Address(false, false) : target.Address
+        sidecar.dispatcher.recordUserEdit(sheet && sheet.Name, String(address || '').replace(/\$/g, ''))
+      } catch (error) {
+        console.warn('[DeepExcel] SheetChange handling failed:', error)
+      }
+    })
+    _sheetChangeListening = true
+  } catch (error) {
+    console.warn('[DeepExcel] SheetChange listener unavailable:', error)
   }
 }
 

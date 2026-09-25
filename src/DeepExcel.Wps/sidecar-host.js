@@ -132,9 +132,11 @@ class SidecarHost {
   }
 
   // ★ 工具执行结果返回给 sidecar（tool-dispatcher 调用）
-  sendToolResult(callId, success, data, error, suggestion, context) {
+  sendToolResult(callId, success, data, error, suggestion, context, warning) {
+    // warning：成功但要让模型知道的事（用户在它工作时手动改了单元格……），与 C# 端同名
     this._writeLine(JSON.stringify({
       type: 'tool_result', call_id: callId, success, data, error, suggestion, context,
+      ...(warning ? { warning } : {}),
     }))
   }
 
@@ -205,7 +207,7 @@ class SidecarHost {
     try {
       const result = await this.dispatcher.execute(toolName, args)
       const context = this.dispatcher.buildExcelSnapshot()
-      this.sendToolResult(callId, result.success, result.data, result.error, result.suggestion, context)
+      this.sendToolResult(callId, result.success, result.data, result.error, result.suggestion, context, result.warning)
     } catch (err) {
       console.error(`[SidecarHost] HandleToolCall FAILED: ${toolName}`, err)
       this.sendToolResult(callId, false, {}, err.message, '', {})
