@@ -103,6 +103,9 @@ const scenes = {
 
   setup: { mock: 'nokey', run: async () => {} },
 
+  // 打开面板时的欢迎登录页（未登录、从没关过它）；其他场景都预先关掉了它
+  login: { welcome: true, run: async ({ page }) => { await page.waitForSelector('.welcome-card') } },
+
   menu: async ({ page }) => {
     await page.click('[aria-label="更多"]')
   },
@@ -160,7 +163,7 @@ const scenes = {
 function sceneEntries() {
   return Object.entries(scenes)
     .filter(([name]) => name.includes(filter))
-    .map(([name, s]) => (typeof s === 'function' ? { name, mock: 'default', run: s } : { name, ...s }))
+    .map(([name, s]) => (typeof s === 'function' ? { name, mock: 'default', run: s } : { name, mock: 'default', ...s }))
 }
 
 async function runScene(page, scene) {
@@ -234,6 +237,9 @@ async function main() {
         page.on('console', msg => { if (msg.type() === 'error' && !msg.text().startsWith('Failed to load resource')) errors.push(msg.text()) })
         page.on('response', res => { if (res.status() >= 400 && !res.url().includes('favicon')) errors.push(`${res.status()} ${res.url()}`) })
         page.on('pageerror', err => errors.push(String(err)))
+        if (!scene.welcome) {
+          await page.addInitScript(() => localStorage.setItem('deepexcel.welcomeLogin.dismissed', '1'))
+        }
         await page.goto(`${base}?mock=${scene.mock}`)
         await page.waitForSelector('textarea')
         await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }' })

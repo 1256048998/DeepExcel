@@ -18,6 +18,7 @@ import { UpdateBanner } from './components/UpdateBanner'
 import { SetupNotice } from './components/SetupNotice'
 import { PlanPill } from './components/PlanPill'
 import { HeaderMenu } from './components/HeaderMenu'
+import { Brand } from './components/Logo'
 import type { HeaderMenuItem } from './components/HeaderMenu'
 import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent } from './utils/uiEvents'
@@ -41,6 +42,18 @@ interface PermissionState {
 export interface AttachmentInfo {
   fileName: string
   size: number
+}
+
+const WELCOME_DISMISSED_KEY = 'deepexcel.welcomeLogin.dismissed'
+
+function shouldShowWelcome(status: AccountStatus): boolean {
+  if (status.state === 'expired') return true
+  if (status.state !== 'signedout') return false
+  try {
+    return localStorage.getItem(WELCOME_DISMISSED_KEY) !== '1'
+  } catch {
+    return false
+  }
 }
 
 export default function App() {
@@ -80,6 +93,9 @@ export default function App() {
   // 技能库：把上次成功的多步任务保存为可重放技能
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null)
+  // 打开面板时的欢迎登录页：未登录时出现一次（选了「暂不登录」或「自己的 Key」就不再自动弹），
+  // 登录失效时每次都出现。只是登录入口，走哪个模型出口仍由服务端决定。
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
   // ★ 输入框模型选择下拉：modelConfig（已连接 provider 列表）+ selectedModel（用户当前选择）
   // 挂载时加载一次，ModelConfigPanel 关闭时刷新（用户可能在面板里测试连接/切换默认厂商）
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
@@ -193,7 +209,9 @@ export default function App() {
           'account_status'
         )
         if (resp?.type === 'account_status' && resp.payload) {
-          setAccountStatus(resp.payload as AccountStatus)
+          const status = resp.payload as AccountStatus
+          setAccountStatus(status)
+          if (shouldShowWelcome(status)) setWelcomeOpen(true)
         }
       } catch {
         // 读不到就保持 null，setupNeeded 因此不会成立——宁可不引导，
@@ -629,6 +647,14 @@ export default function App() {
     }
   }
 
+  const dismissWelcome = () => {
+    setWelcomeOpen(false)
+    // 登录失效的提示下次照样出现；未登录的欢迎页只自动弹一次，之后从顶栏「账号」进
+    if (accountStatus?.state !== 'expired') {
+      try { localStorage.setItem(WELCOME_DISMISSED_KEY, '1') } catch { /* 存不了就下次再弹 */ }
+    }
+  }
+
   // ★ 打开附件面板时刷新列表
   const openAttachments = () => {
     setAttachmentsOpen(true)
@@ -756,51 +782,50 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
+        <Brand />
+        {/* 顶栏只留新建、历史、账户和「更多」，一律图标按钮；其余入口收进菜单 */}
         <div className="app-header-actions">
-          {/* 左侧：图标 + 文字 */}
           <button
-            className="header-btn primary"
+            className="header-icon-btn"
             onClick={handleNewConversation}
-            title="开始新对话（当前对话会保存到历史）"
+            title="新对话（当前对话会保存到历史）"
+            aria-label="新对话"
             type="button"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
             </svg>
-            新建
           </button>
           <button
-            className="header-btn"
+            className="header-icon-btn"
             onClick={() => setConversationsOpen(true)}
-            title="查看历史对话"
+            title="历史对话"
+            aria-label="历史对话"
             type="button"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"/>
               <polyline points="3 4 3 8 7 8"/>
               <polyline points="12 7 12 12 15 14"/>
             </svg>
-            历史对话
           </button>
-        </div>
-        <div className="app-header-actions right">
           <button
-            className="header-btn icon-only"
+            className="header-icon-btn"
             onClick={() => setAccountOpen(true)}
             title={
               accountStatus && accountStatus.state !== 'signedout'
                 ? `账号：${accountStatus.email ?? ''}`
                 : '账号（未登录）'
             }
+            aria-label="账号"
             type="button"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
               <circle cx="12" cy="7" r="4"/>
             </svg>
           </button>
-          {/* 窄侧栏里顶栏只留新建、历史、账户和「更多」，其余入口收进菜单 */}
           <HeaderMenu items={headerMenuItems} />
         </div>
       </header>
@@ -892,6 +917,16 @@ export default function App() {
         open={skillsOpen}
         onClose={() => setSkillsOpen(false)}
         onRun={(prompt) => void sendMessage(prompt)}
+      />
+      <AccountPanel
+        variant="welcome"
+        open={welcomeOpen && !accountOpen}
+        onClose={dismissWelcome}
+        onStatusChange={setAccountStatus}
+        onUseOwnKey={() => {
+          dismissWelcome()
+          setModelConfigOpen(true)
+        }}
       />
       <AccountPanel
         open={accountOpen}

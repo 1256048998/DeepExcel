@@ -276,6 +276,18 @@ function mockHostResponse(message: HostMessage) {
               task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null } }
         : { state: 'signedout', server_url: null, email: null, mode: null, entitlement: null })
       return
+    // 登录 / 注册：dev 下直接当成功，用来调欢迎登录页和账号面板
+    case 'account_server_meta':
+      emit('account_server_meta', { invite_required: true })
+      return
+    case 'account_sign_in':
+    case 'account_register':
+      setTimeout(() => emit('account_status', {
+        state: 'signedin', server_url: message.payload?.server_url ?? 'https://mock.local',
+        email: message.payload?.email ?? 'dev@example.com', mode: 'byok',
+        entitlement: { plan: 'beta', status: 'active', task_limit: null, tasks_used: 0, tasks_remaining: null },
+      }), 600)
+      return
     case 'get_model_config':
       emit('model_config', {
         currentProvider: 'deepseek', currentModel: 'deepseek-v4-pro', defaultProvider: 'deepseek',

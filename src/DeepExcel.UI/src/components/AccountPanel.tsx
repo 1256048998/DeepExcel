@@ -1,11 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import { sendToHostWithResponse } from '../bridge'
+import { LogoMark } from './Logo'
 
 interface Props {
   open: boolean
   onClose: () => void
   /** 登录状态变化时通知外层，用于刷新状态栏 */
   onStatusChange?: (status: AccountStatus) => void
+  /**
+   * panel：顶栏「账号」按钮打开的弹窗（已登录时显示账号信息）。
+   * welcome：打开面板时盖住整个面板的欢迎登录页，登录成功就关掉。
+   */
+  variant?: 'panel' | 'welcome'
+  /** welcome：「使用自己的 API Key」——关掉欢迎页并打开模型设置 */
+  onUseOwnKey?: () => void
 }
 
 export interface Entitlement {
@@ -43,7 +51,7 @@ const STATE_LABELS: Record<AccountStatus['state'], string> = {
 /** 密码下限与服务端 RegisterRequest 保持一致 */
 const MIN_PASSWORD_LENGTH = 10
 
-export function AccountPanel({ open, onClose, onStatusChange }: Props) {
+export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel', onUseOwnKey }: Props) {
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [mode, setMode] = useState<'signin' | 'register'>('signin')
   const [serverUrl, setServerUrl] = useState('')
@@ -51,6 +59,8 @@ export function AccountPanel({ open, onClose, onStatusChange }: Props) {
   const [password, setPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [inviteRequired, setInviteRequired] = useState<boolean | null>(null)
+  // 已经知道服务器地址时收成一行「服务器 xxx · 更改」，不让它占表单最显眼的位置
+  const [editServer, setEditServer] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   // 托管模式下的实际用量，来自代理——它是权威计数点
@@ -150,10 +160,12 @@ export function AccountPanel({ open, onClose, onStatusChange }: Props) {
         'account_status',
       )
       if (!resp) throw new Error('服务器无响应，请稍后重试')
-      applyStatus(resp.payload as AccountStatus)
+      const next = resp.payload as AccountStatus
+      applyStatus(next)
       // 不保留在内存里，登录态由 C# 侧以 DPAPI 加密持久化
       setPassword('')
       setInviteCode('')
+      if (variant === 'welcome' && (next.state === 'signedin' || next.state === 'offline')) onClose()
     } catch (e: any) {
       setError(e?.message || (mode === 'signin' ? '登录失败' : '注册失败'))
     } finally {
@@ -178,6 +190,140 @@ export function AccountPanel({ open, onClose, onStatusChange }: Props) {
   if (!open) return null
 
   const signedIn = status?.state === 'signedin' || status?.state === 'offline'
+  const knownServer = !!status?.server_url && serverUrl === status.server_url
+
+  const form = (
+    <div className="account-form">
+      {variant === 'panel' && status?.state === 'expired' && (
+        <p className="config-apikey-hint account-warn">登录状态已失效，请重新登录。</p>
+      )}
+
+      <div className="account-tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'signin'}
+          className={mode === 'signin' ? 'active' : ''}
+          onClick={() => {
+            setMode('signin')
+            setError('')
+          }}
+        >
+          登录
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'register'}
+          className={mode === 'register' ? 'active' : ''}
+          onClick={() => {
+            setMode('register')
+            setError('')
+          }}
+        >
+          注册
+        </button>
+      </div>
+
+      {knownServer && !editServer ? (
+        <div className="account-server-line">
+          <span className="account-server-label">服务器</span>
+          <span className="account-server-url" title={serverUrl}>{serverUrl}</span>
+          <button type="button" className="account-link" onClick={() => setEditServer(true)}>更改</button>
+        </div>
+      ) : (
+        <label>
+          服务器地址
+          <input
+            className="config-input"
+            type="text"
+            value={serverUrl}
+            placeholder="https://api.deepexcel.com"
+            onChange={(e) => setServerUrl(e.target.value)}
+            onBlur={(e) => void probeServer(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+      )}
+
+      <label>
+        邮箱
+        <input
+          className="config-input"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={busy}
+        />
+      </label>
+
+      <label>
+        密码
+        <input
+          className="config-input"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !busy) void submit()
+          }}
+          disabled={busy}
+        />
+      </label>
+
+      {mode === 'register' && inviteRequired !== false && (
+        <label>
+          邀请码{inviteRequired === null ? '（如服务器要求）' : ''}
+          <input
+            className="config-input"
+            type="text"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value)}
+            disabled={busy}
+          />
+        </label>
+      )}
+
+      {error && <p className="config-error">{error}</p>}
+
+      <button className="account-submit" onClick={() => void submit()} disabled={busy}>
+        {busy ? '处理中…' : mode === 'signin' ? '登录' : '注册'}
+      </button>
+
+      {variant === 'panel' && (
+        <p className="config-apikey-hint">
+          不登录也可以使用：在模型设置里填写自己的 API Key 即可。登录用于内测准入与使用统计。
+        </p>
+      )}
+    </div>
+  )
+
+  // 欢迎登录页：模糊背景上的一张居中卡片，盖住整个面板
+  if (variant === 'welcome') {
+    return (
+      <div className="welcome-overlay" role="dialog" aria-modal="true" aria-labelledby="welcome-title">
+        <div className="welcome-card">
+          <LogoMark size={44} />
+          <h2 id="welcome-title" className="welcome-title">
+            {status?.state === 'expired' ? '登录已失效' : '欢迎使用 DeepExcel'}
+          </h2>
+          <p className="welcome-subtitle">
+            {status?.state === 'expired'
+              ? '请重新登录，继续使用你的账号额度。'
+              : 'AI 直接在工作簿里读数据、写公式、做汇总。'}
+          </p>
+          {form}
+          <div className="welcome-divider"><span>或</span></div>
+          <div className="welcome-alt">
+            {onUseOwnKey && (
+              <button type="button" className="welcome-alt-btn" onClick={onUseOwnKey}>使用自己的 API Key</button>
+            )}
+            <button type="button" className="welcome-alt-btn ghost" onClick={onClose}>暂不登录</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="config-overlay" onClick={onClose}>
@@ -250,92 +396,7 @@ export function AccountPanel({ open, onClose, onStatusChange }: Props) {
               </button>
             </div>
           ) : (
-            <div className="config-section account-form">
-              {status?.state === 'expired' && (
-                <p className="config-apikey-hint account-warn">登录状态已失效，请重新登录。</p>
-              )}
-
-              <div className="account-tabs">
-                <button
-                  className={mode === 'signin' ? 'active' : ''}
-                  onClick={() => {
-                    setMode('signin')
-                    setError('')
-                  }}
-                >
-                  登录
-                </button>
-                <button
-                  className={mode === 'register' ? 'active' : ''}
-                  onClick={() => {
-                    setMode('register')
-                    setError('')
-                  }}
-                >
-                  注册
-                </button>
-              </div>
-
-              <label>
-                服务器地址
-                <input
-                  className="config-input"
-                  type="text"
-                  value={serverUrl}
-                  placeholder="https://api.deepexcel.com"
-                  onChange={(e) => setServerUrl(e.target.value)}
-                  onBlur={(e) => void probeServer(e.target.value)}
-                  disabled={busy}
-                />
-              </label>
-
-              <label>
-                邮箱
-                <input
-                  className="config-input"
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  disabled={busy}
-                />
-              </label>
-
-              <label>
-                密码
-                <input
-                  className="config-input"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !busy) void submit()
-                  }}
-                  disabled={busy}
-                />
-              </label>
-
-              {mode === 'register' && inviteRequired !== false && (
-                <label>
-                  邀请码{inviteRequired === null ? '（如服务器要求）' : ''}
-                  <input
-                    type="text"
-                    value={inviteCode}
-                    onChange={(e) => setInviteCode(e.target.value)}
-                    disabled={busy}
-                  />
-                </label>
-              )}
-
-              {error && <p className="config-error">{error}</p>}
-
-              <button className="config-save-btn" onClick={() => void submit()} disabled={busy}>
-                {busy ? '处理中…' : mode === 'signin' ? '登录' : '注册'}
-              </button>
-
-              <p className="config-apikey-hint">
-                不登录也可以使用：在模型设置里填写自己的 API Key 即可。登录用于内测准入与使用统计。
-              </p>
-            </div>
+            <div className="config-section">{form}</div>
           )}
         </div>
       </div>

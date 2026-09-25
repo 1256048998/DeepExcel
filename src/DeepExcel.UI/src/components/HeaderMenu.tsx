@@ -41,7 +41,7 @@ export function HeaderMenu({ items }: { items: HeaderMenuItem[] }) {
   return (
     <div className="header-menu" ref={rootRef}>
       <button
-        className={`header-btn icon-only${open ? ' on' : ''}`}
+        className={`header-icon-btn${open ? ' on' : ''}`}
         onClick={() => setOpen(v => !v)}
         title="更多"
         aria-label="更多"
@@ -49,7 +49,7 @@ export function HeaderMenu({ items }: { items: HeaderMenuItem[] }) {
         aria-expanded={open}
         type="button"
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
           <circle cx="5" cy="12" r="1.8" />
           <circle cx="12" cy="12" r="1.8" />
           <circle cx="19" cy="12" r="1.8" />

@@ -6,6 +6,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
 import { StreamingChoices } from './StreamingChoices'
 import { StarterCard } from './StarterCard'
+import { LogoMark } from './Logo'
 import type { StarterView } from './StarterCard'
 
 interface Props {
@@ -89,7 +90,10 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
         <div className="messages-content" ref={contentRef}>
           {messages.map((msg, idx) => msg.type === 'starter' ? (
             <div key={idx} className="message assistant starter-message">
-              <div className="message-content"><span>{msg.content}</span></div>
+              <div className="starter-hero">
+                <LogoMark size={28} />
+                <div className="message-content"><span>{msg.content}</span></div>
+              </div>
               {starter && (
                 <StarterCard
                   starter={starter}
@@ -162,7 +166,7 @@ const MessageItem = memo(function MessageItem({
     return <PlanCard message={message} index={index} busy={!!busy} onDecision={onPlanDecision} />
   }
 
-  // 本次会话实时收到的工具步骤：每步一行叙事（⏺ 读取 A1:D20 / ⎿ 20 行 × 4 列）
+  // 本次会话实时收到的工具步骤：每步一行叙事（● 读取 A1:D20，下面一行写结果：20 行 × 4 列）
   if (message.role === 'tool' && message.toolSteps && message.toolSteps.length > 0) {
     return (
       <ToolSteps
@@ -205,7 +209,7 @@ const MessageItem = memo(function MessageItem({
           onClick={() => onToggleToolGroup?.(index)}
           aria-expanded={expanded}
         >
-          <span className="chevron">{expanded ? '▾' : '▸'}</span>
+          <Chevron open={expanded} />
           <span className="tool-group-label">
             已调用 {tools.length} 个工具
           </span>
@@ -352,9 +356,10 @@ function ToolSteps({ steps, expanded, onToggle, rewind }: {
     <div className={`message tool tool-steps${running ? ' running' : ''}`}>
       {collapsible && (
         <button className="tool-steps-header" onClick={onToggle} aria-expanded={expanded} type="button">
-          <span className="chevron">{expanded ? '▾' : '▸'}</span>
-          <span>{steps.length} 步{failed > 0 ? ` · ${failed} 步失败` : ''}</span>
-          {!expanded && hidden > 0 && <span className="tool-steps-hidden">（前 {hidden} 步已折叠）</span>}
+          <span>{expanded ? '收起步骤' : `显示全部 ${steps.length} 步`}</span>
+          {failed > 0 && <span className="tool-steps-failed">{failed} 步失败</span>}
+          {!expanded && hidden > 0 && <span className="tool-steps-hidden">已折叠 {hidden} 步</span>}
+          <Chevron open={expanded} />
         </button>
       )}
       {visible.map(step => <ToolStepLine key={step.id} step={step} rewind={rewind} />)}
@@ -374,11 +379,12 @@ const REWIND_TOOLTIP = '撤销这一步和它之后的所有修改（包括其�
 
 function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl }) {
   const busy = step.status === 'running' || step.status === 'generating'
-  const duration = !busy ? formatDuration(step.durationMs) : ''
+  // 一秒以内的步骤不写耗时：用户关心的是慢在哪一步，不是每步几毫秒
+  const duration = !busy && (step.durationMs ?? 0) >= 1000 ? formatDuration(step.durationMs) : ''
   return (
-    <div className={`tool-step status-${step.status}`}>
+    <div className={`tool-step status-${step.status}${step.check && !step.check.ok ? ' has-warning' : ''}`}>
       <div className="tool-step-line">
-        <span className="tool-step-bullet" aria-hidden="true">{busy ? '◌' : '⏺'}</span>
+        <span className="tool-step-dot" aria-hidden="true" />
         <span className="tool-step-label" title={step.name}>{step.label}</span>
         {duration && <span className="tool-step-duration">{duration}</span>}
         {rewind && step.status === 'ok' && step.checkpointId && (
@@ -398,26 +404,34 @@ function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl
       )}
       {step.code && step.status !== 'generating' && (
         <details className="tool-step-code-toggle">
-          <summary>查看代码</summary>
+          <summary>查看代码<Chevron /></summary>
           <pre className="tool-step-code">{step.code}</pre>
         </details>
       )}
       {step.status === 'ok' && step.summary && (
-        <div className="tool-step-result"><span aria-hidden="true">⎿</span> {step.summary}</div>
+        <div className="tool-step-result">{step.summary}</div>
       )}
       {step.status === 'ok' && step.changes && <ChangesTable changes={step.changes} />}
       {step.status === 'ok' && step.check && !step.check.ok && (
-        <div className="tool-step-result check-failed">
-          <span aria-hidden="true">⎿</span> {step.check.summary}
-        </div>
+        <div className="tool-step-result check-failed">{step.check.summary}</div>
       )}
       {step.status === 'error' && step.error && (
         <div className="tool-step-result error">
-          <span aria-hidden="true">⎿</span> {step.error.message}
+          {step.error.message}
           {step.error.hint && <div className="tool-step-hint">{step.error.hint}</div>}
         </div>
       )}
     </div>
+  )
+}
+
+// 折叠箭头：用 SVG，不用 ▸ ▾ 字符（各字体里大小、基线都不一样）
+function Chevron({ open }: { open?: boolean }) {
+  return (
+    <svg className={`chevron-icon${open ? ' open' : ''}`} width="10" height="10" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="9 6 15 12 9 18" />
+    </svg>
   )
 }
 
@@ -426,7 +440,7 @@ function ChangesTable({ changes }: { changes: ToolStepChanges }) {
   const more = changes.changed - changes.samples.length
   return (
     <details className="tool-step-diff">
-      <summary>改了 {changes.changed} 格</summary>
+      <summary>改了 {changes.changed} 格<Chevron /></summary>
       {changes.samples.length > 0 && (
         <table>
           <thead>

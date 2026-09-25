@@ -210,33 +210,22 @@ export function InputArea({
           disabled={disabled && !allowQueue}
         />
       </div>
-      {/* ★ 底部工具栏：左上传 + 右模型选择+发送/停止，无额外边框 */}
+      {/* ★ 底部工具栏：左「+」附件与权限模式，右模型选择与发送/停止 */}
       <div className="input-toolbar">
         {/* 左侧工具组：上传按钮 */}
         <div className="toolbar-left">
-          {onPermissionModeChange && (
-            <button
-              type="button"
-              className={`toolbar-mode mode-${permissionMode}`}
-              onClick={() => onPermissionModeChange(nextPermissionMode(permissionMode))}
-              title={PERMISSION_MODE_TEXT[permissionMode].hint}
-              aria-label={`权限模式：${PERMISSION_MODE_TEXT[permissionMode].label}，点击切换`}
-            >
-              {PERMISSION_MODE_TEXT[permissionMode].label}
-            </button>
-          )}
           {onUploadAttachment && (
             <button
-              className="toolbar-btn"
+              className={`composer-plus${uploading ? ' uploading' : ''}`}
               onClick={() => fileInputRef.current?.click()}
               disabled={uploading || disabled}
-              title={uploading ? '上传中...' : '上传附件'}
+              title={uploading ? '上传中...' : '添加附件（图片、PDF、表格等）'}
+              aria-label="添加附件"
               type="button"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
               </svg>
               {attachmentCount > 0 && (
                 <span
@@ -251,6 +240,17 @@ export function InputArea({
                 </span>
               )}
               {uploading && <span className="attach-loading" />}
+            </button>
+          )}
+          {onPermissionModeChange && (
+            <button
+              type="button"
+              className={`toolbar-mode mode-${permissionMode}`}
+              onClick={() => onPermissionModeChange(nextPermissionMode(permissionMode))}
+              title={PERMISSION_MODE_TEXT[permissionMode].hint}
+              aria-label={`权限模式：${PERMISSION_MODE_TEXT[permissionMode].label}，点击切换`}
+            >
+              {PERMISSION_MODE_TEXT[permissionMode].label}
             </button>
           )}
         </div>
@@ -299,11 +299,12 @@ export function InputArea({
               onClick={onSend}
               className="toolbar-btn send queue"
               title="补充给 AI（Enter）：在下一步执行前送达"
+              aria-label="补充给 AI"
               type="button"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
               </svg>
             </button>
           )}
@@ -311,13 +312,13 @@ export function InputArea({
             <button
               onClick={onStop}
               className="toolbar-btn stop"
-              title="停止生成"
+              title="停止"
+              aria-label="停止"
               type="button"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-                <rect x="6" y="6" width="12" height="12" rx="2" />
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="4" y="4" width="16" height="16" rx="3" />
               </svg>
-              <span>停止</span>
             </button>
           ) : (
             <button
@@ -325,11 +326,12 @@ export function InputArea({
               disabled={disabled || !value.trim()}
               className="toolbar-btn send"
               title="发送（Enter）"
+              aria-label="发送"
               type="button"
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="12" y1="19" x2="12" y2="5" />
+                <polyline points="5 12 12 5 19 12" />
               </svg>
             </button>
           )}

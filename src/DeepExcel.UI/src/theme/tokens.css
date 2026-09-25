@@ -21,6 +21,7 @@
   --de-on-brand-muted: #d6e4fb;
 
   /* 中性（冷灰） */
+  --de-canvas: #f7f8fa;           /* 面板画布：消息区、输入区的底，内容面（输入框、卡片、表格）用 --de-bg 白 */
   --de-bg: #ffffff;
   --de-bg-subtle: #f6f7f9;
   --de-bg-muted: #eef0f3;
@@ -100,6 +101,7 @@
   --de-on-brand: #0d1117;
   --de-on-brand-muted: #1b2a40;
 
+  --de-canvas: #131518;
   --de-bg: #17191c;
   --de-bg-subtle: #1f2226;
   --de-bg-muted: #272b30;
