@@ -13,6 +13,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --codegen    # 写 VBA 时边写边显示（tool_gen）
     python scripts/live_sidecar_events.py --plan       # 多步任务用 todo_write 列计划并更新
     python scripts/live_sidecar_events.py --inspect    # 陌生的表先 inspect_sheet，能转述异常候选
+    python scripts/live_sidecar_events.py --postwrite  # 写后体检报公式模式异常，模型自己修掉
 """
 
 from __future__ import annotations
@@ -394,7 +395,79 @@ def inspect_scenario() -> int:
     return 1 if problems else 0
 
 
+def _amount_snapshot(broken_row=None):
+    cells = [["品名", "数量", "单价", "金额"]]
+    formulas = []
+    for i in range(1, 7):
+        cells.append([f"p{i}", i, 10, i * 10])
+        formulas.append([i, 3, "=RC[-2]*11" if i == broken_row else "=RC[-2]*RC[-1]"])
+    return {"sheet": "Data", "origin": [1, 1], "cells": cells, "formulas": formulas, "merges": []}
+
+
+def postwrite_scenario() -> int:
+    """填公式后写后体检报 D5 与上下不一致：模型应当自己再写一次把 D5 修好，然后才汇报。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "context": {},
+          "text": "Data 表 A1:D7 是 品名/数量/单价/金额，表头在第 1 行。请在 D2:D7 填入金额公式 =数量*单价。"})
+    writes, snapshots, fixed, text, t0 = [], 0, False, [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            tool, args = msg["tool"], msg.get("args") or {}
+            print("host   ", tool, json.dumps(args, ensure_ascii=False)[:120])
+            if tool == "sheet_snapshot":
+                snapshots += 1
+                result = {"success": True, "data": _amount_snapshot(None if fixed else 4)}
+            elif tool in ("write_formula", "write_range", "fill_formula_down", "replace_formula", "copy_range"):
+                writes.append((tool, args))
+                # 第一次写入之后的写入都算在修
+                if len(writes) > 1:
+                    fixed = True
+                result = {"success": True, "data": {"written": True},
+                          "verification": {"ok": True, "summary": "未发现新的公式错误"}}
+            elif tool == "read_range":
+                result = {"success": True, "data": {"address": args.get("address"),
+                                                    "values": _amount_snapshot()["cells"]}}
+            else:
+                result = {"success": True, "data": {}}
+            send({"type": "tool_result", "call_id": msg["call_id"], "context": {}, **result})
+        elif kind == "permission_request":
+            print("permit ", msg.get("tool") or msg.get("tool_name"))
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "ui_event" and msg["event"]["kind"] == "tool_end" and msg["event"].get("check"):
+            print("check  ", json.dumps(msg["event"]["check"], ensure_ascii=False)[:200])
+        elif kind == "stream_delta":
+            text.append(msg.get("text", ""))
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    print("\n--- 回复 ---\n" + "".join(text))
+    problems = []
+    if not snapshots:
+        problems.append("the post-write pattern check never ran")
+    if len(writes) < 2:
+        problems.append("model did not fix the reported deviation")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--postwrite" in sys.argv:
+        sys.exit(postwrite_scenario())
     if "--inspect" in sys.argv:
         sys.exit(inspect_scenario())
     if "--plan" in sys.argv:

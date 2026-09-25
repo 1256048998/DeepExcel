@@ -19,6 +19,56 @@ def _wrap_result(csharp_result: dict) -> dict:
     }
 
 
+# 写后模式检查只读这么多格：写入后每次都要多取一次快照，要快
+POSTWRITE_SNAPSHOT_CELLS = 20000
+
+
+async def _pattern_check(result: dict, address: str, rows: int = 1, columns: int = 1) -> dict:
+    """写公式成功后，对被写入的列跑一遍公式模式检查，结论并入 verification。
+
+    写入区域里出现孤立偏离 / 死值 / 合计漏行时，verification.ok 置为 false 并在 summary
+    里点名，模型按规则 8 会先修再汇报。检查本身失败（快照读不到等）一律静默跳过，
+    不能让体检把一次成功的写入变成失败。"""
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return result
+    try:
+        from perception.postwrite import parse_a1, pattern_check, summary_line
+        parsed = parse_a1(address)
+        if parsed is None:
+            return result
+        sheet, r1, c1, r2, c2 = parsed
+        r2 = max(r2, r1 + max(1, rows) - 1)
+        c2 = max(c2, c1 + max(1, columns) - 1)
+        payload = {"max_cells": POSTWRITE_SNAPSHOT_CELLS}
+        if sheet:
+            payload["sheet"] = sheet
+        snapshot = await call_csharp("sheet_snapshot", payload)
+        if not isinstance(snapshot, dict) or snapshot.get("success") is not True:
+            return result
+        check = pattern_check(snapshot.get("data") or {}, (r1, c1, r2, c2))
+    except Exception:  # noqa: BLE001
+        return result
+    if not check:
+        return result
+    verification = result.get("verification")
+    if not isinstance(verification, dict):
+        verification = {"ok": True}
+    verification["pattern_check"] = check
+    line = summary_line(check)
+    if line:
+        verification["ok"] = False
+        previous = verification.get("summary")
+        verification["summary"] = f"{previous}；{line}" if previous else line
+    result["verification"] = verification
+    return result
+
+
+def _has_formula(values) -> bool:
+    return isinstance(values, list) and any(
+        isinstance(v, str) and v.startswith("=")
+        for row in values for v in (row if isinstance(row, list) else [row]))
+
+
 def _optional_int(args: dict, key: str):
     value = args.get(key)
     if value is None or value == "":
@@ -148,7 +198,7 @@ async def write_formula(args):
         "address": args["address"],
         "formula": args["formula"],
     })
-    return _wrap_result(result)
+    return _wrap_result(await _pattern_check(result, args["address"]))
 
 
 @tool("write_value", "向指定单元格写入纯文本/数字值（不解析为公式，写入张三会显示张三而不是=\"张三\"）", {"address": str, "value": str})
@@ -166,6 +216,10 @@ async def write_range(args):
         "address": args["address"],
         "values": args["values"],
     })
+    values = args.get("values")
+    if _has_formula(values):
+        width = max((len(row) for row in values if isinstance(row, list)), default=1)
+        result = await _pattern_check(result, args["address"], rows=len(values), columns=width)
     return _wrap_result(result)
 
 
@@ -241,7 +295,9 @@ async def fill_formula_down(args):
         "from_address": args["from_address"],
         "row_count": args["row_count"],
     })
-    return _wrap_result(result)
+    # 与 C# 的写入区域一致：起始行 + row_count 行
+    rows = (_optional_int(args, "row_count") or 0) + 1
+    return _wrap_result(await _pattern_check(result, args["from_address"], rows=rows))
 
 
 @tool("replace_formula", "在指定范围内批量替换公式中的字符串", {"range_address": str, "find": str, "replace": str})
@@ -251,7 +307,7 @@ async def replace_formula(args):
         "find": args["find"],
         "replace": args["replace"],
     })
-    return _wrap_result(result)
+    return _wrap_result(await _pattern_check(result, args["range_address"]))
 
 
 @tool("clean_data", "执行数据清洗操作（unify_date/remove_duplicates/highlight_missing/trim_spaces/text_to_number）", {"range_address": str, "operations": list})
@@ -412,6 +468,12 @@ async def copy_range(args):
         "source_address": args["source_address"],
         "dest_address": args["dest_address"],
     })
+    # 复制会带着公式过去：目标区域至少和源一样大（D2 复制到 D3:D7 时是整个 D3:D7）
+    from perception.postwrite import parse_a1
+    source = parse_a1(args.get("source_address") or "")
+    if source is not None:
+        _, r1, c1, r2, c2 = source
+        result = await _pattern_check(result, args["dest_address"], rows=r2 - r1 + 1, columns=c2 - c1 + 1)
     return _wrap_result(result)
 
 
