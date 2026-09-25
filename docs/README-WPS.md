@@ -83,7 +83,36 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 | 截图 | screenshot_excel | P2 阶段实现 |
 | 键盘模拟 | send_keys | P2 阶段实现 |
 | 工作簿快照 | create_snapshot / rollback | P2 阶段实现 |
+| 副本试跑 | execute_vba 先在隐藏副本上跑 | 无（execute_jsa 直接确认） |
+| 先读后写 / 读后被改检测 | ReadLedger | read-ledger.js（同一套规则） |
 | 其他工具 | 完整支持 | 完整支持 |
+
+### 真 WPS 待实测（目前只在假对象模型上验证）
+
+开发机没有装 WPS，下面这些调用只用 node 脚本里的假对象模型测过（`scripts/test-wps-*.js`），
+下次在装了 WPS 的机器上逐条确认：
+
+- 插删行列按块处理（`Range(...).EntireRow.Insert/Delete`）、`fill_formula_down` 的 `Resize + AutoFill`、
+  `clear_range` 的三种类型、`write_table` 的 `ListObjects.Add`、`sort_data` 的 Header 位置参数
+- 首次使用：`starter-host.js` 的 `Worksheets.Add(undefined, last)`（新表放到最后）、撇号写文本
+- 先读后写：`Application.ApiEvent.AddApiEventListener('SheetChange', …)` 能否收到用户编辑、
+  `WorksheetFunction.CountA`
+- `execute_jsa` 的确认弹窗在 WPS 面板里是否正常出现、允许 / 拒绝能否回到侧车
+
+### Excel COM 加载项直接跑在 WPS 上（共用一套代码）：未验证
+
+设想是 WPS 经 `HKCU\Software\Kingsoft\Office\ET\AddIns` + `AddinsWL` 白名单加载 Excel 的
+COM 加载项，两个宿主共用一套代码、JS 加载项退居兜底（`scripts/wps-com-test.ps1`、
+`scripts/verify-install-sandbox.ps1 -WithWps -ComWps` 都已备好）。2026-09-25 没能得出结论：
+
+- 开发机没有安装 WPS（只有残留的用户数据），不在主力机上装整套办公软件来做实验。
+- Windows Sandbox 里 DeepExcel 自己的 COM 激活就失败（`0x80070002`，沙箱没有 Office，
+  与 WPS 无关）。这种情况下「WPS 里没有 DeepExcel 选项卡」分不清是 WPS 不支持，还是我们的
+  类没激活成功，结论不可信；WPS 首次启动还要扫码登录，需要人在场。
+- 一个待确认的线索：`OFFICE.dll` 依赖 `stdole 7.0.3300.0`，安装包没有带它；开发机上的
+  stdole 来自 Office 装进 GAC 的那份。没装 Office、只装 WPS 的机器上它很可能缺失。
+
+结论出来之前维持现状：WPS 走 JS 加载项（`jsaddons\publish.xml`）。
 
 ## 架构说明
 
