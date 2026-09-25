@@ -65,6 +65,49 @@ namespace DeepExcel.AddIn.Perception
             }
         }
 
+        /// <summary>
+        /// 不管是否过期都返回上一次的渲染结果和建立时间。只在重建失败时用：
+        /// 过时的结构总比没有强，但必须配上 <see cref="MarkStale"/> 的说明一起给模型。
+        /// </summary>
+        public bool TryGetStale(string workbookKey, out string rendered, out DateTime builtUtc)
+        {
+            rendered = null;
+            builtUtc = default(DateTime);
+            if (string.IsNullOrEmpty(workbookKey))
+            {
+                return false;
+            }
+            lock (_lock)
+            {
+                if (!_entries.TryGetValue(workbookKey, out var entry) || string.IsNullOrEmpty(entry.Rendered))
+                {
+                    return false;
+                }
+                rendered = entry.Rendered;
+                builtUtc = entry.BuiltUtc;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// 在「## 工作簿结构」标题下插一句：这次读不到 Excel，下面是多久以前的缓存。
+        /// </summary>
+        public static string MarkStale(string rendered, TimeSpan age, string reason)
+        {
+            if (string.IsNullOrEmpty(rendered))
+            {
+                return rendered;
+            }
+            var minutes = Math.Max(1, (int)Math.Round(age.TotalMinutes));
+            var why = string.IsNullOrWhiteSpace(reason) ? "" : "（" + reason.Trim() + "）";
+            var note = "注意：这次读不到 Excel" + why + "，以下沿用 " + minutes +
+                       " 分钟前的缓存，之后的修改没有反映；涉及具体数值或结构时请先 read_range 实读。";
+            var newline = rendered.IndexOf('\n');
+            return newline < 0
+                ? rendered + "\n" + note
+                : rendered.Substring(0, newline + 1) + note + "\n" + rendered.Substring(newline + 1);
+        }
+
         public void Store(string workbookKey, WorkbookIndex index, DateTime nowUtc)
         {
             if (string.IsNullOrEmpty(workbookKey) || index == null)

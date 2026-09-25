@@ -159,7 +159,7 @@ namespace DeepExcel.AddIn.Perception
                     // An empty unnamed column tells the model nothing.
                     continue;
                 }
-                builder.Append("  ").AppendLine(column.Render());
+                builder.Append("  ").AppendLine(column.Render(sheet.Sampled));
             }
         }
 

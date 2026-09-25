@@ -82,18 +82,23 @@ namespace DeepExcel.AddIn.Perception
         /// One line for the prompt. Kept terse on purpose: this runs once per
         /// column on every request, so wording costs tokens forever.
         /// </summary>
-        public string Render()
+        /// <param name="sampled">这张表只采样了部分行：取值范围、唯一、不同值个数、空值都只是样本结论，
+        /// 要明说，否则模型会据此断言「全表只有 3 个空值」</param>
+        public string Render(bool sampled = false)
         {
             var parts = new List<string>();
             parts.Add(Letter);
             parts.Add(string.IsNullOrEmpty(Header) ? "(无表头)" : Header);
             parts.Add(KindLabel(Kind));
 
-            if (Kind == ColumnKind.Formula && !string.IsNullOrEmpty(FormulaSample))
+            var hasFormulaSample = Kind == ColumnKind.Formula && !string.IsNullOrEmpty(FormulaSample);
+            if (hasFormulaSample)
             {
                 parts.Add(FormulaSample);
             }
-            else if (!string.IsNullOrEmpty(MinDisplay) && !string.IsNullOrEmpty(MaxDisplay))
+            // 公式样例不是统计量；统计量（范围、唯一、不同值、空值）从这里开始
+            var statsStart = parts.Count;
+            if (!hasFormulaSample && !string.IsNullOrEmpty(MinDisplay) && !string.IsNullOrEmpty(MaxDisplay))
             {
                 parts.Add(MinDisplay + " ~ " + MaxDisplay);
             }
@@ -113,6 +118,11 @@ namespace DeepExcel.AddIn.Perception
                     ? "(行 " + string.Join(",", EmptyRows.ToArray()) + (EmptyCount > EmptyRows.Count ? "…" : "") + ")"
                     : "";
                 parts.Add(EmptyCount + " 个空值" + where);
+            }
+
+            if (sampled && parts.Count > statsStart)
+            {
+                parts[statsStart] = "样本: " + parts[statsStart];
             }
 
             if (Samples.Count > 0 && Kind == ColumnKind.Text)
