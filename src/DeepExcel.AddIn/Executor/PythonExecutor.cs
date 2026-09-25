@@ -71,12 +71,13 @@ namespace DeepExcel.AddIn.Executor
             var tempScript = Path.GetTempFileName() + ".py";
             var tempInput = Path.GetTempFileName() + ".json";
             var tempOutput = Path.GetTempFileName() + ".json";
+            var tempTrace = Path.GetTempFileName() + ".trace";
 
             try
             {
                 // 生成上下文脚本
-                var fullScript = BuildScriptWithContext(pythonCode, tempInput, tempOutput, context);
-                File.WriteAllText(tempScript, fullScript);
+                var script = BuildScriptWithContext(pythonCode, tempInput, tempOutput, context, tempTrace);
+                File.WriteAllText(tempScript, script.Text);
 
                 // 写入输入上下文
                 if (context != null)
@@ -100,33 +101,40 @@ namespace DeepExcel.AddIn.Executor
                 psi.EnvironmentVariables["PYTHONUTF8"] = "1";
                 psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
 
+                // ★ Job Object 管整棵进程树：超时或插件退出时孙进程一起结束
+                using var job = ProcessJob.Create(MemoryLimitBytes);
                 using var process = Process.Start(psi);
-                // ★ 异步读取 stdout/stderr，避免管道满导致子进程阻塞
-                var outputTask = process.StandardOutput.ReadToEndAsync();
-                var errorTask = process.StandardError.ReadToEndAsync();
+                job.Assign(process);
+                // ★ 异步读取 stdout/stderr，避免管道满导致子进程阻塞；各自只保留前 MaxOutputChars 个字符
+                var outputTask = BoundedOutput.ReadAsync(process.StandardOutput, MaxOutputChars);
+                var errorTask = BoundedOutput.ReadAsync(process.StandardError, MaxOutputChars);
 
-                // ★ 30 秒超时：子进程死循环时强制 kill，防止 Excel 主线程被冻结
-                const int timeoutMs = 30000;
-                if (!process.WaitForExit(timeoutMs))
+                // ★ 超时：子进程死循环时结束整棵树，防止 Excel 主线程被冻结
+                if (!process.WaitForExit(TimeoutMs))
                 {
+                    Logger.Instance.Error("PythonExecutor",
+                        $"Python script timed out after {TimeoutMs / 1000}s, terminating job (pid={process.Id})");
                     try
                     {
-                        Logger.Instance.Error("PythonExecutor",
-                            $"Python script timed out after {timeoutMs / 1000}s, killing process (pid={process.Id})");
-                        process.Kill();
+                        job.Terminate();
+                        if (!job.Active) process.Kill();
                         process.WaitForExit(2000);
                     }
                     catch (Exception killEx)
                     {
                         Logger.Instance.Error("PythonExecutor", "Kill failed: " + killEx.Message);
                     }
+                    var stuck = StuckLine(SafeReadAllText(tempTrace), tempScript, script);
                     return new ToolResult
                     {
                         Name = "execute_python",
                         Success = false,
-                        Error = $"Python 脚本执行超时（{timeoutMs / 1000} 秒）。请简化代码或减少数据处理量。",
+                        Error = $"Python 脚本执行超时（{TimeoutMs / 1000} 秒），已结束。" +
+                                (stuck ?? "没能定位到卡在哪一行。"),
+                        Suggestion = "检查那一行所在的循环能否结束；数据量大时先在少量数据上试，或改用 Excel 公式 / 工具直接处理",
                     };
                 }
+                process.WaitForExit();  // 等异步读取把管道读完
 
                 var output = outputTask.Result;
                 var error = errorTask.Result;
@@ -138,17 +146,22 @@ namespace DeepExcel.AddIn.Executor
                     {
                         Name = "execute_python",
                         Success = true,
-                        Data = new { output, result = resultData }
+                        Data = new { output = output.Describe(), result = resultData }
                     };
                 }
                 else
                 {
+                    var message = MapScriptLines(error.Describe(), tempScript, script);
+                    if (message.Contains("MemoryError"))
+                    {
+                        message += $"\n（脚本占用内存超过了 {MemoryLimitBytes / (1024 * 1024 * 1024)} GB 上限）";
+                    }
                     return new ToolResult
                     {
                         Name = "execute_python",
                         Success = false,
-                        Error = error,
-                        Data = new { output }
+                        Error = message,
+                        Data = new { output = output.Describe() }
                     };
                 }
             }
@@ -167,7 +180,89 @@ namespace DeepExcel.AddIn.Executor
                 SafeDelete(tempScript);
                 SafeDelete(tempInput);
                 SafeDelete(tempOutput);
+                SafeDelete(tempTrace);
             }
+        }
+
+        /// <summary>超时（测试里调短）</summary>
+        internal int TimeoutMs { get; set; } = 30000;
+        internal const int MaxOutputChars = 64 * 1024;
+        internal const long MemoryLimitBytes = 2L * 1024 * 1024 * 1024;
+
+        /// <summary>生成的脚本 + 用户代码在其中的位置（报错行号换算回用户代码的行号）</summary>
+        internal sealed class GeneratedScript
+        {
+            public string Text;
+            /// <summary>用户代码第 1 行在脚本里是第 FirstUserLine 行</summary>
+            public int FirstUserLine;
+            public int UserLineCount;
+
+            public int? ToUserLine(int scriptLine)
+            {
+                var line = scriptLine - FirstUserLine + 1;
+                return line >= 1 && line <= UserLineCount ? line : (int?)null;
+            }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex FrameLine = new System.Text.RegularExpressions.Regex(
+            @"File ""(?<file>[^""]+)"", line (?<line>\d+)");
+
+        /// <summary>
+        /// 超时前 faulthandler 写下的调用栈（最内层在前）里，找脚本本身最内层的那一帧，
+        /// 换算成用户代码的行号并带上那一行的内容。
+        /// </summary>
+        internal static string StuckLine(string trace, string scriptPath, GeneratedScript script)
+        {
+            if (string.IsNullOrEmpty(trace)) return null;
+            foreach (System.Text.RegularExpressions.Match match in FrameLine.Matches(trace))
+            {
+                if (!SamePath(match.Groups["file"].Value, scriptPath)) continue;
+                var userLine = script.ToUserLine(int.Parse(match.Groups["line"].Value));
+                if (userLine == null) continue;
+                var code = UserCodeLine(script, userLine.Value);
+                return $"超时时正在执行你代码的第 {userLine} 行：{code}";
+            }
+            return null;
+        }
+
+        /// <summary>Traceback 里「File "临时脚本", line N」换成用户代码的行号，模型对着自己的代码就能改</summary>
+        internal static string MapScriptLines(string text, string scriptPath, GeneratedScript script)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            return FrameLine.Replace(text, match =>
+            {
+                if (!SamePath(match.Groups["file"].Value, scriptPath)) return match.Value;
+                var userLine = script.ToUserLine(int.Parse(match.Groups["line"].Value));
+                return userLine == null ? "File \"<DeepExcel 引导代码>\"" : $"你的代码第 {userLine} 行";
+            });
+        }
+
+        private static string UserCodeLine(GeneratedScript script, int userLine)
+        {
+            var lines = script.Text.Replace("\r\n", "\n").Split('\n');
+            var index = script.FirstUserLine - 1 + userLine - 1;
+            return index >= 0 && index < lines.Length ? lines[index].Trim() : "";
+        }
+
+        private static bool SamePath(string a, string b)
+        {
+            try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+            catch { return string.Equals(a, b, StringComparison.OrdinalIgnoreCase); }
+        }
+
+        private static string SafeReadAllText(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return null;
+                // faulthandler 可能还开着这个文件：共享读
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new StreamReader(stream, Encoding.UTF8))
+                {
+                    return reader.ReadToEnd();
+                }
+            }
+            catch { return null; }
         }
 
         /// <summary>
@@ -265,16 +360,25 @@ namespace DeepExcel.AddIn.Executor
             return null;
         }
 
-        private string BuildScriptWithContext(
+        internal GeneratedScript BuildScriptWithContext(
             string userCode,
             string inputPath,
             string outputPath,
-            Dictionary<string, object> context)
+            Dictionary<string, object> context,
+            string tracePath = null)
         {
             var sb = new StringBuilder();
 
             sb.AppendLine("import json");
             sb.AppendLine("import sys");
+            if (tracePath != null)
+            {
+                // 超时前一点点把所有线程的调用栈写进文件：被结束之后还能说出卡在哪一行
+                var dumpAfter = Math.Max(0.5, (TimeoutMs - 1500) / 1000.0).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture);
+                sb.AppendLine("import faulthandler as _deepexcel_fh");
+                sb.AppendLine($"_deepexcel_trace = open(r'{tracePath}', 'w', encoding='utf-8')");
+                sb.AppendLine($"_deepexcel_fh.dump_traceback_later({dumpAfter}, exit=False, file=_deepexcel_trace)");
+            }
             sb.AppendLine();
             sb.AppendLine("# 上下文输入");
             sb.AppendLine("ctx = {}");
@@ -313,6 +417,7 @@ namespace DeepExcel.AddIn.Executor
             sb.AppendLine();
 
             sb.AppendLine("# ========== 用户代码开始 ==========");
+            var firstUserLine = CountLines(sb) + 1;
             sb.AppendLine(userCode);
             sb.AppendLine("# ========== 用户代码结束 ==========");
             sb.AppendLine();
@@ -321,7 +426,19 @@ namespace DeepExcel.AddIn.Executor
             sb.AppendLine("with open(r'" + outputPath.Replace("\\", "\\\\") + "', 'w', encoding='utf-8') as f:");
             sb.AppendLine("    json.dump(result, f, ensure_ascii=False, default=str)");
 
-            return sb.ToString();
+            return new GeneratedScript
+            {
+                Text = sb.ToString(),
+                FirstUserLine = firstUserLine,
+                UserLineCount = userCode.Replace("\r\n", "\n").Split('\n').Length,
+            };
+        }
+
+        private static int CountLines(StringBuilder sb)
+        {
+            var count = 0;
+            for (var i = 0; i < sb.Length; i++) if (sb[i] == '\n') count++;
+            return count;
         }
 
         private object ReadOutput(string outputPath)
