@@ -38,7 +38,7 @@ stdout 一行一个 JSON：
 | `tool_start` | `id`, `name`, `args` | 模型发出一次工具调用。`id` 是 SDK 的 tool_use_id；`name` 不带 `mcp__excel__` 前缀；`args` 是显示用副本（长字符串截断到 4000 字，二维数组只留 `{__shape:[行,列], head:[前 3 行]}`） |
 | `tool_end` | `id`, `name`, `ok`, `duration_ms`, `summary?`, `error?`, `check?` | 与同 `id` 的 `tool_start` 配对。`summary` 是一句话结果（「20 行 × 4 列」）；`error` 是 `{code, message, hint?}`；`check` 是写后自动体检 `{ok, summary}`（新增公式错误、新增外部链接），面板只在 `ok: false` 时显示；`checkpoint_id` 是这一步执行前单独存的检查点，面板据此显示「回到这一步之前」（发 `rollback_snapshot`） |
 | `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_jsa / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
-| `status` | `text`, `tool?` | 当前在做什么：等待用户确认、正在停止、看门狗（20 秒没动静「仍在等待模型响应」；某一步执行超过 15 秒「这一步执行中」；超过 120 秒提示可能被 Excel 对话框挡住、可以停止）。等用户确认 / 回答期间看门狗不催。`text` 为空表示清除 |
+| `status` | `text`, `tool?` | 当前在做什么：等待用户确认、正在停止、看门狗（20 秒没动静「仍在等待模型响应」；某一步执行超过 15 秒「这一步执行中」；超过 120 秒提示可能被 Excel 对话框挡住、可以停止）。等用户确认 / 回答期间看门狗不催。`tool` 为 `explore_workbook` 时是分头摸底的进度（「分头摸底：1/3 个子任务完成（#2 find 应收）」），进度持续更新期间看门狗不发卡住提示。`text` 为空表示清除 |
 | `plan` | `items: [{content, status}]` | 模型用 `todo_write` 维护的计划（status：pending / in_progress / completed，最多一条 in_progress）。面板在输入框上方显示计划胶囊；`todo_write` 本身不作为一步显示 |
 | `compaction` | `trigger`, `pre_tokens?`, `prev_pct?`, `curr_pct?` | 上下文被压缩。`trigger` 为 `auto`/`manual`（CLI 的 compact_boundary）或 `detected`（没收到 compact_boundary、但上下文占比骤降超过 40%） |
 | `error` | `code`, `message`, `hint`, `retryable`, `detail` | 整轮失败（API 报错、异常）。`message`/`hint` 是给用户的中文；`detail` 是原始报错前 500 字，只供诊断 |

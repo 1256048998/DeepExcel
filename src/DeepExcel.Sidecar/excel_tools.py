@@ -192,6 +192,67 @@ async def inspect_sheet(args):
     return _wrap_result({"success": True, "data": report})
 
 
+@tool(
+    "explore_workbook",
+    "大工作簿分头摸底：把要查的问题拆成最多 4 个互不重叠的子任务（通常按表分组），每个子任务由一个"
+    "独立的只读子 agent 并行去查（它们能用 list / find / inspect_sheet / read_range），只把结论交回来，"
+    "你的上下文不会被几十次读取的原始数据塞满。适合表多（5 张以上）或表大、而问题涉及多张表的时候；"
+    "一两张表、或只查一个具体位置时直接自己查，不要用它。结论未经你核实，写入前对关键位置再确认。",
+    {
+        "type": "object",
+        "properties": {
+            "tasks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string", "description": "这个子任务要查清什么（写清楚要交回哪些信息）"},
+                        "sheets": {"type": "array", "items": {"type": "string"}, "description": "只查这些表；不传查整个工作簿"},
+                    },
+                    "required": ["question"],
+                },
+                "description": "1–4 个子任务",
+            },
+        },
+        "required": ["tasks"],
+    },
+)
+async def explore_workbook(args):
+    import explorer
+    import ui_events
+    from ipc import _cancelled, write_message
+
+    tasks = explorer.normalize_tasks(args.get("tasks"))
+    if not tasks:
+        return _wrap_result({"success": False, "error": "tasks 为空",
+                             "suggestion": "传 1–4 个子任务：[{question: 要查什么, sheets: [表名]}]"})
+    if not explorer.configured():
+        return _wrap_result({"success": False, "error": "子 agent 还没配置好（会话尚未初始化）",
+                             "suggestion": "直接用 list / find / inspect_sheet 自己查"})
+    host = explorer._config.get("host", "excel")
+    tools = [t for t in register_all_tools(host) if t.name in explorer.EXPLORER_TOOLS]
+
+    async def publish(text: str):
+        ui_events.PROGRESS.set(text)
+        await write_message(ui_events.envelope("status", text=text, tool="explore_workbook"))
+
+    try:
+        outcomes = await explorer.explore(tasks, tools, publish, cancelled=_cancelled)
+    finally:
+        ui_events.PROGRESS.clear()
+        await write_message(ui_events.envelope("status", text=""))
+    finished = sum(1 for o in outcomes if o.status == "ok")
+    return _wrap_result({
+        "success": finished > 0,
+        "data": {
+            "tasks": [o.to_dict() for o in outcomes],
+            "note": "以上是子 agent 的结论，未经核实；要写入或向用户下结论前，对关键位置用 read_range 确认",
+        },
+        **({} if finished else {"error": "所有子任务都没有完成",
+                                "suggestion": "改用 list / find / inspect_sheet 自己查"}),
+    })
+
+
 @tool("write_formula", "向指定单元格写入 Excel 公式（以 = 开头）", {"address": str, "formula": str})
 async def write_formula(args):
     result = await call_csharp("write_formula", {
@@ -776,10 +837,15 @@ WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
 # 在侧车里计算、只依赖宿主原语的工具 → 它需要的原语
 SIDECAR_COMPUTED_TOOLS = {"inspect_sheet": "sheet_snapshot"}
 
+# 在侧车里起子会话、只用只读工具的工具：两个宿主都能用（子会话的工具再按宿主过滤）
+SIDECAR_SESSION_TOOLS = frozenset({"explore_workbook"})
+
 
 def host_supports_tool(host: str, name: str) -> bool:
     if _HOST_ONLY_TOOLS.get(name, host) != host:
         return False
+    if name in SIDECAR_SESSION_TOOLS:
+        return True
     if host == "wps":
         if name in SIDECAR_COMPUTED_TOOLS:
             return SIDECAR_COMPUTED_TOOLS[name] in WPS_HOST_PRIMITIVES
@@ -794,7 +860,8 @@ def register_all_tools(host: str = "excel") -> list:
     system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
     """
     tools = [
-        read_workbook, read_selection, read_range, find, list_objects, inspect_sheet, read_attachment,
+        read_workbook, read_selection, read_range, find, list_objects, inspect_sheet, explore_workbook,
+        read_attachment,
         write_formula, write_value, write_range, fill_formula_down, replace_formula,
         clean_data,
         delete_blank_rows, split_text_to_columns, fill_blank_cells,

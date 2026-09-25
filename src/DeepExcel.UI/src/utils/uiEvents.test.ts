@@ -130,6 +130,7 @@ describe('toolCatalog', () => {
     expect(toolLabel('mcp__excel__list', { kind: 'tables' })).toBe('列出表格')
     expect(toolLabel('mcp__excel__list', {})).toBe('列出工作表')
     expect(toolLabel('mcp__excel__inspect_sheet', { sheet: '工资' })).toBe('分析表结构 工资')
+    expect(toolLabel('mcp__excel__explore_workbook', { tasks: [{}, {}, {}] })).toBe('分头摸底（3 个子任务）')
     expect(toolLabel('write_range', { address: 'A1', values: { __shape: [500, 3], head: [] } })).toBe('批量写入 A1 500 行 × 3 列')
     expect(toolLabel('execute_vba', { code: 'Sub A()\nEnd Sub' })).toBe('运行 VBA（2 行）')
     expect(toolLabel('unknown_tool')).toBe('unknown_tool')

@@ -76,6 +76,7 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
+import explorer
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
 from model_windows import apply_context_window
@@ -820,7 +821,7 @@ async def status_watchdog(tick: float | None = None) -> None:
             # 在等用户确认或回答：不是卡住，也不该把「等待你确认」盖掉
             _run.touch()
             continue
-        text = ui_events.watchdog_status(_run.idle_seconds(), _run.running_tool())
+        text = ui_events.watchdog_status(_run.idle_seconds(), _run.running_tool(), ui_events.PROGRESS.current())
         if text != last_text:
             await write_message(ui_events.envelope("status", text=text or ""))
             last_text = text
@@ -1239,6 +1240,8 @@ async def main():
         # 注册工具到 MCP server。按宿主注册：WPS 专用的 execute_jsa 不出现在 Excel 会话里
         host = "wps" if os.environ.get("DEEPEXCEL_HOST") == "wps" else "excel"
         host_tools = register_all_tools(host)
+        # 分头摸底的子会话用同一个模型、同一个出口
+        explorer.configure(env_config, model, host)
         server = create_sdk_mcp_server(name="excel", tools=host_tools)
         system_prompt = SYSTEM_PROMPT + host_tool_note(host, [t.name for t in host_tools])
 

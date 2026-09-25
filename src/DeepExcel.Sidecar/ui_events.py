@@ -274,8 +274,40 @@ WATCHDOG_TOOL_WAIT = 15
 WATCHDOG_STUCK = 120
 
 
-def watchdog_status(idle_s: float, running_tool: tuple[str, float] | None) -> str | None:
+class ProgressBoard:
+    """长时间运行的工具（explore_workbook）自己汇报的进度。
+
+    看门狗只知道「有个工具执行了很久」，会在 120 秒时提示「Excel 可能弹出了对话框」；
+    分头摸底本来就要跑一两分钟，这时应当显示它自己的进度。进度 90 秒没更新才回到
+    看门狗的判断（那才可能是真卡住了）。"""
+
+    FRESH_SECONDS = 90.0
+
+    def __init__(self):
+        self.text: str | None = None
+        self.updated = 0.0
+
+    def set(self, text: str) -> None:
+        self.text = text
+        self.updated = time.monotonic()
+
+    def clear(self) -> None:
+        self.text = None
+
+    def current(self) -> str | None:
+        if self.text and time.monotonic() - self.updated < self.FRESH_SECONDS:
+            return self.text
+        return None
+
+
+PROGRESS = ProgressBoard()
+
+
+def watchdog_status(idle_s: float, running_tool: tuple[str, float] | None,
+                    progress: str | None = None) -> str | None:
     """根据空闲时长和正在执行的工具，给出状态行；不需要提示时返回 None。"""
+    if running_tool is not None and progress:
+        return progress
     if running_tool is not None:
         _name, waited = running_tool
         if waited >= WATCHDOG_STUCK:

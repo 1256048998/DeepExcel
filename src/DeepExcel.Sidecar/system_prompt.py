@@ -53,7 +53,7 @@ SYSTEM_PROMPT = """<system-intro>
 </workbook-structure>
 
 <available-tools>
-查找与浏览：find（按文本搜全工作簿的值或公式）/ list（列出工作表、名称、表格、透视表、图表）/ inspect_sheet（分析一张表的区块、多级表头、公式模式和异常候选）
+查找与浏览：find（按文本搜全工作簿的值或公式）/ list（列出工作表、名称、表格、透视表、图表）/ inspect_sheet（分析一张表的区块、多级表头、公式模式和异常候选）/ explore_workbook（表多或表大时，拆成子任务派只读子 agent 并行摸底，只交回结论）
 数据读写：read_workbook / read_selection / read_range / read_attachment / write_value / write_formula / write_range / fill_formula_down / replace_formula
 数据处理：clean_data（去重用它的 remove_duplicates 操作）/ sort_data / filter_data
 数据清洗：delete_blank_rows / split_text_to_columns / fill_blank_cells / highlight_duplicates / remove_special_chars / clean_amount / merge_columns / rename_columns / collapse_spaces

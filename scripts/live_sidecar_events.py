@@ -14,6 +14,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --plan       # 多步任务用 todo_write 列计划并更新
     python scripts/live_sidecar_events.py --inspect    # 陌生的表先 inspect_sheet，能转述异常候选
     python scripts/live_sidecar_events.py --postwrite  # 写后体检报公式模式异常，模型自己修掉
+    python scripts/live_sidecar_events.py --explore    # 大工作簿派只读子 agent 分头摸底，只交回结论
 """
 
 from __future__ import annotations
@@ -465,7 +466,133 @@ def postwrite_scenario() -> int:
     return 1 if problems else 0
 
 
+def _big_workbook() -> dict:
+    """8 张表：应收 / 应付明细、工资、汇总（跨表引用）、几张无关的表"""
+    def sheet(name, header, rows, formulas=None):
+        return {"sheet": name, "origin": [1, 1], "used": f"A1:{chr(64 + len(header))}{len(rows) + 1}",
+                "total_rows": len(rows) + 1, "total_columns": len(header), "truncated": False,
+                "cells": [header] + rows, "formulas": formulas or [], "merges": []}
+    customers = ["华东机电", "北方钢材", "南海贸易", "西部能源", "东江食品"]
+    books = {
+        "应收明细": sheet("应收明细", ["日期", "客户", "应收金额", "已收", "余额"],
+                         [[{"d": f"2024-0{i % 9 + 1}-15"}, customers[i % 5], 1000 + i * 37, 500, 500 + i * 37]
+                          for i in range(40)],
+                         [[r, 4, "=RC[-2]-RC[-1]"] for r in range(1, 41)]),
+        "应付明细": sheet("应付明细", ["日期", "供应商", "应付金额", "已付"],
+                         [[{"d": f"2024-0{i % 9 + 1}-20"}, f"供应商{i % 7}", 800 + i * 11, 300] for i in range(30)]),
+        "工资": sheet("工资", ["姓名", "部门", "实发"], [[f"员工{i}", "销售", 6000 + i] for i in range(20)]),
+        "汇总": sheet("汇总", ["项目", "金额"], [["应收合计", 0], ["应付合计", 0], ["工资合计", 0]],
+                     [[1, 1, "=SUM(应收明细!R2C3:R41C3)"], [2, 1, "=SUM(应付明细!R2C3:R31C3)"],
+                      [3, 1, "=SUM(工资!R2C3:R21C3)"]]),
+        "说明": sheet("说明", ["说明"], [["本表每月更新"]]),
+        "参数": sheet("参数", ["税率", "汇率"], [[0.13, 7.1]]),
+        "旧数据2023": sheet("旧数据2023", ["日期", "金额"], [[{"d": "2023-12-31"}, 1]]),
+        "图表数据": sheet("图表数据", ["月份", "收入"], [[f"{m}月", m * 1000] for m in range(1, 13)]),
+    }
+    return books
+
+
+def _host_answer(tool: str, args: dict, books: dict) -> dict:
+    if tool == "list":
+        return {"success": True, "data": {"kind": "sheets", "count": len(books), "items": [
+            {"name": n, "used_range": b["used"], "rows": b["total_rows"], "columns": b["total_columns"]}
+            for n, b in books.items()]}}
+    if tool == "sheet_snapshot":
+        name = args.get("sheet") or "汇总"
+        book = next((b for n, b in books.items() if n.lower() == str(name).lower()), None)
+        return {"success": True, "data": book} if book else {"success": False, "error": f"找不到工作表：{name}"}
+    if tool == "find":
+        query = str(args.get("query") or "")
+        hits = []
+        for n, b in books.items():
+            if args.get("sheets") and n not in args["sheets"]:
+                continue
+            for r, row in enumerate(b["cells"]):
+                for c, v in enumerate(row):
+                    if query and query in str(v):
+                        hits.append({"sheet": n, "address": f"{chr(65 + c)}{r + 1}", "value": str(v)})
+            for r, c, f in b["formulas"]:
+                if args.get("scope") == "formulas" and query in f:
+                    hits.append({"sheet": n, "address": f"{chr(65 + c)}{r + 1}", "formula": f})
+        return {"success": True, "data": {"query": query, "total": len(hits), "matches": hits[:50]}}
+    if tool == "read_range":
+        address = str(args.get("address") or "")
+        name = address.split("!")[0].strip("'") if "!" in address else "汇总"
+        book = books.get(name)
+        if not book:
+            return {"success": False, "error": f"找不到工作表：{name}"}
+        return {"success": True, "data": {"address": address, "values": book["cells"][:21]}}
+    if tool == "read_workbook":
+        return {"success": True, "data": {"worksheets": [{"name": n} for n in books]}}
+    return {"success": False, "error": f"这个场景只提供只读工具（{tool} 不可用）"}
+
+
+def explore_scenario() -> int:
+    """8 张表的工作簿：主 agent 应当用 explore_workbook 分头摸底，子 agent 真的去调宿主，
+    结论交回后主 agent 说清应收 / 应付在哪、汇总引用了哪些表。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    books = _big_workbook()
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+    lock = threading.Lock()
+
+    def send(msg: dict) -> None:
+        with lock:
+            proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+            proc.stdin.flush()
+
+    send({"type": "user_message", "context": {},
+          "text": "这个工作簿表很多（8 张），我刚接手。请分头摸底后告诉我：应收和应付的明细分别在哪张表、"
+                  "哪几列；汇总表的数字分别引用了哪些表的哪些区域。只看不改。"})
+    host_calls, main_tools, statuses, text, t0 = [], [], [], [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 420:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            host_calls.append(msg["tool"])
+            send({"type": "tool_result", "call_id": msg["call_id"], "context": {},
+                  **_host_answer(msg["tool"], msg.get("args") or {}, books)})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "deny"})
+        elif kind == "ui_event":
+            ev = msg["event"]
+            if ev["kind"] == "tool_start":
+                main_tools.append(ev["name"])
+                print("main   ", ev["name"], json.dumps(ev.get("args") or {}, ensure_ascii=False)[:160])
+            elif ev["kind"] == "status" and ev.get("text") and ev.get("text") not in statuses[-1:]:
+                statuses.append(ev["text"])
+                print("status ", ev["text"][:120])
+        elif kind == "stream_delta":
+            text.append(msg.get("text", ""))
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    answer = "".join(text)
+    print(f"\nhost calls: {len(host_calls)} {sorted(set(host_calls))}")
+    print("\n--- 回复 ---\n" + answer)
+    problems = []
+    if "explore_workbook" not in main_tools:
+        problems.append("main agent did not use explore_workbook")
+    if not any(s.startswith("分头摸底") for s in statuses):
+        problems.append("no progress status from the sub-agents")
+    for must in ("应收明细", "应付明细"):
+        if must not in answer:
+            problems.append(f"answer does not mention {must}")
+    if any(t.startswith(("write", "clear", "delete", "execute")) for t in host_calls):
+        problems.append("something wrote to the workbook")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--explore" in sys.argv:
+        sys.exit(explore_scenario())
     if "--postwrite" in sys.argv:
         sys.exit(postwrite_scenario())
     if "--inspect" in sys.argv:

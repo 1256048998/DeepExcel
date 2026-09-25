@@ -62,6 +62,7 @@ export const TOOL_LABELS: Record<string, Label> = {
   },
   list: a => `列出${LIST_KINDS[s(a.kind)] || '工作表'}`,
   inspect_sheet: a => at('分析表结构', a.sheet),
+  explore_workbook: a => `分头摸底（${Array.isArray(a.tasks) ? a.tasks.length : 1} 个子任务）`,
   read_attachment: a => at('读取附件', a.file_name),
 
   // 写
