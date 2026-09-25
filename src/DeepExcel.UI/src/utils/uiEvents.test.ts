@@ -110,3 +110,21 @@ describe('toolCatalog', () => {
     expect(toolLabel('unknown_tool')).toBe('unknown_tool')
   })
 })
+
+describe('steer (messages sent while a task runs)', () => {
+  const pending: Message[] = [
+    { role: 'user', content: '汇总' },
+    { role: 'user', content: '改成按月', queued: 'pending' },
+  ]
+
+  it('marks pending interjections delivered once the sidecar injects them', () => {
+    const out = applyUiEvent(pending, { v: 1, kind: 'steer_delivered', count: 1 })
+    expect(out[1].queued).toBe('delivered')
+    expect(out[0].queued).toBeUndefined()
+  })
+
+  it('marks them deferred when the turn ended first', () => {
+    const out = applyUiEvent(pending, { v: 1, kind: 'steer_deferred', count: 1 })
+    expect(out[1].queued).toBe('deferred')
+  })
+})

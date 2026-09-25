@@ -233,6 +233,16 @@ namespace DeepExcel.AddIn.Sidecar
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
         }
 
+        /// <summary>
+        /// 任务进行中用户又发的话（插话）。不开新回合：不重置本回合的写前备份；
+        /// 侧车在下一个工具结果后把它交给模型，本轮结束还没送达就作为下一条消息处理。
+        /// </summary>
+        public void SendSteerMessage(string text, string sessionId, object context)
+        {
+            var msg = new { type = SidecarProtocol.TypeUserMessage, text, session_id = sessionId, context, steer = true };
+            WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
+        }
+
         public void SendCancel() => WriteLine(@"{""type"":""cancel""}");
 
         /// <summary>

@@ -7,7 +7,9 @@ stream. One tool call is made to fail on purpose so the error path is exercised.
 
 Costs a few thousand tokens on whatever model is configured. Not part of CI.
 
-    python scripts/live_sidecar_events.py
+    python scripts/live_sidecar_events.py              # 事件配对、失败上报、终态行
+    python scripts/live_sidecar_events.py --interrupt  # 停止后再问新问题，不能读到残留
+    python scripts/live_sidecar_events.py --steer      # 工具执行期间插话，模型照做
 """
 
 from __future__ import annotations
@@ -112,5 +114,122 @@ def main() -> int:
     return 1 if problems else 0
 
 
+def interrupt_scenario() -> int:
+    """按停止之后再问一个新问题：回答必须是新问题的，而不是上一轮的残留。
+
+    第一轮让模型调用一个「很慢」的工具（假宿主故意不回结果），按停止；
+    然后问「1+1 等于几，只回答数字」。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "text": "用 read_range 读取 A1:Z5000，然后告诉我有多少行。", "context": {}})
+    turn, texts, outcomes, t0 = 1, {1: "", 2: ""}, {}, time.time()
+    stopped_at = None
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call" and turn == 1 and stopped_at is None:
+            # 不回结果，模拟宿主卡在一个很慢的操作上；按停止
+            stopped_at = time.time()
+            send({"type": "cancel"})
+        elif kind == "tool_call":
+            send({"type": "tool_result", "call_id": msg["call_id"], "success": True,
+                  "data": {"values": [[1]]}, "context": {}})
+        elif kind == "ui_event":
+            ev = msg["event"]
+            if ev["kind"] in ("run_summary", "status", "tool_end"):
+                print(f"turn {turn} ui_event", json.dumps({k: v for k, v in ev.items() if k not in ("v", "ts")},
+                                                         ensure_ascii=False)[:200])
+            if ev["kind"] == "run_summary":
+                outcomes[turn] = ev["outcome"]
+        elif kind == "stream_delta":
+            texts[turn] += msg.get("text", "")
+        elif kind == "stream_end":
+            if turn == 1:
+                print(f"turn 1 ended {time.time() - (stopped_at or t0):.1f}s after stop")
+                turn = 2
+                send({"type": "user_message", "text": "1+1 等于几？只回答数字，不要调用任何工具。", "context": {}})
+            else:
+                break
+    proc.kill()
+    print("turn 2 text:", texts[2].strip()[:200])
+    problems = []
+    if outcomes.get(1) != "interrupted":
+        problems.append(f"turn 1 outcome={outcomes.get(1)}")
+    if "2" not in texts[2]:
+        problems.append("turn 2 did not answer the new question")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
+def steer_scenario() -> int:
+    """任务进行中插话：第一个工具执行期间用户说「改写到 F2」，模型应当照做。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "context": {},
+          "text": "先用 read_range 读取 A1:C4，再用 write_formula 在 D2 写入 =SUM(A2:C2)。"})
+    writes, kinds, steered, t0 = [], [], False, time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            if msg["tool"] == "read_range" and not steered:
+                steered = True
+                # 工具还在执行时用户插话，然后再回结果
+                send({"type": "user_message", "text": "等一下，公式不要写到 D2，改写到 F2。",
+                      "steer": True, "context": {}})
+                time.sleep(0.3)
+            if msg["tool"] == "write_formula":
+                writes.append((msg.get("args") or {}).get("address"))
+            result = fake_result(msg["tool"], msg.get("args") or {}, {"write_formula": 1})
+            send({"type": "tool_result", "call_id": msg["call_id"], "context": {}, **result})
+        elif kind == "permission_request":
+            # 模型可能想撤掉已经写进 D2 的公式（高风险工具需要确认）
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "ui_event":
+            kinds.append(msg["event"]["kind"])
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    print("ui_event kinds:", kinds)
+    print("write_formula addresses:", writes)
+    problems = []
+    if "steer_delivered" not in kinds:
+        problems.append("interjection was not delivered mid-run")
+    # 插话在下一个工具结果之后才送达：和它同一批发出的调用（例如并行发出的 D2 写入）
+    # 已经在路上，撤不回来——Claude Code 也一样。要求的是送达之后照做。
+    if "F2" not in writes:
+        problems.append(f"model did not follow the interjection: {writes}")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--interrupt" in sys.argv:
+        sys.exit(interrupt_scenario())
+    if "--steer" in sys.argv:
+        sys.exit(steer_scenario())
     sys.exit(main())

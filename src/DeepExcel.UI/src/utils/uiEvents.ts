@@ -87,6 +87,13 @@ export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
         content: event.message,
         error: { code: event.code, message: event.message, hint: event.hint, retryable: event.retryable },
       }]
+    case 'steer_delivered':
+    case 'steer_deferred': {
+      const next = event.kind === 'steer_delivered' ? 'delivered' : 'deferred'
+      return messages.some(m => m.queued === 'pending')
+        ? messages.map(m => (m.queued === 'pending' ? { ...m, queued: next } : m))
+        : messages
+    }
     case 'run_summary': {
       // 只在值得说的时候出现：失败、中断、达到轮次上限，或者做了不少步。
       // 一问一答的闲聊后面挂一行「完成」只是噪音。

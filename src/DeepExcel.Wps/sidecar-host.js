@@ -89,9 +89,10 @@ class SidecarHost {
   // ============= 发送消息（JS → Python）=============
   // 协议与 C# 端完全一致：每行一个 JSON 对象
 
-  sendUserMessage(text, sessionId, context) {
+  // steer=true：任务进行中的插话，侧车在下一个工具结果后交给模型（空闲时当普通消息）
+  sendUserMessage(text, sessionId, context, steer) {
     this._writeLine(JSON.stringify({
-      type: 'user_message', text, session_id: sessionId, context,
+      type: 'user_message', text, session_id: sessionId, context, steer: steer === true,
     }))
   }
 

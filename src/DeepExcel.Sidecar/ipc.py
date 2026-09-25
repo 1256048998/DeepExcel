@@ -25,6 +25,10 @@ _message_buffer: Dict[str, Any] = {
     "config": None,           # asyncio.Queue，在 _init_buffer() 中创建
     "restore_history": None,  # ★ 历史对话恢复（list of {role, content}），None 表示无历史
     "permission_response": {}, # ★ request_id -> decision（"allow"/"deny"），PreToolUse hook 等待
+    # ★ 任务进行中用户又发的消息（steer=true）。PostToolUse 钩子在下一个工具结果后把它
+    # 注入给模型；本轮结束还没注入的，转成下一条普通用户消息，不会丢。
+    "steer": [],
+    "turn_active": False,     # ★ sidecar 正在处理一轮对话
 }
 
 
@@ -36,6 +40,18 @@ def _init_buffer():
         _message_buffer["cancel"] = asyncio.Event()
     if _message_buffer["config"] is None:
         _message_buffer["config"] = asyncio.Queue()
+
+
+def take_steer_messages() -> list:
+    """取走所有待注入的插话（先进先出）。"""
+    pending = _message_buffer.get("steer") or []
+    _message_buffer["steer"] = []
+    return pending
+
+
+def _cancelled() -> bool:
+    event = _message_buffer.get("cancel")
+    return bool(event is not None and event.is_set())
 
 
 def generate_call_id() -> str:
@@ -78,6 +94,10 @@ def route_message(msg: dict) -> None:
         _message_buffer["clarify_answer"] = msg.get("answer", "")
         _log("route_message: clarify_answer stored")
     elif t == "user_message":
+        if msg.get("steer") and _message_buffer.get("turn_active"):
+            _message_buffer["steer"].append(msg)
+            _log(f"route_message: steer message held for injection, pending={len(_message_buffer['steer'])}")
+            return
         # 用 put_nowait 避免在同步函数里调 async（anyio 下 create_task 可能有问题）
         _message_buffer["user_message"].put_nowait(msg)
         _log("route_message: user_message enqueued")
@@ -127,6 +147,10 @@ async def call_csharp(tool_name: str, args: dict, timeout: float = 60.0) -> dict
         poll_count += 1
         if poll_count % 20 == 0:  # 每 1 秒打印一次等待日志
             _log(f"call_csharp: waiting... tool={tool_name}, call_id={call_id}, poll_count={poll_count}, buffer_keys={list(_message_buffer['tool_result'].keys())}")
+        # ★ 用户按了停止：不再等宿主的结果（宿主那边可能还在执行，结果到了会被丢弃）
+        if _cancelled():
+            _log(f"call_csharp: cancelled while waiting, tool={tool_name}, call_id={call_id}")
+            return {"success": False, "error": "用户已中断", "error_code": "interrupted"}
         # ★ 超时检查：C# 卡死时返回明确错误，避免 sidecar 永久阻塞
         if asyncio.get_event_loop().time() > deadline:
             _log(f"call_csharp: TIMEOUT after {timeout}s, tool={tool_name}, call_id={call_id}")
@@ -147,6 +171,8 @@ async def call_csharp_clarify(question: str, options: list) -> str:
         "options": options,
     })
     while _message_buffer["clarify_answer"] is None:
+        if _cancelled():
+            return "（用户中断了任务，没有回答）"
         await asyncio.sleep(0.05)
     answer = _message_buffer["clarify_answer"]
     _message_buffer["clarify_answer"] = None
@@ -172,6 +198,9 @@ async def request_permission(tool_name: str, args: dict, timeout: float = 300.0)
             decision = _message_buffer["permission_response"].pop(request_id)
             _log(f"request_permission: got decision={decision}, request_id={request_id}")
             return decision
+        if _cancelled():
+            _log(f"request_permission: cancelled, request_id={request_id}")
+            return "deny"
         if asyncio.get_event_loop().time() > deadline:
             _log(f"request_permission: TIMEOUT after {timeout}s, request_id={request_id}")
             return "deny"

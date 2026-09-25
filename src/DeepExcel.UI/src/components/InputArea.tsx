@@ -25,6 +25,8 @@ interface Props {
   onSend: () => void
   onStop?: () => void
   disabled: boolean
+  // ★ 任务进行中仍可输入：发出的话会在下一个工具结果后交给 AI（Claude Code 的排队消息）
+  allowQueue?: boolean
   isClarifying?: boolean
   // ★ 附件上传：点击回形针图标时触发
   onUploadAttachment?: (file: File) => Promise<void>
@@ -51,7 +53,7 @@ interface Props {
 }
 
 export function InputArea({
-  value, onChange, onSend, onStop, disabled, isClarifying,
+  value, onChange, onSend, onStop, disabled, allowQueue = false, isClarifying,
   onUploadAttachment, attachmentCount = 0, onViewAttachments,
   attachments = [], onDeleteAttachment,
   permissionPending = false,
@@ -178,9 +180,10 @@ export function InputArea({
               onSend()
             }
           }}
-          placeholder={isClarifying ? '输入你的回答...' : '描述你的Excel任务...'}
+          placeholder={isClarifying ? '输入你的回答...'
+            : disabled && allowQueue ? '补充或纠正（会在下一步交给 AI）…' : '描述你的Excel任务...'}
           rows={2}
-          disabled={disabled}
+          disabled={disabled && !allowQueue}
         />
       </div>
       {/* ★ 底部工具栏：左上传 + 右模型选择+发送/停止，无额外边框 */}
@@ -255,6 +258,19 @@ export function InputArea({
                 ))
               })()}
             </select>
+          )}
+          {disabled && allowQueue && value.trim() && (
+            <button
+              onClick={onSend}
+              className="toolbar-btn send queue"
+              title="补充给 AI（Enter）：在下一步执行前送达"
+              type="button"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+            </button>
           )}
           {disabled && onStop && !permissionPending ? (
             <button

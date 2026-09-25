@@ -300,6 +300,10 @@ export default function App() {
         ))
         setLoading(false)
         setStatusText(null)
+        if (stopTimerRef.current) {
+          window.clearTimeout(stopTimerRef.current)
+          stopTimerRef.current = null
+        }
         // ★ 用户在输入框下拉选了新模型：对话输出结束后真正切换。
         // 切换会在下一条 user_message 时生效，避免当前对话中途切换导致上下文丢失。
         flushPendingModelSwitchRef.current()
@@ -313,6 +317,8 @@ export default function App() {
           return
         }
         if (event.kind === 'tool_start' || event.kind === 'tool_end') setStatusText(null)
+        // 本轮没来得及注入的插话，侧车会接着作为下一轮处理
+        if (event.kind === 'steer_deferred') setLoading(true)
         setMessages(prev => applyUiEvent(prev, event))
       } else if (data.type === 'tool_result') {
         // 工具结果已不再单独展示（被合并到折叠组中），保留接口避免报错
@@ -362,7 +368,19 @@ export default function App() {
 
   const sendMessage = async (text?: string) => {
     const content = (text ?? input).trim()
-    if (!content || loading) return
+    if (!content) return
+
+    // ★ 任务进行中发的话：不打断，作为插话在下一个工具结果后交给 AI
+    if (loading) {
+      setMessages(prev => [...prev, { role: 'user', content, queued: 'pending' }])
+      setInput('')
+      try {
+        await sendToHost({ type: 'user_message', payload: { content, steer: true } })
+      } catch (err) {
+        setMessages(prev => [...prev, { role: 'assistant', content: `❌ 发送失败: ${err}` }])
+      }
+      return
+    }
 
     const userMessage: Message = { role: 'user', content }
 
@@ -398,10 +416,18 @@ export default function App() {
     }
   }
 
+  // ★ 停止：侧车会让 AI 停下当前步骤并收尾（最多约 15 秒），收到 stream_end 才算停完。
+  // 以前这里立刻把 loading 置 false，AI 其实还在后台跑，下一条消息可能读到上一轮的残留。
+  const stopTimerRef = useRef<number | null>(null)
   const stopGeneration = () => {
-    clearLoadingTimeout()
     sendToHost({ type: 'cancel', payload: {} })
-    setLoading(false)
+    setStatusText('正在停止…')
+    if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current)
+    stopTimerRef.current = window.setTimeout(() => {
+      // 兜底：侧车没有回 stream_end（进程卡死等），不能让输入框一直不可用
+      setLoading(false)
+      setStatusText(null)
+    }, 25_000)
   }
 
   // 切换工具组的折叠/展开状态
@@ -734,6 +760,7 @@ export default function App() {
         onSend={() => sendMessage()}
         onStop={stopGeneration}
         disabled={loading}
+        allowQueue={!isClarifying}
         isClarifying={isClarifying}
         onUploadAttachment={uploadAttachment}
         attachmentCount={attachments.length}

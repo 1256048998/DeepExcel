@@ -606,7 +606,7 @@ function _handleFrontendMessage(message) {
       // ★ 记进当前对话，stream_end 时连同 AI 回复一起落盘
       var userSession = _session()
       if (userSession) userSession.conversation.appendUserMessage(content)
-      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext())
+      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext(), payload.steer === true)
       break
     }
     case 'cancel':

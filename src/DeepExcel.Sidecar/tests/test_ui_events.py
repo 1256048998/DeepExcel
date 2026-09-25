@@ -120,6 +120,12 @@ async def test_api_error_message_becomes_a_classified_error(sent):
     assert not any(m.get("type") == "stream_delta" for m in sent)
 
 
+def test_interrupted_tool_is_reported_in_chinese():
+    out = ui_events.parse_tool_result(
+        "The user doesn't want to proceed with this tool use. The tool use was rejected.", True)
+    assert out["error"] == {"code": "interrupted", "message": "已中断", "hint": None}
+
+
 @pytest.mark.parametrize("text,code", [
     ("HTTP 429 Too Many Requests", "rate_limit"),
     ('{"reason":"task_call_limit"}', "task_limit"),

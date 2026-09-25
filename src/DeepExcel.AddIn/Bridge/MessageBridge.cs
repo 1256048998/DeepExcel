@@ -1370,6 +1370,16 @@ namespace DeepExcel.AddIn.Bridge
                     return MakeResponse("ack", new { received = true, kind = "clarify_answer" });
                 }
 
+                // 任务进行中的插话：不开新回合、不新建任务轨迹，交给侧车在下一步注入
+                if (session.IsBusy && msg.Payload.HasValue &&
+                    msg.Payload.Value.TryGetProperty("steer", out var steerEl) &&
+                    steerEl.ValueKind == JsonValueKind.True)
+                {
+                    session.Sidecar.SendSteerMessage(content, null, new { });
+                    session.AppendUserMessage(content);
+                    return MakeResponse("ack", new { received = true, kind = "steer" });
+                }
+
                 // 正常用户消息：附带 Excel 上下文 + 附件列表
                 // Structure summary, cached until the workbook changes. Must be
                 // set before BuildContext, which embeds it. Null on any failure:

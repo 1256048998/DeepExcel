@@ -79,7 +79,7 @@ from claude_agent_sdk.types import (
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
-from ipc import _init_buffer, request_permission
+from ipc import _init_buffer, request_permission, take_steer_messages
 from system_prompt import SYSTEM_PROMPT
 
 
@@ -285,6 +285,38 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                 "reason": "权限确认出错",
             }
         return {"continue_": True}
+
+
+def format_steer_context(messages: list) -> str:
+    texts = [str(m.get("text") or "").strip() for m in messages]
+    texts = [t for t in texts if t]
+    if not texts:
+        return ""
+    body = "\n".join(f"- {t}" for t in texts)
+    return (
+        "<user-interjection>\n"
+        "用户在你执行任务的过程中补充了下面的话。它比原来的指令更新：先据此调整接下来的步骤；"
+        "如果它和你正在做的事冲突，停下来先回应用户。\n"
+        f"{body}\n"
+        "</user-interjection>"
+    )
+
+
+async def _post_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
+    """任务进行中用户又发了消息：在这个工具结果之后交给模型（Claude Code 的排队消息）。
+
+    以前任务进行中输入框是禁用的，用户发现方向不对只能按停止、再重新说一遍，
+    已经做完的步骤和上下文都白费。"""
+    try:
+        pending = take_steer_messages()
+        text = format_steer_context(pending)
+        if not text:
+            return {}
+        await write_message(ui_events.envelope("steer_delivered", count=len(pending)))
+        return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}
+    except Exception as exc:
+        sys.stderr.write(f"[sidecar] PostToolUse hook error: {exc}\n")
+        return {}
 
 
 # 以前这里有一个「纯文本回答」缓存（5 分钟、按用户原话做键）。工作簿一变，
@@ -856,6 +888,8 @@ async def handle_sdk_message(response, client=None):
             "success": "success",
             "error_max_turns": "max_turns",
         }.get(getattr(response, "subtype", ""), "error" if getattr(response, "is_error", False) else "success")
+        if _run.interrupted:
+            outcome = "interrupted"
         await _emit_run_summary(outcome, in_tok, out_tok, getattr(response, "num_turns", None))
         await write_message({
             "type": "stream_end",
@@ -882,8 +916,64 @@ async def handle_sdk_message(response, client=None):
                 sys.stderr.flush()
 
 
+# 按停止后等 CLI 自己收尾（发出 ResultMessage）的时长。超时就硬切，并在下一轮开始前
+# 把残留的输出读干净——否则下一轮的 receive_response 会先读到上一轮剩下的消息，
+# 在旧的 ResultMessage 处提前结束，用户看到的是上一个问题的回答。
+INTERRUPT_GRACE_SECONDS = 15.0
+DRAIN_TIMEOUT_SECONDS = 20.0
+
+# 上一轮被硬切，CLI 的输出流里可能还有它的残留
+_needs_drain = False
+
+
+async def drain_stale_responses(client, timeout: float | None = None) -> bool:
+    """读掉上一轮残留的消息，直到它的 ResultMessage。返回是否读到了结尾。"""
+    with anyio.move_on_after(DRAIN_TIMEOUT_SECONDS if timeout is None else timeout):
+        async for response in client.receive_response():
+            if isinstance(response, ResultMessage):
+                return True
+    return False
+
+
+async def interrupt_and_wait(client, cancel_scope, grace: float | None = None) -> None:
+    """Claude Code 的 Esc：让 CLI 停下当前回合，而不只是不再读它的输出。
+
+    interrupt 之后 CLI 会补发工具结果和 ResultMessage，主循环照常处理（面板上的步骤
+    正常收尾）；等不到就硬切，并标记下一轮开始前先排空。"""
+    global _needs_drain
+    _run.interrupted = True
+    await write_message(ui_events.envelope("status", text="正在停止…"))
+    try:
+        with anyio.fail_after(5):
+            await client.interrupt()
+    except Exception as exc:
+        sys.stderr.write(f"[sidecar] interrupt failed: {type(exc).__name__}: {exc}\n")
+        sys.stderr.flush()
+    await anyio.sleep(INTERRUPT_GRACE_SECONDS if grace is None else grace)
+    sys.stderr.write("[sidecar] interrupt grace expired, cutting the stream\n")
+    sys.stderr.flush()
+    _needs_drain = True
+    cancel_scope.cancel()
+
+
+async def defer_leftover_steer() -> None:
+    """本轮结束时还没来得及注入的插话，作为下一条普通消息处理，不会丢。"""
+    leftover = take_steer_messages()
+    texts = [str(m.get("text") or "").strip() for m in leftover]
+    texts = [t for t in texts if t]
+    if not texts:
+        return
+    await write_message(ui_events.envelope("steer_deferred", count=len(texts)))
+    _message_buffer["user_message"].put_nowait({
+        "type": "user_message",
+        "text": "\n".join(texts),
+        "context": leftover[-1].get("context") or {},
+    })
+
+
 async def run_agent_loop(client, supports_vision: bool = True, model: str = "", base_url: str = ""):
     """主循环：从 user_message queue 取消息，发给 SDK 处理"""
+    global _needs_drain
     while True:
         msg = await _message_buffer["user_message"].get()
         if msg is None:
@@ -892,6 +982,12 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
         # 重置 cancel 标志（每次新对话开始前）
         if _message_buffer["cancel"].is_set():
             _message_buffer["cancel"].clear()
+
+        if _needs_drain:
+            drained = await drain_stale_responses(client)
+            sys.stderr.write(f"[sidecar] drained stale responses before new turn: reached_end={drained}\n")
+            sys.stderr.flush()
+            _needs_drain = False
 
         # ★ 重置流式标志 + 本轮工具账本
         global _had_partial_text, _tool_calls_in_turn, _collected_text, _run
@@ -941,6 +1037,7 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
                 sys.stderr.flush()
             _message_buffer["restore_history"] = None
 
+        _message_buffer["turn_active"] = True
         try:
             direct_blocks = []
             if supports_vision and has_attachments:
@@ -968,13 +1065,11 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
 
             async with anyio.create_task_group() as inner_tg:
                 async def _cancel_watchdog():
-                    while True:
-                        if _message_buffer["cancel"].is_set():
-                            sys.stderr.write("[sidecar] cancel detected by watchdog, cancelling receive_response\n")
-                            sys.stderr.flush()
-                            inner_tg.cancel_scope.cancel()
-                            return
+                    while not _message_buffer["cancel"].is_set():
                         await anyio.sleep(0.1)
+                    sys.stderr.write("[sidecar] cancel detected by watchdog, interrupting the CLI\n")
+                    sys.stderr.flush()
+                    await interrupt_and_wait(client, inner_tg.cancel_scope)
 
                 inner_tg.start_soon(_cancel_watchdog)
 
@@ -1001,13 +1096,20 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             await _emit_run_summary("error")
             await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
 
-        if _message_buffer["cancel"].is_set():
-            sys.stderr.write("[sidecar] cancel was set, sending stream_end to unblock UI\n")
-            sys.stderr.flush()
-            await _close_unfinished_tools("interrupted", "已中断")
-            await _emit_run_summary("interrupted")
-            await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
+        _message_buffer["turn_active"] = False
+        if _message_buffer["cancel"].is_set() or _run.interrupted:
+            # CLI 正常收尾时 ResultMessage 已经发过终态行和 stream_end；只有被硬切时才补
+            if not _run.summarized:
+                sys.stderr.write("[sidecar] turn was cut, sending stream_end to unblock UI\n")
+                sys.stderr.flush()
+                await _close_unfinished_tools("interrupted", "已中断")
+                await _emit_run_summary("interrupted")
+                await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
             _message_buffer["cancel"].clear()
+            # 用户按了停止：插话一起作废，不自动开始下一轮
+            take_steer_messages()
+        else:
+            await defer_leftover_steer()
 
 
 async def main():
@@ -1117,6 +1219,8 @@ async def main():
             # 在面板内抽屉式确认，替代旧的同步 MessageBox（阻塞 UI 线程导致 Excel 崩溃）
             hooks={
                 "PreToolUse": [HookMatcher(matcher=None, hooks=[_pre_tool_use_hook])],
+                # ★ 插话注入：任务进行中用户发来的消息，在下一个工具结果后交给模型
+                "PostToolUse": [HookMatcher(matcher=None, hooks=[_post_tool_use_hook])],
             },
         )
 

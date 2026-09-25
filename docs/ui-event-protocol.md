@@ -40,6 +40,8 @@ stdout 一行一个 JSON：
 | `status` | `text`, `tool?` | 当前在做什么（目前：等待用户确认）。面板显示在加载指示旁，收到下一个工具事件或本轮结束时清除 |
 | `compaction` | `trigger`, `pre_tokens?`, `prev_pct?`, `curr_pct?` | 上下文被压缩。`trigger` 为 `auto`/`manual`（CLI 的 compact_boundary）或 `detected`（没收到 compact_boundary、但上下文占比骤降超过 40%） |
 | `error` | `code`, `message`, `hint`, `retryable`, `detail` | 整轮失败（API 报错、异常）。`message`/`hint` 是给用户的中文；`detail` 是原始报错前 500 字，只供诊断 |
+| `steer_delivered` | `count` | 任务进行中用户发的插话已在某个工具结果之后交给模型（PostToolUse 的 additionalContext） |
+| `steer_deferred` | `count` | 本轮结束前没有工具结果可以附带，插话转成下一条普通消息，侧车接着处理 |
 | `run_summary` | `outcome`, `tool_calls`, `failed_calls`, `duration_ms`, `num_turns?`, `input_tokens?`, `output_tokens?` | 每轮结束、`stream_end` 之前恰好一次。`outcome`：`success` / `max_turns` / `error` / `interrupted` |
 
 ### 保证
@@ -59,6 +61,18 @@ stdout 一行一个 JSON：
 工具错误（`tool_end.error`）：C# 结果里带 `error_code` 时用它，否则 `tool_failed`；
 被拒绝为 `denied`；侧车补发的为 `interrupted` / `aborted` / `no_result`。
 
+## 停止与插话（F9）
+
+- **停止**：宿主发 `cancel`。侧车调用 `client.interrupt()` 让 CLI 停下当前回合，等它补发工具结果和
+  ResultMessage（最多 15 秒，期间发 `status: 正在停止…`），面板上的步骤正常收尾，`run_summary.outcome =
+  interrupted`。等不到就硬切，并在下一轮开始前把 CLI 的残留输出读到上一轮的 ResultMessage 为止——
+  否则下一个问题会先读到上一轮剩下的回答。等待中的工具调用、权限确认、澄清问题收到停止后立即返回。
+- **插话**：任务进行中面板照常可以输入，发出的 `user_message` 带 `steer: true`。侧车在下一个工具结果之后
+  把它作为 `<user-interjection>` 交给模型（`steer_delivered`）；本轮结束还没送达就作为下一条消息处理
+  （`steer_deferred`）。按了停止则插话一起作废。和插话同一批已经发出的工具调用撤不回来（Claude Code 也一样）。
+- C# 对插话不开新回合（不重置写前备份、不新建任务轨迹）；侧车只在确实有一轮在跑时才把 `steer` 当插话，
+  空闲时当普通消息。
+
 ## 与旧消息的关系
 
 - `tool_use` 仍然发：C# 用它记对话历史和任务轨迹，WPS 用它记对话历史。面板不再渲染它。
@@ -77,4 +91,5 @@ stdout 一行一个 JSON：
   `TelemetryReporterTests.RunSummaryOutcomeDecidesTheTraceOutcome`。
 - 真实模型：`python scripts/live_sidecar_events.py` —— 按 WPS 的方式启动侧车（自己读本机
   DeepExcel 配置和 DPAPI 凭据，脚本碰不到 Key），假装宿主应答工具调用，并故意让一次写入失败，
-  检查事件配对、失败上报和终态行。会消耗几千 token。
+  检查事件配对、失败上报和终态行。`--interrupt`：停止后再问新问题，回答不能是上一轮的残留；
+  `--steer`：工具执行期间插话「改写到 F2」，模型应当照做。每个场景消耗几千 token。

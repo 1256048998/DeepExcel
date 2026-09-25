@@ -216,6 +216,11 @@ function MessageItem({
       <div className="message-header">
         {message.role === 'assistant' && <span className="role-label">助手</span>}
         {message.role === 'user' && <span className="role-label">你</span>}
+        {message.queued && (
+          <span className={`queued-label queued-${message.queued}`}>
+            {message.queued === 'pending' ? '等待送达' : message.queued === 'delivered' ? '已交给 AI' : '本轮结束后处理'}
+          </span>
+        )}
         <CopyButton content={message.content} className="msg-copy-btn" />
         {/* ★ 用户消息悬停时显示"保存为提示词"按钮 */}
         {message.role === 'user' && onSaveAsPrompt && (

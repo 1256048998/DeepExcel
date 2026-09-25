@@ -16,6 +16,8 @@ kind:
     error        {code, message, hint, retryable}  整轮失败
     run_summary  {outcome, tool_calls, failed_calls, duration_ms, num_turns,
                   input_tokens, output_tokens}
+    steer_delivered {count}                        任务中插话已交给模型
+    steer_deferred  {count}                        本轮没来得及注入，作为下一条消息处理
 
 宿主（C# / WPS）原样转发，不解释内容；只有面板渲染它。
 """
@@ -114,7 +116,11 @@ def parse_tool_result(content: Any, is_error: bool | None) -> dict:
 
     if is_error:
         message = text.strip() or "工具执行失败"
-        code = "denied" if ("拒绝" in message or "denied" in message.lower()) else "tool_failed"
+        lowered = message.lower()
+        # 按停止后 CLI 给正在执行的调用回的是英文原文
+        if "doesn't want to proceed" in lowered or "interrupted" in lowered or "用户已中断" in message:
+            return {"ok": False, "error": {"code": "interrupted", "message": "已中断", "hint": None}}
+        code = "denied" if ("拒绝" in message or "denied" in lowered) else "tool_failed"
         return {"ok": False, "error": {"code": code, "message": message[:500], "hint": None}}
     return {"ok": True}
 
@@ -182,6 +188,7 @@ class RunTracker:
         self.failed_calls = 0
         self.compacted = False
         self.summarized = False
+        self.interrupted = False
 
     def start(self, tool_use_id: str, name: str) -> None:
         self.tool_calls += 1

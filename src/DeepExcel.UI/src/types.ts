@@ -17,6 +17,8 @@ export type Message = {
   error?: { code: string; message: string; hint?: string; retryable?: boolean }
   // type==='run_summary'
   outcome?: string
+  // 任务进行中发出的插话：pending 已发出 / delivered 已交给 AI / deferred 本轮结束后处理
+  queued?: 'pending' | 'delivered' | 'deferred'
 }
 
 export type ToolStepError = { code: string; message: string; hint?: string | null }
@@ -42,6 +44,7 @@ export type UiEvent =
       curr_pct?: number; ts?: number }
   | { v: number; kind: 'error'; code: string; message: string; hint?: string; retryable?: boolean;
       detail?: string; ts?: number }
+  | { v: number; kind: 'steer_delivered' | 'steer_deferred'; count: number; ts?: number }
   | { v: number; kind: 'run_summary'; outcome: string; tool_calls: number; failed_calls: number;
       duration_ms: number; num_turns?: number; input_tokens?: number; output_tokens?: number; ts?: number }
 
