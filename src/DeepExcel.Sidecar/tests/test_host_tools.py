@@ -67,3 +67,22 @@ def test_wps_prompt_tells_the_model_which_tools_exist():
     note = excel_tools.host_tool_note("wps", names)
     assert "execute_jsa" in note and "create_chart" not in note
     assert excel_tools.host_tool_note("excel", names) == ""
+
+
+def test_todo_write_is_available_in_both_hosts():
+    assert "todo_write" in {t.name for t in register_all_tools("excel")}
+    assert "todo_write" in {t.name for t in register_all_tools("wps")}
+
+
+def test_normalize_todos_keeps_one_active_step():
+    items = excel_tools.normalize_todos([
+        {"content": "读取数据", "status": "completed"},
+        {"content": "写公式", "status": "in_progress"},
+        {"content": "画图", "status": "in_progress"},
+        {"content": "  ", "status": "pending"},
+        "检查结果",
+        {"content": "x", "status": "bogus"},
+    ])
+    assert [i["status"] for i in items] == ["completed", "in_progress", "pending", "pending", "pending"]
+    assert items[3]["content"] == "检查结果"
+    assert excel_tools.normalize_todos("not a list") == []

@@ -116,6 +116,7 @@ export const TOOL_LABELS: Record<string, Label> = {
 
   // 交互
   clarify_intent: () => '向你确认需求',
+  todo_write: () => '更新计划',
   screenshot_excel: () => '截取 Excel 窗口',
   send_keys: a => at('发送按键', a.keys),
 }

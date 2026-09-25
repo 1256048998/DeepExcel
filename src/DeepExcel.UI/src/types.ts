@@ -21,6 +21,8 @@ export type Message = {
   queued?: 'pending' | 'delivered' | 'deferred'
 }
 
+export type PlanItem = { content: string; status: 'pending' | 'in_progress' | 'completed' }
+
 export type ToolStepError = { code: string; message: string; hint?: string | null }
 
 export type ToolStep = {
@@ -28,7 +30,11 @@ export type ToolStep = {
   name: string
   label: string
   args?: Record<string, unknown>
-  status: 'running' | 'ok' | 'error'
+  // generating：模型还在生成参数（代码边写边显示），尚未真正调用
+  status: 'generating' | 'running' | 'ok' | 'error'
+  // 代码类工具（VBA / JS 宏 / Python）的代码；生成中是目前写到的部分
+  code?: string
+  genChars?: number
   summary?: string
   error?: ToolStepError
   durationMs?: number
@@ -40,11 +46,14 @@ export type UiEvent =
   | { v: number; kind: 'tool_end'; id: string; name: string; ok: boolean; duration_ms?: number;
       summary?: string; error?: ToolStepError; ts?: number }
   | { v: number; kind: 'status'; text: string; tool?: string; ts?: number }
+  | { v: number; kind: 'tool_gen'; id: string; name: string; chars: number; lines?: number;
+      preview?: string; ts?: number }
   | { v: number; kind: 'compaction'; trigger: string; pre_tokens?: number; prev_pct?: number;
       curr_pct?: number; ts?: number }
   | { v: number; kind: 'error'; code: string; message: string; hint?: string; retryable?: boolean;
       detail?: string; ts?: number }
   | { v: number; kind: 'steer_delivered' | 'steer_deferred'; count: number; ts?: number }
+  | { v: number; kind: 'plan'; items: PlanItem[]; ts?: number }
   | { v: number; kind: 'run_summary'; outcome: string; tool_calls: number; failed_calls: number;
       duration_ms: number; num_turns?: number; input_tokens?: number; output_tokens?: number; ts?: number }
 

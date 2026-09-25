@@ -14,7 +14,8 @@ import type { ChangePreviewData } from './components/ChangePreview'
 import { PromptManager } from './components/PromptManager'
 import { UpdateBanner } from './components/UpdateBanner'
 import { SetupNotice } from './components/SetupNotice'
-import type { Message, ModelConfig, UiEvent } from './types'
+import { PlanPill } from './components/PlanPill'
+import type { Message, ModelConfig, PlanItem, UiEvent } from './types'
 import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -45,6 +46,8 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   // 侧车 status 事件（「等待你确认」等），显示在加载指示旁；工具开始/结束或本轮结束时清掉
   const [statusText, setStatusText] = useState<string | null>(null)
+  // 模型用 todo_write 维护的计划清单（输入框上方的计划胶囊）
+  const [plan, setPlan] = useState<PlanItem[]>([])
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
@@ -316,6 +319,10 @@ export default function App() {
           setStatusText(event.text)
           return
         }
+        if (event.kind === 'plan') {
+          setPlan(Array.isArray(event.items) ? event.items : [])
+          return
+        }
         if (event.kind === 'tool_start' || event.kind === 'tool_end') setStatusText(null)
         // 本轮没来得及注入的插话，侧车会接着作为下一轮处理
         if (event.kind === 'steer_deferred') setLoading(true)
@@ -383,6 +390,8 @@ export default function App() {
     }
 
     const userMessage: Message = { role: 'user', content }
+    // 新任务开始：上一个已经全部完成的计划不再显示（没做完的留着，用户可能是在说「继续」）
+    setPlan(prev => (prev.length > 0 && prev.every(i => i.status === 'completed') ? [] : prev))
 
     // 没有可用模型就别把消息发出去。发出去的结局是用户收到一条来自模型 API 的
     // 英文报错，既看不懂也不知道下一步做什么——而欢迎语恰恰在鼓励他们现在就试。
@@ -753,6 +762,8 @@ export default function App() {
         onAllow={handlePermissionAllow}
         onDeny={handlePermissionDeny}
       />
+
+      <PlanPill items={plan} />
 
       <InputArea
         value={input}

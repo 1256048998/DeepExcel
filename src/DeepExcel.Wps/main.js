@@ -182,7 +182,8 @@ function _recordSidecarEvent(event) {
         if (payload.delta) session.conversation.appendAssistantDelta(payload.delta)
         break
       case 'tool_call':
-        if (payload.name) session.conversation.appendToolCall(payload.name)
+        // 计划清单由侧车自己处理，不是工作簿操作，不进对话历史
+        if (payload.name && !/todo_write$/.test(payload.name)) session.conversation.appendToolCall(payload.name)
         break
       case 'clarify':
         session.conversation.appendClarify(payload.question || '', payload.options || [])

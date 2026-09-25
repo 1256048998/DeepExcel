@@ -1749,6 +1749,8 @@ namespace DeepExcel.AddIn.Bridge
             if (session != null)
             {
                 var displayName = name?.Replace("mcp__excel__", "") ?? name;
+                // 计划清单由侧车自己处理，不是工作簿操作：不进历史，也不能被录进技能（重放时 C# 没有这个工具）
+                if (displayName == "todo_write") return;
                 // 面板从 ui_event 的 tool_start / tool_end 渲染工具步骤；这里只记历史和轨迹。
                 // ★ 追加到历史
                 session.AppendToolCall(displayName);

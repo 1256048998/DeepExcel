@@ -79,7 +79,7 @@ describe('applyUiEvent', () => {
 describe('toolCatalog', () => {
   // 侧车注册表是真相来源：新增工具没写中文文案，面板就会显示英文函数名
   const py = readFileSync(resolve(__dirname, '../../../DeepExcel.Sidecar/excel_tools.py'), 'utf-8')
-  const registered = [...py.matchAll(/@tool\("(\w+)"/g)].map(m => m[1])
+  const registered = [...py.matchAll(/@tool\(\s*"(\w+)"/g)].map(m => m[1])
 
   it('parses the sidecar registry', () => {
     expect(registered.length).toBeGreaterThan(40)
@@ -126,5 +126,34 @@ describe('steer (messages sent while a task runs)', () => {
   it('marks them deferred when the turn ended first', () => {
     const out = applyUiEvent(pending, { v: 1, kind: 'steer_deferred', count: 1 })
     expect(out[1].queued).toBe('deferred')
+  })
+})
+
+describe('tool_gen (arguments streamed while the model writes them)', () => {
+  it('shows code as it is written, then turns the same row into the running step', () => {
+    let out = applyUiEvent([], { v: 1, kind: 'tool_gen', id: 'g', name: 'execute_vba', chars: 20, lines: 2, preview: 'Sub A()' })
+    expect(out[0].toolSteps![0].status).toBe('generating')
+    expect(out[0].toolSteps![0].label).toBe('正在编写 VBA（2 行）…')
+    out = applyUiEvent(out, { v: 1, kind: 'tool_gen', id: 'g', name: 'execute_vba', chars: 60, lines: 5, preview: 'Sub A()' })
+    expect(out[0].toolSteps).toHaveLength(1)
+    expect(out[0].toolSteps![0].label).toBe('正在编写 VBA（5 行）…')
+    out = applyUiEvent(out, start('g', 'execute_vba', { code: 'Sub A()' }))
+    expect(out[0].toolSteps).toHaveLength(1)
+    const step = out[0].toolSteps![0]
+    expect(step.status).toBe('running')
+    expect(step.label).toBe('运行 VBA（1 行）')
+    expect(step.code).toBe('Sub A()')
+  })
+
+  it('reports size for non-code tools', () => {
+    const out = applyUiEvent([], { v: 1, kind: 'tool_gen', id: 'w', name: 'write_range', chars: 1234 })
+    expect(out[0].toolSteps![0].label).toContain('1234 字')
+  })
+})
+
+describe('todo_write', () => {
+  it('is not shown as a step (the plan pill shows it)', () => {
+    const out = applyUiEvent([], start('t', 'todo_write', { todos: [] }))
+    expect(out).toEqual([])
   })
 })

@@ -2823,6 +2823,36 @@ body {
   color: #b91c1c;
 }
 
+.tool-step.status-generating .tool-step-bullet {
+  color: var(--color-primary);
+  animation: tool-step-pulse 1s ease-in-out infinite;
+}
+
+.tool-step.status-generating .tool-step-label {
+  color: var(--color-text-secondary);
+}
+
+.tool-step-code {
+  margin: 2px 0 2px 18px;
+  padding: 6px 8px;
+  max-height: 220px;
+  overflow: auto;
+  background: #f6f8fa;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.tool-step-code-toggle summary {
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
 .tool-step-hint {
   padding-left: 1.1em;
   color: var(--color-text-secondary);
@@ -2857,6 +2887,74 @@ body {
 .message.run-summary.outcome-max_turns,
 .message.run-summary.outcome-error {
   color: #b45309;
+}
+
+.plan-pill {
+  margin: 0 10px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-bg-secondary);
+  font-size: 12px;
+}
+
+.plan-pill-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text);
+  text-align: left;
+}
+
+.plan-pill-count {
+  flex: none;
+  font-weight: 500;
+  color: var(--color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.plan-pill.done .plan-pill-count {
+  color: #16a34a;
+}
+
+.plan-pill-current {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+}
+
+.plan-pill-list {
+  margin: 0;
+  padding: 2px 10px 8px 12px;
+  list-style: none;
+}
+
+.plan-item {
+  display: flex;
+  gap: 6px;
+  padding: 1px 0;
+  color: var(--color-text);
+}
+
+.plan-item.completed {
+  color: #9ca3af;
+  text-decoration: line-through;
+}
+
+.plan-item.in_progress {
+  font-weight: 500;
+}
+
+.plan-item-mark {
+  flex: none;
+  width: 14px;
 }
 
 .queued-label {

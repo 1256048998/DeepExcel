@@ -189,6 +189,21 @@ class RunTracker:
         self.compacted = False
         self.summarized = False
         self.interrupted = False
+        # 最近一次从 CLI 收到任何东西的时刻；看门狗据此判断「很久没动静」
+        self.last_activity = self.started
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return time.monotonic() - self.last_activity
+
+    def running_tool(self) -> tuple[str, float] | None:
+        """正在等宿主返回结果的调用里最早的那个：(工具名, 已等待秒数)。"""
+        if not self._pending:
+            return None
+        name, t0 = min(self._pending.values(), key=lambda item: item[1])
+        return name, time.monotonic() - t0
 
     def start(self, tool_use_id: str, name: str) -> None:
         self.tool_calls += 1
@@ -206,3 +221,117 @@ class RunTracker:
 
     def elapsed_ms(self) -> int:
         return int((time.monotonic() - self.started) * 1000)
+
+
+# ---------------------------------------------------------------------------
+# 看门狗：很久没动静时告诉用户在等什么
+# ---------------------------------------------------------------------------
+
+# (空闲秒数阈值, 文案)。模型在长思考、写大段代码时可能几十秒不出字，
+# 用户看到的只有三个跳动的点，分不清「在想」还是「卡死了」。
+WATCHDOG_MODEL_WAIT = 20
+WATCHDOG_TOOL_WAIT = 15
+WATCHDOG_STUCK = 120
+
+
+def watchdog_status(idle_s: float, running_tool: tuple[str, float] | None) -> str | None:
+    """根据空闲时长和正在执行的工具，给出状态行；不需要提示时返回 None。"""
+    if running_tool is not None:
+        _name, waited = running_tool
+        if waited >= WATCHDOG_STUCK:
+            return f"这一步已执行 {int(waited)} 秒——Excel 可能弹出了对话框，请切到 Excel 看一下；也可以按停止"
+        if waited >= WATCHDOG_TOOL_WAIT:
+            return f"这一步执行中（{int(waited)} 秒）…"
+        return None
+    if idle_s >= WATCHDOG_STUCK:
+        return f"模型已 {int(idle_s)} 秒没有响应，可能是网络或服务商繁忙；可以按停止后重试"
+    if idle_s >= WATCHDOG_MODEL_WAIT:
+        return f"仍在等待模型响应（{int(idle_s)} 秒）…"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 代码边写边显示（tool_gen）
+# ---------------------------------------------------------------------------
+
+# 模型写一段 60 行的 VBA 或一张 500 行的表，参数要一个 token 一个 token 生成，
+# 可能要几十秒。以前这段时间面板什么都没有；现在从流式事件里取出正在生成的
+# 参数，边写边显示（Claude Code 写文件时也是这样）。
+CODE_FIELDS = {"execute_vba": "code", "execute_jsa": "code", "execute_python": "code"}
+TOOL_GEN_INTERVAL = 0.25
+_CODE_PREVIEW_CHARS = 4000
+
+
+def partial_json_string(buffer: str, field: str) -> str | None:
+    """从不完整的 JSON 里取出字符串字段目前已生成的部分（处理转义，末尾可以是半个转义）。"""
+    key = f'"{field}"'
+    start = buffer.find(key)
+    if start < 0:
+        return None
+    i = start + len(key)
+    while i < len(buffer) and buffer[i] in " \t\r\n:":
+        i += 1
+    if i >= len(buffer) or buffer[i] != '"':
+        return None
+    i += 1
+    out = []
+    escapes = {"n": "\n", "t": "\t", "r": "\r", '"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f"}
+    while i < len(buffer):
+        ch = buffer[i]
+        if ch == '"':
+            break
+        if ch == "\\":
+            if i + 1 >= len(buffer):
+                break
+            nxt = buffer[i + 1]
+            if nxt == "u":
+                digits = buffer[i + 2:i + 6]
+                if len(digits) < 4:
+                    break
+                try:
+                    out.append(chr(int(digits, 16)))
+                except ValueError:
+                    pass
+                i += 6
+                continue
+            out.append(escapes.get(nxt, nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+class ToolGenTracker:
+    """按 content block index 累积 tool_use 的 input_json_delta，节流后产出 tool_gen 事件。"""
+
+    def __init__(self) -> None:
+        self._blocks: dict[int, dict] = {}
+
+    def start(self, index: int, tool_use_id: str, name: str) -> None:
+        self._blocks[index] = {"id": tool_use_id, "name": bare_tool_name(name), "buf": "", "last": 0.0}
+
+    def feed(self, index: int, partial: str, now: float | None = None) -> dict | None:
+        block = self._blocks.get(index)
+        if block is None or not partial:
+            return None
+        block["buf"] += partial
+        now = time.monotonic() if now is None else now
+        if now - block["last"] < TOOL_GEN_INTERVAL:
+            return None
+        block["last"] = now
+        return self._event(block)
+
+    def stop(self, index: int) -> None:
+        self._blocks.pop(index, None)
+
+    @staticmethod
+    def _event(block: dict) -> dict:
+        fields = {"id": block["id"], "name": block["name"], "chars": len(block["buf"])}
+        field = CODE_FIELDS.get(block["name"])
+        if field:
+            code = partial_json_string(block["buf"], field)
+            if code:
+                fields["lines"] = code.count("\n") + 1
+                fields["preview"] = code[-_CODE_PREVIEW_CHARS:]
+        return envelope("tool_gen", **fields)

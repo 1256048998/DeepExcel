@@ -148,3 +148,89 @@ def test_summarize_args_truncates_long_code_and_big_arrays():
 def test_envelope_drops_none_fields():
     ev = ui_events.envelope("status", text="x", tool=None)["event"]
     assert ev["v"] == 1 and "tool" not in ev
+
+
+# ---------------------------------------------------------------------------
+# 看门狗与代码边写边显示
+# ---------------------------------------------------------------------------
+
+def test_watchdog_is_quiet_when_things_move():
+    assert ui_events.watchdog_status(3, None) is None
+    assert ui_events.watchdog_status(3, ("read_range", 2)) is None
+
+
+def test_watchdog_explains_what_it_is_waiting_for():
+    assert "等待模型" in ui_events.watchdog_status(25, None)
+    assert "停止" in ui_events.watchdog_status(130, None)
+    assert "执行中" in ui_events.watchdog_status(1, ("execute_vba", 20))
+    # 宿主一直不回结果：多半是 Excel 被模态对话框挡住了
+    assert "对话框" in ui_events.watchdog_status(1, ("execute_vba", 125))
+
+
+@pytest.mark.asyncio
+async def test_status_watchdog_does_not_nag_while_waiting_for_the_user(sent, monkeypatch):
+    import anyio
+    import ipc
+    ipc._init_buffer()
+    monkeypatch.setattr(ui_events, "WATCHDOG_MODEL_WAIT", 0)
+    ipc._message_buffer["awaiting_user"] = 1
+    with anyio.move_on_after(0.2):
+        await sidecar.status_watchdog(tick=0.02)
+    assert _events(sent, "status") == []
+    ipc._message_buffer["awaiting_user"] = 0
+    with anyio.move_on_after(0.2):
+        await sidecar.status_watchdog(tick=0.02)
+    statuses = _events(sent, "status")
+    assert len(statuses) == 1  # 同一句话不重复发
+    assert "等待模型" in statuses[0]["text"]
+
+
+@pytest.mark.parametrize("buffer,expected", [
+    (r'{"code": "Sub A()\n  x = 1', "Sub A()\n  x = 1"),
+    (r'{"code": "say \"hi\" and \u4e2d', 'say "hi" and 中'),
+    ('{"code": "ends mid escape ' + chr(92), "ends mid escape "),
+    ('{"code": "done"}', "done"),
+    ('{"other": 1', None),
+    ('{"code": 12', None),
+])
+def test_partial_json_string(buffer, expected):
+    assert ui_events.partial_json_string(buffer, "code") == expected
+
+
+def test_tool_gen_streams_code_preview_throttled():
+    gen = ui_events.ToolGenTracker()
+    gen.start(1, "tu_9", "mcp__excel__execute_vba")
+    first = gen.feed(1, r'{"code": "Sub A()\n', now=10.0)["event"]
+    assert first["kind"] == "tool_gen" and first["id"] == "tu_9" and first["name"] == "execute_vba"
+    assert first["preview"] == "Sub A()\n" and first["lines"] == 2
+    # 250ms 内的增量只累积，不发
+    assert gen.feed(1, r"  x = 1\n", now=10.1) is None
+    later = gen.feed(1, "End Sub", now=10.4)["event"]
+    assert later["preview"].endswith("End Sub") and later["lines"] == 3
+    gen.stop(1)
+    assert gen.feed(1, "more", now=11.0) is None
+
+
+def test_tool_gen_for_non_code_tools_reports_size_only():
+    gen = ui_events.ToolGenTracker()
+    gen.start(0, "tu_1", "mcp__excel__write_range")
+    ev = gen.feed(0, '{"address": "A1", "values": [[1,2],[3,4]', now=5.0)["event"]
+    assert ev["chars"] > 10 and "preview" not in ev
+
+
+@pytest.mark.asyncio
+async def test_stream_events_produce_tool_gen(sent):
+    from claude_agent_sdk.types import StreamEvent
+    sidecar._gen = ui_events.ToolGenTracker()
+
+    def se(event):
+        return StreamEvent(uuid="u", session_id="s", event=event)
+
+    await sidecar.handle_sdk_message(se({"type": "content_block_start", "index": 2,
+                                         "content_block": {"type": "tool_use", "id": "tu_5",
+                                                           "name": "mcp__excel__execute_python", "input": {}}}))
+    await sidecar.handle_sdk_message(se({"type": "content_block_delta", "index": 2,
+                                         "delta": {"type": "input_json_delta",
+                                                   "partial_json": '{"code": "print(1)'}}))
+    ev, = _events(sent, "tool_gen")
+    assert ev["id"] == "tu_5" and ev["preview"] == "print(1)"

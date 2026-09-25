@@ -785,6 +785,27 @@ _collected_text = ""
 
 # ★ 本轮工具调用账本：tool_start / tool_end 按 tool_use_id 配对，终态行据此汇总
 _run = ui_events.RunTracker()
+# ★ 正在生成参数的工具调用（代码边写边显示）
+_gen = ui_events.ToolGenTracker()
+
+WATCHDOG_TICK_SECONDS = 5.0
+
+
+async def status_watchdog(tick: float | None = None) -> None:
+    """很久没动静时发状态行：在等模型、还是在等 Excel 执行（可能被弹窗挡住）。
+
+    同一句话不重复发；恢复活动后发一个空状态让面板清掉。"""
+    last_text = None
+    while True:
+        await anyio.sleep(WATCHDOG_TICK_SECONDS if tick is None else tick)
+        if _message_buffer.get("awaiting_user"):
+            # 在等用户确认或回答：不是卡住，也不该把「等待你确认」盖掉
+            _run.touch()
+            continue
+        text = ui_events.watchdog_status(_run.idle_seconds(), _run.running_tool())
+        if text != last_text:
+            await write_message(ui_events.envelope("status", text=text or ""))
+            last_text = text
 
 # ★ 压缩检测兜底：记录上一轮 context usage percentage。CLI 正常会发
 # system/compact_boundary；没收到时 percentage 骤降也说明压缩发生了。
@@ -842,9 +863,17 @@ async def _emit_run_summary(outcome: str, in_tok: int = 0, out_tok: int = 0, num
 async def handle_sdk_message(response, client=None):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
     global _had_partial_text, _collected_text, _prev_context_percentage
+    _run.touch()
     if isinstance(response, StreamEvent):
         evt = response.event if isinstance(response.event, dict) else {}
-        if evt.get("type") == "content_block_delta":
+        etype = evt.get("type")
+        if etype == "content_block_start":
+            block = evt.get("content_block") or {}
+            if block.get("type") == "tool_use":
+                _gen.start(evt.get("index", -1), block.get("id", ""), block.get("name", ""))
+        elif etype == "content_block_stop":
+            _gen.stop(evt.get("index", -1))
+        elif etype == "content_block_delta":
             delta = evt.get("delta", {})
             if isinstance(delta, dict) and delta.get("type") == "text_delta":
                 text = delta.get("text", "")
@@ -852,6 +881,10 @@ async def handle_sdk_message(response, client=None):
                     _had_partial_text = True
                     _collected_text += text
                     await write_message({"type": "stream_delta", "text": text})
+            elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":
+                gen_event = _gen.feed(evt.get("index", -1), delta.get("partial_json", ""))
+                if gen_event:
+                    await write_message(gen_event)
     elif isinstance(response, AssistantMessage):
         api_error = getattr(response, "error", None)
         if api_error:
@@ -990,11 +1023,12 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             _needs_drain = False
 
         # ★ 重置流式标志 + 本轮工具账本
-        global _had_partial_text, _tool_calls_in_turn, _collected_text, _run
+        global _had_partial_text, _tool_calls_in_turn, _collected_text, _run, _gen
         _had_partial_text = False
         _tool_calls_in_turn = 0
         _collected_text = ""
         _run = ui_events.RunTracker()
+        _gen = ui_events.ToolGenTracker()
 
         user_text = msg.get("text", "")
         context = msg.get("context") or {}
@@ -1072,6 +1106,7 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
                     await interrupt_and_wait(client, inner_tg.cancel_scope)
 
                 inner_tg.start_soon(_cancel_watchdog)
+                inner_tg.start_soon(status_watchdog)
 
                 try:
                     async for response in client.receive_response():

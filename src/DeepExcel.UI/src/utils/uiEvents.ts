@@ -33,37 +33,77 @@ function closeStreaming(messages: Message[]): Message[] {
     : messages
 }
 
+function findStep(messages: Message[], id: string): ToolStep | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const step = messages[i].toolSteps?.find(s => s.id === id)
+    if (step) return step
+  }
+  return undefined
+}
+
+const CODE_ARG: Record<string, string> = { execute_vba: 'code', execute_jsa: 'code', execute_python: 'code' }
+
+function generatingLabel(name: string, lines?: number, chars?: number): string {
+  const what = name === 'execute_vba' ? 'VBA' : name === 'execute_jsa' ? 'JS 宏'
+    : name === 'execute_python' ? 'Python' : ''
+  if (what) return `正在编写 ${what}${lines ? `（${lines} 行）` : ''}…`
+  return `正在准备「${toolLabel(name)}」${chars ? `（${chars} 字）` : ''}…`
+}
+
+function appendStep(messages: Message[], step: ToolStep): Message[] {
+  const base = closeStreaming(messages)
+  const idx = lastToolGroupIndex(base)
+  if (idx >= 0) {
+    const group = base[idx]
+    const next = base.slice()
+    next[idx] = {
+      ...group,
+      toolSteps: [...(group.toolSteps ?? []), step],
+      toolGroup: [...(group.toolGroup ?? []), step.name],
+    }
+    return next
+  }
+  return [...base, {
+    role: 'tool',
+    content: '',
+    toolName: step.name,
+    toolGroup: [step.name],
+    toolSteps: [step],
+    // 超过 3 步时默认只显示最后 3 步，点标题展开
+    expanded: false,
+  }]
+}
+
+// 这些工具有专门的展示位置（计划胶囊），不再作为一步显示在步骤列表里
+const HIDDEN_STEP_TOOLS = new Set(['todo_write'])
+
 export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
+  if ((event.kind === 'tool_gen' || event.kind === 'tool_start') && HIDDEN_STEP_TOOLS.has(event.name)) {
+    return messages
+  }
   switch (event.kind) {
+    case 'tool_gen': {
+      const patch = {
+        label: generatingLabel(event.name, event.lines, event.chars),
+        code: event.preview,
+        genChars: event.chars,
+      }
+      if (findStep(messages, event.id)) return updateStep(messages, event.id, patch)
+      return appendStep(messages, { id: event.id, name: event.name, status: 'generating', ...patch })
+    }
     case 'tool_start': {
-      const step: ToolStep = {
-        id: event.id,
+      const codeArg = CODE_ARG[event.name]
+      const code = codeArg && typeof event.args?.[codeArg] === 'string' ? event.args[codeArg] as string : undefined
+      const fields = {
         name: event.name,
         label: toolLabel(event.name, event.args),
         args: event.args,
-        status: 'running',
+        status: 'running' as const,
+        code,
       }
-      const base = closeStreaming(messages)
-      const idx = lastToolGroupIndex(base)
-      if (idx >= 0) {
-        const group = base[idx]
-        const next = base.slice()
-        next[idx] = {
-          ...group,
-          toolSteps: [...(group.toolSteps ?? []), step],
-          toolGroup: [...(group.toolGroup ?? []), event.name],
-        }
-        return next
-      }
-      return [...base, {
-        role: 'tool',
-        content: '',
-        toolName: event.name,
-        toolGroup: [event.name],
-        toolSteps: [step],
-        // 超过 3 步时默认只显示最后 3 步，点标题展开
-        expanded: false,
-      }]
+      // 参数边写边显示过的步骤：原地变成「执行中」，不另起一行
+      if (findStep(messages, event.id)) return updateStep(closeStreaming(messages), event.id, fields)
+      return appendStep(messages, { id: event.id, ...fields })
     }
     case 'tool_end':
       return updateStep(messages, event.id, {

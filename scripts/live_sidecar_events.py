@@ -10,6 +10,8 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py              # 事件配对、失败上报、终态行
     python scripts/live_sidecar_events.py --interrupt  # 停止后再问新问题，不能读到残留
     python scripts/live_sidecar_events.py --steer      # 工具执行期间插话，模型照做
+    python scripts/live_sidecar_events.py --codegen    # 写 VBA 时边写边显示（tool_gen）
+    python scripts/live_sidecar_events.py --plan       # 多步任务用 todo_write 列计划并更新
 """
 
 from __future__ import annotations
@@ -227,7 +229,115 @@ def steer_scenario() -> int:
     return 1 if problems else 0
 
 
+def codegen_scenario() -> int:
+    """模型写一段 VBA：写的过程中应当收到带代码预览的 tool_gen，之后同一 id 的 tool_start。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="excel", PYTHONIOENCODING="utf-8")
+    # Excel 会话才有 execute_vba；配置照样从本机读（DEEPEXCEL_HOST=excel 时侧车等 config 消息，
+    # 这里借 WPS 的读取逻辑在本进程里准备好再发过去，Key 只经过内存）
+    sys.path.insert(0, os.path.dirname(SIDECAR))
+    import sidecar as sidecar_module  # noqa: E402
+    cfg = sidecar_module._load_wps_local_config()
+    if not cfg:
+        print("local DeepExcel config unavailable")
+        return 1
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "config", "routing_mode": "byok", **cfg})
+    del cfg
+    send({"type": "user_message", "context": {},
+          "text": "用 execute_vba 写一个大约 25 行的宏：遍历 Sheet1 的 A2:A200，把负数标红、把空单元格填 0，"
+                  "最后在 B1 写上处理了多少个单元格。直接调用工具，不要先解释。"})
+    gens, starts, t0 = [], [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            send({"type": "tool_result", "call_id": msg["call_id"], "success": True,
+                  "data": {"message": "宏已执行"}, "context": {}})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "ui_event":
+            ev = msg["event"]
+            if ev["kind"] == "tool_gen":
+                gens.append(ev)
+            elif ev["kind"] == "tool_start":
+                starts.append(ev)
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    print(f"tool_gen events: {len(gens)}; lines seen: {[g.get('lines') for g in gens][:12]}")
+    if gens:
+        print("last preview tail:", (gens[-1].get("preview") or "")[-160:].replace("\n", " | "))
+    problems = []
+    vba_gens = [g for g in gens if g["name"] == "execute_vba" and g.get("preview")]
+    if len(vba_gens) < 2:
+        problems.append("expected several tool_gen events with a code preview")
+    if vba_gens and not any(s["id"] == vba_gens[0]["id"] for s in starts):
+        problems.append("tool_start did not reuse the tool_gen id")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
+def plan_scenario() -> int:
+    """多步任务：模型应当先用 todo_write 列计划，并随进度更新状态。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "context": {},
+          "text": "帮我做这几件事：1) 读取 A1:C4；2) 在 D2 写 =SUM(A2:C2)；3) 把 D2 设成两位小数；"
+                  "4) 在 A6 写上「已汇总」。"})
+    plans, t0 = [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            result = fake_result(msg["tool"], msg.get("args") or {}, {"write_formula": 1})
+            send({"type": "tool_result", "call_id": msg["call_id"], "context": {}, **result})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "ui_event" and msg["event"]["kind"] == "plan":
+            items = msg["event"]["items"]
+            plans.append(items)
+            print("plan", " | ".join(f"{i['status'][:4]}:{i['content'][:14]}" for i in items))
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    problems = []
+    if not plans:
+        problems.append("model never used todo_write")
+    elif not all(i["status"] == "completed" for i in plans[-1]):
+        problems.append("final plan is not all completed")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--plan" in sys.argv:
+        sys.exit(plan_scenario())
+    if "--codegen" in sys.argv:
+        sys.exit(codegen_scenario())
     if "--interrupt" in sys.argv:
         sys.exit(interrupt_scenario())
     if "--steer" in sys.argv:

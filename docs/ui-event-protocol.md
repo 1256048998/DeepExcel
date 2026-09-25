@@ -37,7 +37,9 @@ stdout 一行一个 JSON：
 |---|---|---|
 | `tool_start` | `id`, `name`, `args` | 模型发出一次工具调用。`id` 是 SDK 的 tool_use_id；`name` 不带 `mcp__excel__` 前缀；`args` 是显示用副本（长字符串截断到 4000 字，二维数组只留 `{__shape:[行,列], head:[前 3 行]}`） |
 | `tool_end` | `id`, `name`, `ok`, `duration_ms`, `summary?`, `error?` | 与同 `id` 的 `tool_start` 配对。`summary` 是一句话结果（「20 行 × 4 列」）；`error` 是 `{code, message, hint?}` |
-| `status` | `text`, `tool?` | 当前在做什么（目前：等待用户确认）。面板显示在加载指示旁，收到下一个工具事件或本轮结束时清除 |
+| `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_jsa / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
+| `status` | `text`, `tool?` | 当前在做什么：等待用户确认、正在停止、看门狗（20 秒没动静「仍在等待模型响应」；某一步执行超过 15 秒「这一步执行中」；超过 120 秒提示可能被 Excel 对话框挡住、可以停止）。等用户确认 / 回答期间看门狗不催。`text` 为空表示清除 |
+| `plan` | `items: [{content, status}]` | 模型用 `todo_write` 维护的计划（status：pending / in_progress / completed，最多一条 in_progress）。面板在输入框上方显示计划胶囊；`todo_write` 本身不作为一步显示 |
 | `compaction` | `trigger`, `pre_tokens?`, `prev_pct?`, `curr_pct?` | 上下文被压缩。`trigger` 为 `auto`/`manual`（CLI 的 compact_boundary）或 `detected`（没收到 compact_boundary、但上下文占比骤降超过 40%） |
 | `error` | `code`, `message`, `hint`, `retryable`, `detail` | 整轮失败（API 报错、异常）。`message`/`hint` 是给用户的中文；`detail` 是原始报错前 500 字，只供诊断 |
 | `steer_delivered` | `count` | 任务进行中用户发的插话已在某个工具结果之后交给模型（PostToolUse 的 additionalContext） |

@@ -283,15 +283,33 @@ function ToolSteps({ steps, expanded, onToggle }: {
   )
 }
 
+// 生成中的代码只显示最后几行，跟着往下走；写完后折叠，需要时点开看全文
+const LIVE_CODE_LINES = 12
+
+function lastLines(text: string, n: number): string {
+  const lines = text.split('\n')
+  return lines.slice(-n).join('\n')
+}
+
 function ToolStepLine({ step }: { step: ToolStep }) {
-  const duration = step.status !== 'running' ? formatDuration(step.durationMs) : ''
+  const busy = step.status === 'running' || step.status === 'generating'
+  const duration = !busy ? formatDuration(step.durationMs) : ''
   return (
     <div className={`tool-step status-${step.status}`}>
       <div className="tool-step-line">
-        <span className="tool-step-bullet" aria-hidden="true">{step.status === 'running' ? '◌' : '⏺'}</span>
+        <span className="tool-step-bullet" aria-hidden="true">{busy ? '◌' : '⏺'}</span>
         <span className="tool-step-label" title={step.name}>{step.label}</span>
         {duration && <span className="tool-step-duration">{duration}</span>}
       </div>
+      {step.code && step.status === 'generating' && (
+        <pre className="tool-step-code live">{lastLines(step.code, LIVE_CODE_LINES)}</pre>
+      )}
+      {step.code && step.status !== 'generating' && (
+        <details className="tool-step-code-toggle">
+          <summary>查看代码</summary>
+          <pre className="tool-step-code">{step.code}</pre>
+        </details>
+      )}
       {step.status === 'ok' && step.summary && (
         <div className="tool-step-result"><span aria-hidden="true">⎿</span> {step.summary}</div>
       )}

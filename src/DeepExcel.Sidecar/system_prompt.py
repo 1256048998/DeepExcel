@@ -59,7 +59,7 @@ SYSTEM_PROMPT = """<system-intro>
 代码执行：execute_vba / execute_jsa（仅 WPS）/ execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
 快照：修改类工具执行前会自动备份（结果里的 backup_snapshot_id）；撤销用 rollback，create_snapshot 只在需要额外检查点时用
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
-其他：clarify_intent
+其他：clarify_intent / todo_write（三步以上的任务先列计划，边做边更新状态）
 </available-tools>
 
 <hard-prohibitions>

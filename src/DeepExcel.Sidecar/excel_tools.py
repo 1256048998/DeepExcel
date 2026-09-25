@@ -58,6 +58,48 @@ async def clarify_intent(args):
     return _wrap_result({"success": True, "data": {"user_answer": user_answer}})
 
 
+_TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
+def normalize_todos(raw) -> list:
+    """校验并规整计划条目：[{content, status}]，最多 20 条，最多一条 in_progress。"""
+    items = []
+    for entry in raw if isinstance(raw, list) else []:
+        if isinstance(entry, str):
+            entry = {"content": entry}
+        if not isinstance(entry, dict):
+            continue
+        content = str(entry.get("content") or "").strip()
+        if not content:
+            continue
+        status = entry.get("status") if entry.get("status") in _TODO_STATUSES else "pending"
+        items.append({"content": content[:120], "status": status})
+    items = items[:20]
+    seen_active = False
+    for item in items:
+        if item["status"] == "in_progress":
+            if seen_active:
+                item["status"] = "pending"
+            seen_active = True
+    return items
+
+
+@tool(
+    "todo_write",
+    "维护本次任务的计划清单（面板顶部显示进度）。三步以上的任务开始前先列出计划；"
+    "每开始一步把它标为 in_progress（同一时间只有一条），做完立刻标 completed；发现新步骤就加进去。"
+    "todos 是完整清单（每次都传全部条目）：[{content: 步骤描述, status: pending|in_progress|completed}]",
+    {"todos": list},
+)
+async def todo_write(args):
+    import ui_events
+    from ipc import write_message
+    items = normalize_todos(args.get("todos"))
+    await write_message(ui_events.envelope("plan", items=items))
+    done = sum(1 for item in items if item["status"] == "completed")
+    return _wrap_result({"success": True, "data": {"message": f"计划已更新（{done}/{len(items)} 完成）"}})
+
+
 @tool("read_workbook", "读取当前工作簿的结构信息", {})
 async def read_workbook(args):
     result = await call_csharp("read_workbook", {})
@@ -547,7 +589,7 @@ WPS_HOST_TOOLS = frozenset({
 })
 
 # 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
-SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent"})
+SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write"})
 
 
 def host_supports_tool(host: str, name: str) -> bool:
@@ -586,7 +628,7 @@ def register_all_tools(host: str = "excel") -> list:
         insert_rows, delete_rows, insert_columns, delete_columns,
         freeze_panes,
         apply_conditional_format, write_table,
-        clarify_intent,
+        clarify_intent, todo_write,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]

@@ -18,3 +18,4 @@ def _reset_ipc_state():
         cancel.clear()
     ipc._message_buffer["steer"] = []
     ipc._message_buffer["turn_active"] = False
+    ipc._message_buffer["awaiting_user"] = 0

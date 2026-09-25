@@ -29,6 +29,7 @@ _message_buffer: Dict[str, Any] = {
     # 注入给模型；本轮结束还没注入的，转成下一条普通用户消息，不会丢。
     "steer": [],
     "turn_active": False,     # ★ sidecar 正在处理一轮对话
+    "awaiting_user": 0,       # ★ 正在等用户确认 / 回答的请求数；看门狗此时不催
 }
 
 
@@ -165,6 +166,14 @@ async def call_csharp_clarify(question: str, options: list) -> str:
     """向 C# 发送澄清请求，阻塞等待用户回答"""
     _init_buffer()
     _message_buffer["clarify_answer"] = None  # 重置
+    _message_buffer["awaiting_user"] += 1
+    try:
+        return await _wait_clarify(question, options)
+    finally:
+        _message_buffer["awaiting_user"] -= 1
+
+
+async def _wait_clarify(question: str, options: list) -> str:
     await write_message({
         "type": "clarify",
         "question": question,
@@ -184,6 +193,14 @@ async def request_permission(tool_name: str, args: dict, timeout: float = 300.0)
     返回 "allow" 或 "deny"。超时按 deny 处理。
     ★ 用户在面板内抽屉式确认，不阻塞 Excel UI 线程。"""
     _init_buffer()
+    _message_buffer["awaiting_user"] += 1
+    try:
+        return await _wait_permission(tool_name, args, timeout)
+    finally:
+        _message_buffer["awaiting_user"] -= 1
+
+
+async def _wait_permission(tool_name: str, args: dict, timeout: float) -> str:
     request_id = generate_call_id()
     _log(f"request_permission: sending, tool={tool_name}, request_id={request_id}")
     await write_message({
