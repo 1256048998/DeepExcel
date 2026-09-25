@@ -10,7 +10,7 @@ Claude Code 的做法是每个工具调用都有开始和结束两行（⏺ 读�
 
 kind:
     tool_start   {id, name, args}                  模型发出一次工具调用
-    tool_end     {id, name, ok, duration_ms, summary?, error?}
+    tool_end     {id, name, ok, duration_ms, summary?, error?, check?}
     status       {text}                            当前在做什么（思考中、等待确认…）
     compaction   {trigger, pre_tokens?, prev_pct?, curr_pct?}
     error        {code, message, hint, retryable}  整轮失败
@@ -106,6 +106,9 @@ def parse_tool_result(content: Any, is_error: bool | None) -> dict:
             summary = summarize_result_data(payload.get("data"))
             if summary:
                 out["summary"] = summary
+            check = summarize_verification(payload.get("verification"))
+            if check:
+                out["check"] = check
         else:
             out["error"] = {
                 "code": str(payload.get("error_code") or "tool_failed"),
@@ -123,6 +126,16 @@ def parse_tool_result(content: Any, is_error: bool | None) -> dict:
         code = "denied" if ("拒绝" in message or "denied" in lowered) else "tool_failed"
         return {"ok": False, "error": {"code": code, "message": message[:500], "hint": None}}
     return {"ok": True}
+
+
+def summarize_verification(verification: Any) -> dict | None:
+    """C# 写后体检的结论 → {ok, summary}。面板只在没通过时显示；通过的一句话留给模型。"""
+    if not isinstance(verification, dict):
+        return None
+    summary = verification.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    return {"ok": verification.get("ok") is not False, "summary": summary.strip()[:300]}
 
 
 def summarize_result_data(data: Any) -> str | None:

@@ -137,10 +137,60 @@ namespace DeepExcel.AddIn.Sidecar
                 if (refusal != null) return refusal;
             }
 
+            var healthBefore = WriteCheck.NeedsCheck(toolName) ? SafeCaptureHealth() : null;
             var result = ExecuteCore(toolName, args);
             if (result != null && backupId != null) result.BackupSnapshotId = backupId;
             RecordLedger(toolName, result, hasTarget, target);
+            if (healthBefore != null && result != null && result.Success)
+            {
+                result.Verification = RunWriteCheck(toolName, args, healthBefore, hasTarget, target);
+            }
             return result;
+        }
+
+        private const int MaxHealthErrorsCollected = 200;
+        private const int MaxSamples = 5;
+
+        private HealthSnapshot SafeCaptureHealth()
+        {
+            try { return _excel.CaptureHealth(MaxHealthErrorsCollected); }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ToolDispatcher", "health capture failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 写后自动体检：和写入前比较公式错误、外部链接；写公式的工具再回读几个计算结果。
+        /// 体检本身出错不影响写入结果（返回 null，模型只是少了这份验证）。
+        /// </summary>
+        private WriteVerification RunWriteCheck(string toolName, Dictionary<string, object> args,
+            HealthSnapshot before, bool hasTarget, CellRect target)
+        {
+            try
+            {
+                var after = SafeCaptureHealth();
+                List<CellSample> samples = null;
+                if (hasTarget && WritesFormulas(toolName, args))
+                {
+                    samples = _excel.SampleCells(target.ToA1(), MaxSamples);
+                }
+                return WriteCheck.Compare(before, after, samples);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ToolDispatcher", "write check failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        private bool WritesFormulas(string toolName, Dictionary<string, object> args)
+        {
+            if (WriteCheck.FormulaTools.Contains(toolName)) return true;
+            if (toolName != "write_range") return false;
+            var values = Extract2DArray(args, "values");
+            return values != null && values.Any(row => row != null && row.Any(v => v is string text && text.TrimStart().StartsWith("=")));
         }
 
         private ToolResult CheckLedger(string toolName, CellRect target)

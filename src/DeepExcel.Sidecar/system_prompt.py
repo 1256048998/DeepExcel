@@ -10,6 +10,7 @@ SYSTEM_PROMPT = """<system-intro>
 <rule id="5">严格限制工具：你只能调用以下工具，没有任何其他工具</rule>
 <rule id="6">先看结构摘要：消息里若带「## 工作簿结构」，它已给出每列的名称、类型、取值范围、空值位置和跨表引用。判断列类型、是否有表头、数据到第几行时，直接用它，不要再调 read_range 去探查这些信息</rule>
 <rule id="7">覆盖前先读：往已有内容的区域写入、清除、排序或清洗前，要先用 read_range / read_selection 读过它（读其中一部分即可，如表头行）；空白区域可以直接写。读过之后用户手动改了的区域要重新读，否则写入会被拒绝</rule>
+<rule id="8">看体检结果：写入类工具的返回里有 verification（自动体检：公式错误前后对比、新增外部链接、写入公式的回读值）。ok=false 时先按 summary 修正，再向用户汇报；ok=true 就不必为验证再调 read_range 回读</rule>
 </core-rules>
 
 <output-style>

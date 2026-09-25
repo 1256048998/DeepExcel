@@ -2549,6 +2549,103 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        public HealthSnapshot CaptureHealth(int maxCollected)
+        {
+            try
+            {
+                var wb = _app.ActiveWorkbook;
+                if (wb == null) return null;
+                var health = new HealthSnapshot();
+                try { health.CalculationManual = _app.Calculation == XlCalculation.xlCalculationManual; } catch { }
+
+                foreach (Worksheet ws in wb.Worksheets)
+                {
+                    Range errors;
+                    try
+                    {
+                        // 原生查找；没有错误单元格时抛异常。受保护的表也可能抛——跳过
+                        errors = ws.UsedRange.SpecialCells(XlCellType.xlCellTypeFormulas, XlSpecialCellsValue.xlErrors);
+                    }
+                    catch { continue; }
+                    if (errors == null) continue;
+
+                    var count = Convert.ToInt32(Math.Min(int.MaxValue, Convert.ToDouble(errors.CountLarge)));
+                    health.ErrorCount += count;
+                    if (health.Errors.Count >= maxCollected) { health.Truncated = true; continue; }
+                    foreach (Range area in errors.Areas)
+                    {
+                        foreach (Range cell in area.Cells)
+                        {
+                            if (health.Errors.Count >= maxCollected) { health.Truncated = true; break; }
+                            health.Errors.Add(new ErrorCell
+                            {
+                                Sheet = ws.Name,
+                                Address = cell.Address[false, false],
+                                Text = Convert.ToString(cell.Text),
+                            });
+                        }
+                        if (health.Truncated) break;
+                    }
+                }
+
+                try
+                {
+                    if (wb.LinkSources(XlLink.xlExcelLinks) is Array links)
+                    {
+                        foreach (var link in links)
+                        {
+                            if (link != null) health.ExternalLinks.Add(link.ToString());
+                        }
+                    }
+                }
+                catch { }
+                return health;
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ExcelActions", "CaptureHealth failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        public List<CellSample> SampleCells(string address, int max)
+        {
+            var samples = new List<CellSample>();
+            try
+            {
+                var range = TryResolveRange(address, "sample_cells", out _, out _);
+                if (range == null || max <= 0) return samples;
+                var sheet = (range.Worksheet as Worksheet)?.Name;
+                var picked = new List<Range>();
+                foreach (Range cell in range.Cells)
+                {
+                    if (picked.Count >= Math.Max(1, max - 1)) break;
+                    picked.Add(cell);
+                }
+                var last = (Range)range.Cells[range.Rows.Count, range.Columns.Count];
+                if (!picked.Any(c => c.Address[false, false] == last.Address[false, false])) picked.Add(last);
+
+                foreach (var cell in picked)
+                {
+                    var text = Convert.ToString(cell.Text) ?? "";
+                    // 列太窄时 Text 是「####」，改用底层值
+                    if (text.Length > 0 && text.Trim('#').Length == 0) text = Convert.ToString(cell.Value2) ?? text;
+                    var hasFormula = cell.HasFormula is bool b && b;
+                    samples.Add(new CellSample
+                    {
+                        Address = ErrorCell.QualifiedAddress(sheet, cell.Address[false, false]),
+                        Value = text.Length > 200 ? text.Substring(0, 200) + "…" : text,
+                        Formula = hasFormula ? Convert.ToString(cell.Formula) : null,
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ExcelActions", "SampleCells failed: " + ex.Message);
+            }
+            return samples;
+        }
+
         /// <summary>
         /// ★ 列出所有历史快照（前端历史版本 UI 调用）
         /// </summary>

@@ -313,6 +313,11 @@ function ToolStepLine({ step }: { step: ToolStep }) {
       {step.status === 'ok' && step.summary && (
         <div className="tool-step-result"><span aria-hidden="true">⎿</span> {step.summary}</div>
       )}
+      {step.status === 'ok' && step.check && !step.check.ok && (
+        <div className="tool-step-result check-failed">
+          <span aria-hidden="true">⎿</span> {step.check.summary}
+        </div>
+      )}
       {step.status === 'error' && step.error && (
         <div className="tool-step-result error">
           <span aria-hidden="true">⎿</span> {step.error.message}

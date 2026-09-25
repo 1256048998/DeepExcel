@@ -99,6 +99,7 @@
     <Compile Include="Sidecar\ToolDispatcher.cs" />
     <Compile Include="Sidecar\ToolMutationPolicy.cs" />
     <Compile Include="Sidecar\ReadLedger.cs" />
+    <Compile Include="Sidecar\WriteCheck.cs" />
     <Compile Include="TaskPaneControl.cs" />
     <Compile Include="IRibbonCallbacks.cs" />
     <Compile Include="Extensions\DictionaryExtensions.cs" />

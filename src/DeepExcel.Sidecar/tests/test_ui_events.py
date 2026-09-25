@@ -234,3 +234,16 @@ async def test_stream_events_produce_tool_gen(sent):
                                                    "partial_json": '{"code": "print(1)'}}))
     ev, = _events(sent, "tool_gen")
     assert ev["id"] == "tu_5" and ev["preview"] == "print(1)"
+
+
+def test_write_check_is_passed_to_the_panel():
+    content = json.dumps({"success": True, "data": {}, "verification": {
+        "ok": False, "summary": "体检发现问题：新增 1 个公式错误：Sheet1!D2 #DIV/0!", "new_errors": ["Sheet1!D2 #DIV/0!"]}},
+        ensure_ascii=False)
+    out = ui_events.parse_tool_result(content, False)
+    assert out["ok"] is True
+    assert out["check"] == {"ok": False, "summary": "体检发现问题：新增 1 个公式错误：Sheet1!D2 #DIV/0!"}
+
+
+def test_no_verification_no_check():
+    assert "check" not in ui_events.parse_tool_result(json.dumps({"success": True, "data": {}}), False)

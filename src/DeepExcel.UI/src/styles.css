@@ -2823,6 +2823,11 @@ body {
   color: #b91c1c;
 }
 
+/* 写入成功但体检发现问题（新增公式错误 / 外部链接）：不是失败，但要看见 */
+.tool-step-result.check-failed {
+  color: #b45309;
+}
+
 .tool-step.status-generating .tool-step-bullet {
   color: var(--color-primary);
   animation: tool-step-pulse 1s ease-in-out infinite;

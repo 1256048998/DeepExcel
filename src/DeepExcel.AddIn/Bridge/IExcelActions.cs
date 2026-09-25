@@ -75,6 +75,10 @@ namespace DeepExcel.AddIn.Bridge
         string GetActiveSheetName();
         /// <summary>区域里有没有非空单元格（先读后写检查用）；地址无效时返回 false，交给工具本身报错</summary>
         bool RangeHasContent(string address);
+        /// <summary>写后体检：整本的公式错误单元格（最多收集 maxCollected 个）、外部链接、计算模式；失败返回 null</summary>
+        DeepExcel.AddIn.Sidecar.HealthSnapshot CaptureHealth(int maxCollected);
+        /// <summary>写后体检：回读区域里的几个单元格（前几个 + 最后一个）的显示值和公式</summary>
+        List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

@@ -37,6 +37,11 @@ namespace DeepExcel.Tests
         public string ActiveSheetName { get; set; } = "Sheet1";
         /// <summary>默认所有区域都是空的：不做先读后写检查的测试不受影响</summary>
         public Func<string, bool> RangeHasContentFn { get; set; } = _ => false;
+        /// <summary>默认 null：不做体检（和没有工作簿时一样），不关心体检的测试不受影响</summary>
+        public Func<DeepExcel.AddIn.Sidecar.HealthSnapshot> CaptureHealthFn { get; set; } = () => null;
+        public Func<string, int, List<DeepExcel.AddIn.Sidecar.CellSample>> SampleCellsFn { get; set; }
+            = (_, __) => new List<DeepExcel.AddIn.Sidecar.CellSample>();
+        public List<string> SampleCellsCalls { get; } = new List<string>();
         public Func<List<DeepExcel.AddIn.Executor.SnapshotMeta>> ListSnapshotsFn { get; set; }
             = () => new List<DeepExcel.AddIn.Executor.SnapshotMeta>();
         public Func<string, bool> DeleteSnapshotFn { get; set; } = _ => true;
@@ -190,6 +195,14 @@ namespace DeepExcel.Tests
         public string GetActiveSheetName() => ActiveSheetName;
 
         public bool RangeHasContent(string address) => RangeHasContentFn(address);
+
+        public DeepExcel.AddIn.Sidecar.HealthSnapshot CaptureHealth(int maxCollected) => CaptureHealthFn();
+
+        public List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max)
+        {
+            SampleCellsCalls.Add(address);
+            return SampleCellsFn(address, max);
+        }
 
         public List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots() => ListSnapshotsFn();
 

@@ -60,6 +60,10 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>写入前自动备份的快照 ID（本回合首次写入时创建，同回合共用），可传给 rollback 撤销</summary>
         [JsonPropertyName("backup_snapshot_id")]
         public string BackupSnapshotId { get; set; }
+
+        /// <summary>写后自动体检的结论（公式错误前后对比、新增外部链接、回读样本）；没做体检为 null</summary>
+        [JsonPropertyName("verification")]
+        public object Verification { get; set; }
     }
 
     /// <summary>

@@ -38,13 +38,17 @@ export type ToolStep = {
   summary?: string
   error?: ToolStepError
   durationMs?: number
+  // 写后自动体检（新增公式错误、外部链接）；只在没通过时显示
+  check?: ToolStepCheck
 }
+
+export type ToolStepCheck = { ok: boolean; summary: string }
 
 // 侧车 ui_event 信封里的 event（docs/ui-event-protocol.md）
 export type UiEvent =
   | { v: number; kind: 'tool_start'; id: string; name: string; args?: Record<string, unknown>; ts?: number }
   | { v: number; kind: 'tool_end'; id: string; name: string; ok: boolean; duration_ms?: number;
-      summary?: string; error?: ToolStepError; ts?: number }
+      summary?: string; error?: ToolStepError; check?: ToolStepCheck; ts?: number }
   | { v: number; kind: 'status'; text: string; tool?: string; ts?: number }
   | { v: number; kind: 'tool_gen'; id: string; name: string; chars: number; lines?: number;
       preview?: string; ts?: number }

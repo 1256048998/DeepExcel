@@ -37,6 +37,14 @@ describe('applyUiEvent', () => {
     expect(out[1].role).toBe('tool')
   })
 
+  it('keeps the write check on a successful step', () => {
+    const check = { ok: false, summary: '体检发现问题：新增 1 个公式错误：Sheet1!D2 #DIV/0!' }
+    const out = run([start('a', 'write_formula', { address: 'D2', formula: '=B2/C2' }), end('a', true, { check })])
+    const step = out[0].toolSteps![0]
+    expect(step.status).toBe('ok')
+    expect(step.check).toEqual(check)
+  })
+
   it('keeps the error message and hint of a failed step', () => {
     const out = run([
       start('a', 'write_value', { address: 'A1', value: 1 }),
