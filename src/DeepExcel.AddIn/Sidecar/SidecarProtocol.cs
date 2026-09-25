@@ -21,6 +21,8 @@ namespace DeepExcel.AddIn.Sidecar
         public const string TypeClarify = "clarify";
         public const string TypeStreamEnd = "stream_end";
         public const string TypePermissionRequest = "permission_request";
+        /// <summary>面板事件信封（docs/ui-event-protocol.md），宿主原样转发给面板。</summary>
+        public const string TypeUiEvent = "ui_event";
 
         // C# → Python（权限响应）
         public const string TypePermissionResponse = "permission_response";

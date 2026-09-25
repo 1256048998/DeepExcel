@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
-import type { Message } from '../types'
+import type { Message, ToolStep } from '../types'
+import { formatDuration } from '../utils/uiEvents'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
 import { StreamingChoices } from './StreamingChoices'
@@ -7,6 +8,7 @@ import { StreamingChoices } from './StreamingChoices'
 interface Props {
   messages: Message[]
   loading: boolean
+  statusText?: string | null
   onToggleToolGroup?: (idx: number) => void
   onClarifyAnswer?: (answer: string) => void
   onChoiceSelect?: (choice: string) => void
@@ -34,7 +36,7 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt }: Props) {
+export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt }: Props) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -59,6 +61,7 @@ export function MessageList({ messages, loading, onToggleToolGroup, onClarifyAns
           <span className="dot"></span>
           <span className="dot"></span>
           <span className="dot"></span>
+          {statusText && <span className="loading-status">{statusText}</span>}
         </div>
       )}
       <div ref={endRef} />
@@ -81,7 +84,37 @@ function MessageItem({
   onChoiceSelect?: (choice: string) => void
   onSaveAsPrompt?: (content: string) => void
 }) {
-  // 工具调用组（已合并）：折叠卡片样式
+  // 本次会话实时收到的工具步骤：每步一行叙事（⏺ 读取 A1:D20 / ⎿ 20 行 × 4 列）
+  if (message.role === 'tool' && message.toolSteps && message.toolSteps.length > 0) {
+    return (
+      <ToolSteps
+        steps={message.toolSteps}
+        expanded={message.expanded ?? false}
+        onToggle={() => onToggleToolGroup?.(index)}
+      />
+    )
+  }
+
+  // 错误卡片：分类后的原因 + 下一步，而不是英文异常原文
+  if (message.type === 'error' && message.error) {
+    return (
+      <div className="message error-card" role="alert">
+        <div className="error-card-title">{message.error.message}</div>
+        {message.error.hint && <div className="error-card-hint">{message.error.hint}</div>}
+      </div>
+    )
+  }
+
+  // 终态行：只在失败、中断、轮次用尽或多步任务后出现
+  if (message.type === 'run_summary') {
+    return (
+      <div className={`message run-summary outcome-${message.outcome ?? 'success'}`}>
+        {message.content}
+      </div>
+    )
+  }
+
+  // 工具调用组（从历史恢复，只有工具名）：折叠卡片样式
   if (message.role === 'tool' && message.toolGroup) {
     const tools = message.toolGroup
     const expanded = message.expanded ?? false
@@ -213,6 +246,55 @@ function MessageItem({
           streaming={message.streaming}
           onSelect={onChoiceSelect}
         />
+      )}
+    </div>
+  )
+}
+
+// 连续多步时默认只显示最后几步，避免一次任务把整屏推走；点击标题展开全部
+const VISIBLE_STEPS_WHEN_COLLAPSED = 3
+
+function ToolSteps({ steps, expanded, onToggle }: {
+  steps: ToolStep[]
+  expanded: boolean
+  onToggle: () => void
+}) {
+  const failed = steps.filter(step => step.status === 'error').length
+  const running = steps.some(step => step.status === 'running')
+  const collapsible = steps.length > VISIBLE_STEPS_WHEN_COLLAPSED
+  const visible = !collapsible || expanded ? steps : steps.slice(-VISIBLE_STEPS_WHEN_COLLAPSED)
+  const hidden = steps.length - visible.length
+  return (
+    <div className={`message tool tool-steps${running ? ' running' : ''}`}>
+      {collapsible && (
+        <button className="tool-steps-header" onClick={onToggle} aria-expanded={expanded} type="button">
+          <span className="chevron">{expanded ? '▾' : '▸'}</span>
+          <span>{steps.length} 步{failed > 0 ? ` · ${failed} 步失败` : ''}</span>
+          {!expanded && hidden > 0 && <span className="tool-steps-hidden">（前 {hidden} 步已折叠）</span>}
+        </button>
+      )}
+      {visible.map(step => <ToolStepLine key={step.id} step={step} />)}
+    </div>
+  )
+}
+
+function ToolStepLine({ step }: { step: ToolStep }) {
+  const duration = step.status !== 'running' ? formatDuration(step.durationMs) : ''
+  return (
+    <div className={`tool-step status-${step.status}`}>
+      <div className="tool-step-line">
+        <span className="tool-step-bullet" aria-hidden="true">{step.status === 'running' ? '◌' : '⏺'}</span>
+        <span className="tool-step-label" title={step.name}>{step.label}</span>
+        {duration && <span className="tool-step-duration">{duration}</span>}
+      </div>
+      {step.status === 'ok' && step.summary && (
+        <div className="tool-step-result"><span aria-hidden="true">⎿</span> {step.summary}</div>
+      )}
+      {step.status === 'error' && step.error && (
+        <div className="tool-step-result error">
+          <span aria-hidden="true">⎿</span> {step.error.message}
+          {step.error.hint && <div className="tool-step-hint">{step.error.hint}</div>}
+        </div>
       )}
     </div>
   )

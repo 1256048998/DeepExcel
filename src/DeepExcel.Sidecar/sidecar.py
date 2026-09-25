@@ -64,8 +64,19 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     create_sdk_mcp_server,
 )
-from claude_agent_sdk.types import AssistantMessage, HookMatcher, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    HookMatcher,
+    ResultMessage,
+    StreamEvent,
+    SystemMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
 
+import ui_events
 from excel_tools import host_tool_note, register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
 from ipc import _init_buffer, request_permission
@@ -233,6 +244,7 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
         # 高风险工具：向 C#/前端请求权限确认
         sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} requires permission, requesting...\n")
         tool_input = input_data.get("tool_input", {})
+        await write_message(ui_events.envelope("status", text="等待你确认", tool=bare_name))
         decision = await request_permission(bare_name, tool_input)
         sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} decision={decision}\n")
 
@@ -735,18 +747,69 @@ async def stdin_reader_loop():
 # 每次新 user message 开始时重置为 False。
 _had_partial_text = False
 
-# ★ 缓存跟踪：本轮是否有工具调用（有工具调用则不缓存），以及收集的完整文本
+# ★ 本轮是否有工具调用，以及收集的完整文本（诊断日志用）
 _tool_calls_in_turn = 0
 _collected_text = ""
 
-# ★ 压缩检测：记录上一轮 context usage percentage。
-# autocompact 触发后 percentage 会突然下降，通过比较前后值检测压缩发生。
+# ★ 本轮工具调用账本：tool_start / tool_end 按 tool_use_id 配对，终态行据此汇总
+_run = ui_events.RunTracker()
+
+# ★ 压缩检测兜底：记录上一轮 context usage percentage。CLI 正常会发
+# system/compact_boundary；没收到时 percentage 骤降也说明压缩发生了。
 _prev_context_percentage = None
+
+
+def _usage_tokens(usage) -> tuple:
+    if isinstance(usage, dict):
+        return usage.get("input_tokens", 0) or 0, usage.get("output_tokens", 0) or 0
+    if usage:
+        return getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0
+    return 0, 0
+
+
+async def _emit_tool_start(block) -> None:
+    global _tool_calls_in_turn
+    _tool_calls_in_turn += 1
+    name = ui_events.bare_tool_name(block.name)
+    args = block.input if isinstance(block.input, dict) else {}
+    _run.start(block.id, name)
+    # 旧消息：C# / WPS 用它记对话历史和任务轨迹
+    await write_message({"type": "tool_use", "tool": block.name, "args": args})
+    await write_message(ui_events.envelope(
+        "tool_start", id=block.id, name=name, args=ui_events.summarize_args(args)))
+
+
+async def _emit_tool_end(block) -> None:
+    name, duration_ms = _run.end(block.tool_use_id)
+    result = ui_events.parse_tool_result(block.content, block.is_error)
+    if not result["ok"]:
+        _run.failed_calls += 1
+    await write_message(ui_events.envelope(
+        "tool_end", id=block.tool_use_id, name=name, duration_ms=duration_ms, **result))
+
+
+async def _close_unfinished_tools(code: str, message: str) -> None:
+    """中断或出错时，给还没收到结果的调用补 tool_end，面板上的那一行才会停止转圈。"""
+    for tool_use_id, name in _run.unfinished():
+        _run.failed_calls += 1
+        await write_message(ui_events.envelope(
+            "tool_end", id=tool_use_id, name=name, ok=False,
+            error={"code": code, "message": message}))
+
+
+async def _emit_run_summary(outcome: str, in_tok: int = 0, out_tok: int = 0, num_turns=None) -> None:
+    if _run.summarized:
+        return
+    _run.summarized = True
+    await write_message(ui_events.envelope(
+        "run_summary", outcome=outcome, tool_calls=_run.tool_calls,
+        failed_calls=_run.failed_calls, duration_ms=_run.elapsed_ms(),
+        num_turns=num_turns, input_tokens=in_tok, output_tokens=out_tok))
 
 
 async def handle_sdk_message(response, client=None):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
-    global _had_partial_text, _tool_calls_in_turn, _collected_text, _prev_context_percentage
+    global _had_partial_text, _collected_text, _prev_context_percentage
     if isinstance(response, StreamEvent):
         evt = response.event if isinstance(response.event, dict) else {}
         if evt.get("type") == "content_block_delta":
@@ -758,37 +821,48 @@ async def handle_sdk_message(response, client=None):
                     _collected_text += text
                     await write_message({"type": "stream_delta", "text": text})
     elif isinstance(response, AssistantMessage):
+        api_error = getattr(response, "error", None)
+        if api_error:
+            # CLI 把 API 错误包装成一条助手消息（文本是英文原始报错）。原样贴给用户
+            # 看不懂也不知道下一步；换成分类后的错误卡片。
+            raw = " ".join(b.text for b in response.content if isinstance(b, TextBlock))
+            await write_message(ui_events.envelope(
+                "error", **ui_events.classify_error(f"{api_error} {raw}")))
+            _had_partial_text = False
+            return
         for block in response.content:
             if isinstance(block, TextBlock):
                 if not _had_partial_text:
                     _collected_text += block.text
                     await write_message({"type": "stream_delta", "text": block.text})
             elif isinstance(block, ToolUseBlock):
-                _tool_calls_in_turn += 1
-                await write_message({
-                    "type": "tool_use",
-                    "tool": block.name,
-                    "args": block.input if isinstance(block.input, dict) else {},
-                })
+                await _emit_tool_start(block)
         _had_partial_text = False
+    elif isinstance(response, UserMessage):
+        content = response.content if isinstance(response.content, list) else []
+        for block in content:
+            if isinstance(block, ToolResultBlock):
+                await _emit_tool_end(block)
+    elif isinstance(response, SystemMessage):
+        if response.subtype == "compact_boundary":
+            meta = (response.data or {}).get("compact_metadata") or {}
+            _run.compacted = True
+            await write_message(ui_events.envelope(
+                "compaction", trigger=meta.get("trigger") or "auto", pre_tokens=meta.get("pre_tokens")))
     elif isinstance(response, ResultMessage):
-        usage = getattr(response, "usage", None)
-        if isinstance(usage, dict):
-            in_tok = usage.get("input_tokens", 0)
-            out_tok = usage.get("output_tokens", 0)
-        elif usage:
-            in_tok = getattr(usage, "input_tokens", 0)
-            out_tok = getattr(usage, "output_tokens", 0)
-        else:
-            in_tok = 0
-            out_tok = 0
+        in_tok, out_tok = _usage_tokens(getattr(response, "usage", None))
+        await _close_unfinished_tools("no_result", "没有收到这个工具的结果")
+        outcome = {
+            "success": "success",
+            "error_max_turns": "max_turns",
+        }.get(getattr(response, "subtype", ""), "error" if getattr(response, "is_error", False) else "success")
+        await _emit_run_summary(outcome, in_tok, out_tok, getattr(response, "num_turns", None))
         await write_message({
             "type": "stream_end",
             "input_tokens": in_tok,
             "output_tokens": out_tok,
         })
-        # ★ 压缩检测：每轮结束后查 context usage，percentage 突然下降说明 autocompact 发生了。
-        # SDK 无 isCompactSummary 标记，只能通过 percentage 下降检测（阈值：下降超 40%）。
+        # ★ 压缩检测兜底：本轮没收到 compact_boundary，但 percentage 骤降（超过 40%）。
         if client is not None:
             try:
                 context_usage = await client.get_context_usage()
@@ -797,12 +871,11 @@ async def handle_sdk_message(response, client=None):
                     curr_pct = context_usage.get("percentage", 0)
                 else:
                     curr_pct = getattr(context_usage, "percentage", 0)
-                if _prev_context_percentage is not None and curr_pct < _prev_context_percentage * 0.6:
-                    await write_message({
-                        "type": "compacted",
-                        "prev_percentage": _prev_context_percentage,
-                        "curr_percentage": curr_pct,
-                    })
+                if (not _run.compacted and _prev_context_percentage is not None
+                        and curr_pct < _prev_context_percentage * 0.6):
+                    await write_message(ui_events.envelope(
+                        "compaction", trigger="detected",
+                        prev_pct=_prev_context_percentage, curr_pct=curr_pct))
                 _prev_context_percentage = curr_pct
             except Exception as ctx_e:
                 sys.stderr.write(f"[sidecar] get_context_usage failed: {type(ctx_e).__name__}: {ctx_e}\n")
@@ -820,11 +893,12 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
         if _message_buffer["cancel"].is_set():
             _message_buffer["cancel"].clear()
 
-        # ★ 重置流式标志 + 缓存跟踪
-        global _had_partial_text, _tool_calls_in_turn, _collected_text
+        # ★ 重置流式标志 + 本轮工具账本
+        global _had_partial_text, _tool_calls_in_turn, _collected_text, _run
         _had_partial_text = False
         _tool_calls_in_turn = 0
         _collected_text = ""
+        _run = ui_events.RunTracker()
 
         user_text = msg.get("text", "")
         context = msg.get("context") or {}
@@ -922,12 +996,16 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             sys.stderr.flush()
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
-            await write_message({"type": "stream_delta", "text": f"[错误] {type(e).__name__}: {e}"})
+            await _close_unfinished_tools("aborted", "任务出错，这一步没有完成")
+            await write_message(ui_events.envelope("error", **ui_events.classify_error(e)))
+            await _emit_run_summary("error")
             await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
 
         if _message_buffer["cancel"].is_set():
             sys.stderr.write("[sidecar] cancel was set, sending stream_end to unblock UI\n")
             sys.stderr.flush()
+            await _close_unfinished_tools("interrupted", "已中断")
+            await _emit_run_summary("interrupted")
             await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0})
             _message_buffer["cancel"].clear()
 

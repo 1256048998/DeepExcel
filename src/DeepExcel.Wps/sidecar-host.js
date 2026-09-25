@@ -153,7 +153,15 @@ class SidecarHost {
         break
 
       case 'tool_use':
+        // 只用于记对话历史（main.js _recordSidecarEvent）；面板从 ui_event 渲染工具步骤
         this._emit({ type: 'tool_call', payload: { name: msg.tool, args: msg.args || {} } })
+        break
+
+      case 'ui_event':
+        // 面板事件信封（docs/ui-event-protocol.md），原样转发，不解释内容
+        if (msg.event && typeof msg.event === 'object') {
+          this._emit({ type: 'ui_event', payload: msg.event })
+        }
         break
 
       case 'clarify':

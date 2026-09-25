@@ -47,6 +47,29 @@ namespace DeepExcel.AddIn.Bridge
             new Dictionary<string, TaskTrace>(StringComparer.OrdinalIgnoreCase);
         private readonly object _traceLock = new object();
 
+        /// <summary>workbookKey -> 最近一次 run_summary 的 outcome，stream_end 时取走。</summary>
+        private readonly Dictionary<string, string> _lastRunOutcome =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 侧车 run_summary.outcome → 任务轨迹 outcome。没收到 run_summary（旧侧车）按成功记，
+        /// 与以前的行为一致；达到最大轮次不算可用结果。
+        /// </summary>
+        internal static string TraceOutcomeFromRunSummary(string outcome)
+        {
+            switch (outcome)
+            {
+                case null:
+                case "":
+                case "success":
+                    return "success";
+                case "interrupted":
+                    return "cancelled";
+                default:
+                    return "error";
+            }
+        }
+
         /// <summary>Created lazily so a local-only install never allocates it.</summary>
         private TelemetryReporter _telemetry;
 

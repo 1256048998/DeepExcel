@@ -4,14 +4,46 @@ export type Message = {
   streaming?: boolean
   toolName?: string
   result?: string
-  type?: 'clarify' | 'compacted'
+  type?: 'clarify' | 'compacted' | 'error' | 'run_summary'
   options?: string[]
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并
   toolGroup?: string[]
-  // 该工具组是否处于展开状态（默认 false 折叠）
+  // 本次会话里实时收到的工具步骤（ui_event）；从历史恢复的旧消息只有 toolGroup
+  toolSteps?: ToolStep[]
+  // 该工具组是否处于展开状态
   expanded?: boolean
+  // type==='error'
+  error?: { code: string; message: string; hint?: string; retryable?: boolean }
+  // type==='run_summary'
+  outcome?: string
 }
+
+export type ToolStepError = { code: string; message: string; hint?: string | null }
+
+export type ToolStep = {
+  id: string
+  name: string
+  label: string
+  args?: Record<string, unknown>
+  status: 'running' | 'ok' | 'error'
+  summary?: string
+  error?: ToolStepError
+  durationMs?: number
+}
+
+// 侧车 ui_event 信封里的 event（docs/ui-event-protocol.md）
+export type UiEvent =
+  | { v: number; kind: 'tool_start'; id: string; name: string; args?: Record<string, unknown>; ts?: number }
+  | { v: number; kind: 'tool_end'; id: string; name: string; ok: boolean; duration_ms?: number;
+      summary?: string; error?: ToolStepError; ts?: number }
+  | { v: number; kind: 'status'; text: string; tool?: string; ts?: number }
+  | { v: number; kind: 'compaction'; trigger: string; pre_tokens?: number; prev_pct?: number;
+      curr_pct?: number; ts?: number }
+  | { v: number; kind: 'error'; code: string; message: string; hint?: string; retryable?: boolean;
+      detail?: string; ts?: number }
+  | { v: number; kind: 'run_summary'; outcome: string; tool_calls: number; failed_calls: number;
+      duration_ms: number; num_turns?: number; input_tokens?: number; output_tokens?: number; ts?: number }
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected'
 

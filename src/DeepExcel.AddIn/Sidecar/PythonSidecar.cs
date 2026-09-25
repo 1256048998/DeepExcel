@@ -58,6 +58,8 @@ namespace DeepExcel.AddIn.Sidecar
         public event Action<PythonSidecar, string, string, Dictionary<string, object>> OnToolCall;
         public event Action<PythonSidecar, string, Dictionary<string, object>> OnToolUse;
         public event Action<PythonSidecar, string, List<string>> OnClarify;
+        /// <summary>ui_event 的 event 对象（已 Clone，可跨线程使用）。</summary>
+        public event Action<PythonSidecar, JsonElement> OnUiEvent;
         public event Action<PythonSidecar, int, int> OnStreamEnd;
         public event Action<PythonSidecar, string> OnError;
         // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
@@ -442,6 +444,15 @@ namespace DeepExcel.AddIn.Sidecar
                         }
                         Logger.Instance.Info("PythonSidecar", $"OnPermissionRequest: tool={permTool}, req_id={permReqId}");
                         SafeBeginInvoke(() => OnPermissionRequest?.Invoke(this, permReqId, permTool, permArgs));
+                        break;
+
+                    case SidecarProtocol.TypeUiEvent:
+                        if (root.TryGetProperty("event", out var uiEventEl) &&
+                            uiEventEl.ValueKind == JsonValueKind.Object)
+                        {
+                            var uiEvent = uiEventEl.Clone();
+                            SafeBeginInvoke(() => OnUiEvent?.Invoke(this, uiEvent));
+                        }
                         break;
 
                     default:

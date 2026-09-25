@@ -112,6 +112,19 @@ namespace DeepExcel.Tests
             Assert.Equal(expected, MessageBridge.ClassifyError(message));
         }
 
+        [Theory]
+        [InlineData(null, "success")]
+        [InlineData("success", "success")]
+        [InlineData("interrupted", "cancelled")]
+        [InlineData("max_turns", "error")]
+        [InlineData("error", "error")]
+        public void RunSummaryOutcomeDecidesTheTraceOutcome(string runOutcome, string expected)
+        {
+            // stream_end 以前一律记成 success：达到最大轮次、API 报错的任务也被当成可用结果，
+            // 还会被推荐保存为技能。
+            Assert.Equal(expected, MessageBridge.TraceOutcomeFromRunSummary(runOutcome));
+        }
+
         [Fact]
         public void ClassificationNeverEchoesTheOriginalMessage()
         {

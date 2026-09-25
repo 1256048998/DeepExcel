@@ -128,6 +128,7 @@ namespace DeepExcel.AddIn.Bridge
                 session.Sidecar.OnToolCall += OnToolCall;
                 session.Sidecar.OnToolUse += OnToolUse;
                 session.Sidecar.OnClarify += OnClarify;
+                session.Sidecar.OnUiEvent += OnUiEvent;
                 session.Sidecar.OnStreamEnd += OnStreamEndFromSidecar;
                 session.Sidecar.OnError += OnSidecarError;
                 // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
@@ -1738,12 +1739,31 @@ namespace DeepExcel.AddIn.Bridge
             if (session != null)
             {
                 var displayName = name?.Replace("mcp__excel__", "") ?? name;
-                SendToSessionUi(session.WorkbookKey, "tool_call",
-                    new { call_id = "", name = displayName, arguments = args });
+                // 面板从 ui_event 的 tool_start / tool_end 渲染工具步骤；这里只记历史和轨迹。
                 // ★ 追加到历史
                 session.AppendToolCall(displayName);
                 RecordTraceTool(session.WorkbookKey, displayName, args);
             }
+        }
+
+        /// <summary>
+        /// 面板事件信封：原样转发，宿主不解释内容（协议见 docs/ui-event-protocol.md）。
+        /// 唯一例外是 run_summary 的 outcome：任务轨迹要据此区分成功、出错和中断，
+        /// 以前 stream_end 一律记成 success，达到最大轮次或 API 报错的任务也算成功。
+        /// </summary>
+        private void OnUiEvent(PythonSidecar sender, JsonElement uiEvent)
+        {
+            var session = FindSessionBySidecar(sender);
+            if (session == null) return;
+            if (uiEvent.TryGetProperty("kind", out var kindEl) && kindEl.GetString() == "run_summary" &&
+                uiEvent.TryGetProperty("outcome", out var outcomeEl))
+            {
+                lock (_traceLock)
+                {
+                    _lastRunOutcome[session.WorkbookKey] = outcomeEl.GetString();
+                }
+            }
+            SendToSessionUi(session.WorkbookKey, "ui_event", uiEvent);
         }
 
         private void OnClarify(PythonSidecar sender, string question, List<string> options)
@@ -1838,7 +1858,14 @@ namespace DeepExcel.AddIn.Bridge
                     new { input_tokens = inputTokens, output_tokens = outputTokens });
                 // ★ stream_end 时持久化对话历史到磁盘
                 session.OnStreamEnd();
-                CompleteTaskTrace(session.WorkbookKey, "success", inputTokens, outputTokens);
+                string runOutcome;
+                lock (_traceLock)
+                {
+                    _lastRunOutcome.TryGetValue(session.WorkbookKey, out runOutcome);
+                    _lastRunOutcome.Remove(session.WorkbookKey);
+                }
+                CompleteTaskTrace(session.WorkbookKey, TraceOutcomeFromRunSummary(runOutcome),
+                    inputTokens, outputTokens);
             }
         }
 

@@ -14,7 +14,8 @@ import type { ChangePreviewData } from './components/ChangePreview'
 import { PromptManager } from './components/PromptManager'
 import { UpdateBanner } from './components/UpdateBanner'
 import { SetupNotice } from './components/SetupNotice'
-import type { Message, ModelConfig } from './types'
+import type { Message, ModelConfig, UiEvent } from './types'
+import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
@@ -42,6 +43,8 @@ export default function App() {
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  // 侧车 status 事件（「等待你确认」等），显示在加载指示旁；工具开始/结束或本轮结束时清掉
+  const [statusText, setStatusText] = useState<string | null>(null)
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
@@ -296,30 +299,21 @@ export default function App() {
           m.streaming ? { ...m, streaming: false } : m
         ))
         setLoading(false)
+        setStatusText(null)
         // ★ 用户在输入框下拉选了新模型：对话输出结束后真正切换。
         // 切换会在下一条 user_message 时生效，避免当前对话中途切换导致上下文丢失。
         flushPendingModelSwitchRef.current()
-      } else if (data.type === 'tool_call') {
-        // Agent 调用工具：合并连续 tool 消息为单个折叠组
-        const toolName = data.payload.name
-        setMessages(prev => {
-          const last = prev[prev.length - 1]
-          // 如果最后一条已是工具组，追加到组内
-          if (last && last.role === 'tool' && last.toolGroup) {
-            return [
-              ...prev.slice(0, -1),
-              { ...last, toolGroup: [...last.toolGroup, toolName] }
-            ]
-          }
-          // 否则新建一个工具组
-          return [...prev, {
-            role: 'tool',
-            content: '',
-            toolName,
-            toolGroup: [toolName],
-            expanded: false
-          }]
-        })
+      } else if (data.type === 'ui_event') {
+        // 工具步骤、错误卡片、压缩提示、终态行都从侧车的 ui_event 渲染
+        // （docs/ui-event-protocol.md）。WPS 仍会发旧的 tool_call，只用于记历史，这里不再渲染。
+        const event = data.payload as UiEvent
+        if (!event || typeof event !== 'object') return
+        if (event.kind === 'status') {
+          setStatusText(event.text)
+          return
+        }
+        if (event.kind === 'tool_start' || event.kind === 'tool_end') setStatusText(null)
+        setMessages(prev => applyUiEvent(prev, event))
       } else if (data.type === 'tool_result') {
         // 工具结果已不再单独展示（被合并到折叠组中），保留接口避免报错
         // 如果需要展示结果详情，可在此处把 result 写入对应工具组
@@ -717,6 +711,7 @@ export default function App() {
       <MessageList
         messages={messages}
         loading={loading}
+        statusText={statusText}
         onToggleToolGroup={toggleToolGroup}
         onClarifyAnswer={handleClarifyAnswer}
         onChoiceSelect={handleChoiceSelect}

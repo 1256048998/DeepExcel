@@ -1,0 +1,80 @@
+# ui_event：侧车 → 面板的事件信封
+
+侧车以前只发 `stream_delta` / `tool_use` / `stream_end`：面板只知道「调用了哪个工具」，
+不知道它何时结束、成没成功、错在哪，只能显示一串英文工具名。`ui_event` 补上这些信息，
+让面板能像 Claude Code 那样每步一行：
+
+```
+⏺ 读取 A1:C4                         0.1s
+  ⎿ 4 行 × 3 列
+⏺ 写入公式 D2 =SUM(A2:C2)             0.1s
+  ⎿ D 列已被保护，不能写入
+     改写到 E 列
+⏺ 写入公式 E2 =SUM(A2:C2)             0.1s
+  ⎿ 已写入 E2
+完成 · 3 步（1 步失败） · 7.9s
+```
+
+## 信封
+
+stdout 一行一个 JSON：
+
+```json
+{"type": "ui_event", "event": {"v": 1, "kind": "tool_start", "ts": 1758770000000, ...}}
+```
+
+- `v`：协议版本，当前 1。只加字段不改语义；要改语义就升版本。
+- `ts`：侧车发出时的毫秒时间戳。
+- 值为 `null` 的字段不发。
+
+**宿主（C# `PythonSidecar`/`MessageBridge`、WPS `sidecar-host.js`）原样转发给面板**，
+面板收到的是 `{type: "ui_event", payload: <event>}`。宿主唯一读取的是 `run_summary.outcome`
+（C# 任务轨迹据此区分成功 / 出错 / 中断）。
+
+## kind
+
+| kind | 字段 | 含义 |
+|---|---|---|
+| `tool_start` | `id`, `name`, `args` | 模型发出一次工具调用。`id` 是 SDK 的 tool_use_id；`name` 不带 `mcp__excel__` 前缀；`args` 是显示用副本（长字符串截断到 4000 字，二维数组只留 `{__shape:[行,列], head:[前 3 行]}`） |
+| `tool_end` | `id`, `name`, `ok`, `duration_ms`, `summary?`, `error?` | 与同 `id` 的 `tool_start` 配对。`summary` 是一句话结果（「20 行 × 4 列」）；`error` 是 `{code, message, hint?}` |
+| `status` | `text`, `tool?` | 当前在做什么（目前：等待用户确认）。面板显示在加载指示旁，收到下一个工具事件或本轮结束时清除 |
+| `compaction` | `trigger`, `pre_tokens?`, `prev_pct?`, `curr_pct?` | 上下文被压缩。`trigger` 为 `auto`/`manual`（CLI 的 compact_boundary）或 `detected`（没收到 compact_boundary、但上下文占比骤降超过 40%） |
+| `error` | `code`, `message`, `hint`, `retryable`, `detail` | 整轮失败（API 报错、异常）。`message`/`hint` 是给用户的中文；`detail` 是原始报错前 500 字，只供诊断 |
+| `run_summary` | `outcome`, `tool_calls`, `failed_calls`, `duration_ms`, `num_turns?`, `input_tokens?`, `output_tokens?` | 每轮结束、`stream_end` 之前恰好一次。`outcome`：`success` / `max_turns` / `error` / `interrupted` |
+
+### 保证
+
+- 每个 `tool_start` 都会有一个 `tool_end`。中断（`code: interrupted`）、出错（`aborted`）
+  或本轮结束时仍没有结果（`no_result`）的调用，侧车会补发 `ok: false` 的 `tool_end`，
+  面板上那一行不会一直转圈。
+- `run_summary` 在 `stream_end` 之前发出，每轮最多一次。
+- 被权限钩子拒绝的调用：`tool_end.ok = false`，`error.code = "denied"`。
+
+### error.code
+
+整轮错误（`kind: error`）：`auth`、`quota`、`task_limit`、`rate_limit`、`context_too_long`、
+`model_not_found`、`timeout`、`network`、`cli_missing`、`unknown`。分类规则在
+`src/DeepExcel.Sidecar/ui_events.py` 的 `_ERROR_RULES`。
+
+工具错误（`tool_end.error`）：C# 结果里带 `error_code` 时用它，否则 `tool_failed`；
+被拒绝为 `denied`；侧车补发的为 `interrupted` / `aborted` / `no_result`。
+
+## 与旧消息的关系
+
+- `tool_use` 仍然发：C# 用它记对话历史和任务轨迹，WPS 用它记对话历史。面板不再渲染它。
+- 旧的 `compacted` 消息已删除（C# 从来没解析过它，Excel 里压缩提示从未出现过）。
+- API 报错以前作为助手文本流给用户（英文原文），现在是 `kind: error`。
+
+## 面板
+
+- 事件 → 消息列表：`src/DeepExcel.UI/src/utils/uiEvents.ts` 的 `applyUiEvent`（纯函数，有测试）。
+- 工具的中文叙事：`src/DeepExcel.UI/src/utils/toolCatalog.ts`。`toolCatalog` 的测试会读侧车
+  `excel_tools.py` 的注册表逐条比对，新增工具没写文案会失败。
+
+## 验证
+
+- 单测：`src/DeepExcel.Sidecar/tests/test_ui_events.py`、`src/DeepExcel.UI/src/utils/uiEvents.test.ts`、
+  `TelemetryReporterTests.RunSummaryOutcomeDecidesTheTraceOutcome`。
+- 真实模型：`python scripts/live_sidecar_events.py` —— 按 WPS 的方式启动侧车（自己读本机
+  DeepExcel 配置和 DPAPI 凭据，脚本碰不到 Key），假装宿主应答工具调用，并故意让一次写入失败，
+  检查事件配对、失败上报和终态行。会消耗几千 token。
