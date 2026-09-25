@@ -153,6 +153,7 @@ namespace DeepExcel.AddIn.Sidecar
         private readonly object _lock = new object();
         private readonly List<Entry> _known = new List<Entry>();
         private readonly List<Entry> _userEdits = new List<Entry>();
+        private readonly List<string> _notices = new List<string>();
         private long _seq;
 
         /// <summary>模型读到了这块区域的内容（read_range / read_selection）。</summary>
@@ -209,6 +210,30 @@ namespace DeepExcel.AddIn.Sidecar
                 var pending = _userEdits.Where(e => !e.Reported).ToList();
                 foreach (var e in pending) e.Reported = true;
                 return pending.Select(e => e.Rect.ToA1()).Distinct().Take(20).ToList();
+            }
+        }
+
+        /// <summary>
+        /// 不是某个区域、但模型必须知道的事（例如用户在面板上回退到了之前的检查点）。
+        /// 和用户改动一样，在下一个工具结果或下一条用户消息里告诉模型一次。
+        /// </summary>
+        public void AddNotice(string notice)
+        {
+            if (string.IsNullOrWhiteSpace(notice)) return;
+            lock (_lock)
+            {
+                _notices.Add(notice);
+                if (_notices.Count > 5) _notices.RemoveAt(0);
+            }
+        }
+
+        public List<string> TakeNotices()
+        {
+            lock (_lock)
+            {
+                var pending = _notices.ToList();
+                _notices.Clear();
+                return pending;
             }
         }
 

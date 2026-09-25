@@ -368,7 +368,7 @@ async def write_table(args):
     return _wrap_result(result)
 
 
-@tool("rollback", "把工作簿恢复到指定快照。修改类工具的结果里带 backup_snapshot_id（本回合第一次修改前自动做的备份），传入它即可撤销本回合的修改；恢复前会自动另存当前状态，恢复本身也可撤销。", {"snapshot_id": str})
+@tool("rollback", "把工作簿恢复到指定快照。修改类工具的结果里带 backup_snapshot_id（本回合第一次修改前自动做的备份），传入它即可撤销本回合的修改；结果里的 checkpoint_id 是这一步执行前的检查点，传入它只撤销这一步及之后的修改；恢复前会自动另存当前状态，恢复本身也可撤销。", {"snapshot_id": str})
 async def rollback(args):
     result = await call_csharp("rollback", {"snapshot_id": args["snapshot_id"]})
     return _wrap_result(result)

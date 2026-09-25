@@ -12,3 +12,8 @@ def test_user_edits_between_turns_are_mentioned():
 def test_no_edits_no_line():
     assert "[用户改动]" not in sidecar._build_excel_context_lite({"workbookName": "a.xlsx", "userEdits": []})
     assert "[用户改动]" not in sidecar._build_excel_context_lite({"workbookName": "a.xlsx", "userEdits": None})
+
+
+def test_host_notices_are_shown():
+    text = sidecar._build_excel_context_lite({"hostNotices": ["用户在面板上把工作簿回退到了 10:02:03 的检查点"]})
+    assert "[提示] 用户在面板上把工作簿回退到了 10:02:03 的检查点" in text

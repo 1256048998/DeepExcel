@@ -11,6 +11,9 @@ using System.Windows.Forms;
 using DeepExcel.AddIn.Bridge;
 using DeepExcel.AddIn.Diagnostics;
 using SnapshotScope = DeepExcel.AddIn.Executor.SnapshotScope;
+using SnapshotAttempt = DeepExcel.AddIn.Executor.SnapshotAttempt;
+using SnapshotManager = DeepExcel.AddIn.Executor.SnapshotManager;
+using Stopwatch = System.Diagnostics.Stopwatch;
 using WorkbookIdentity = DeepExcel.AddIn.Executor.WorkbookIdentity;
 using DeepExcel.AddIn.Tools;
 using Microsoft.Office.Interop.Excel;
@@ -70,10 +73,44 @@ namespace DeepExcel.AddIn.Sidecar
         private readonly Dictionary<string, string> _turnBackups =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// 会话内的检查点：每个写入步骤执行前各存一份（工作簿 key → 从旧到新）。之后的写入涉及
+        /// 新的表时，扩大所有更早检查点的范围——回到某一步之前时，之后的修改也一起回退。
+        /// </summary>
+        private sealed class Checkpoint
+        {
+            public string Id;
+            public bool Whole;
+            public HashSet<string> Sheets;
+        }
+
+        private readonly Dictionary<string, List<Checkpoint>> _checkpoints =
+            new Dictionary<string, List<Checkpoint>>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>和快照保留数一致：更早的快照文件已被清理，记着也回不去</summary>
+        private const int MaxCheckpointsTracked = SnapshotManager.MaxSnapshotsPerWorkbook;
+
+        /// <summary>
+        /// 一次备份超过这个时长（大工作簿），本回合后面的步骤不再各存一份，只靠回合备份，
+        /// 免得每一步都多等几秒。这些步骤不带 checkpoint_id，面板也就不显示「回到这一步之前」。
+        /// </summary>
+        internal int SlowCheckpointThresholdMs { get; set; } = 1500;
+
+        private bool _checkpointsSlowThisTurn;
+
+        /// <summary>
+        /// 一个回合最多单独存这么多份。快照按工作簿只保留 MaxSnapshotsPerWorkbook 份，一个回合
+        /// 存满就会把自己的回合备份挤掉，模型的 rollback 就回不去了。
+        /// </summary>
+        internal const int MaxCheckpointsPerTurn = 12;
+        private int _checkpointsThisTurn;
+
         /// <summary>新的用户回合开始：下一次写入会重新备份</summary>
         public void BeginTurn()
         {
             _turnBackups.Clear();
+            _checkpointsSlowThisTurn = false;
+            _checkpointsThisTurn = 0;
         }
 
         /// <summary>
@@ -115,6 +152,7 @@ namespace DeepExcel.AddIn.Sidecar
             CellRect target = default;
             var hasTarget = false;
             string backupId = null;
+            string checkpointId = null;
             if (ToolMutationPolicy.IsMutating(toolName))
             {
                 hasTarget = TryResolveWriteTarget(toolName, args, out target);
@@ -127,7 +165,7 @@ namespace DeepExcel.AddIn.Sidecar
                 ToolResult refusal;
                 try
                 {
-                    refusal = EnsureBackupBeforeWrite(toolName, args, out backupId);
+                    refusal = EnsureBackupBeforeWrite(toolName, args, out backupId, out checkpointId);
                 }
                 catch (Exception ex)
                 {
@@ -140,6 +178,7 @@ namespace DeepExcel.AddIn.Sidecar
             var healthBefore = WriteCheck.NeedsCheck(toolName) ? SafeCaptureHealth() : null;
             var result = ExecuteCore(toolName, args);
             if (result != null && backupId != null) result.BackupSnapshotId = backupId;
+            if (result != null && result.Success && checkpointId != null) result.CheckpointId = checkpointId;
             RecordLedger(toolName, result, hasTarget, target);
             if (healthBefore != null && result != null && result.Success)
             {
@@ -251,9 +290,14 @@ namespace DeepExcel.AddIn.Sidecar
         private void AttachUserEditNotice(ToolResult result)
         {
             if (result == null) return;
+            var parts = Ledger.TakeNotices();
             var edits = Ledger.TakeUnreportedUserEdits();
-            if (edits.Count == 0) return;
-            var notice = $"用户刚刚手动修改了 {string.Join("、", edits)}（不是你的操作）。和这些单元格相关的数据请重新读取，不要用之前读到的旧值覆盖。";
+            if (edits.Count > 0)
+            {
+                parts.Add($"用户刚刚手动修改了 {string.Join("、", edits)}（不是你的操作）。和这些单元格相关的数据请重新读取，不要用之前读到的旧值覆盖。");
+            }
+            if (parts.Count == 0) return;
+            var notice = string.Join(" ", parts);
             result.Warning = string.IsNullOrEmpty(result.Warning) ? notice : result.Warning + " " + notice;
         }
 
@@ -313,9 +357,10 @@ namespace DeepExcel.AddIn.Sidecar
             }
         }
 
-        private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId)
+        private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId, out string checkpointId)
         {
             backupId = null;
+            checkpointId = null;
             var active = _excel.GetActiveWorkbookKey();
             if (string.IsNullOrEmpty(active))
             {
@@ -335,28 +380,108 @@ namespace DeepExcel.AddIn.Sidecar
                 key => GetArg<string>(args, key),
                 () => _excel.GetActiveSheetName());
 
-            if (_turnBackups.TryGetValue(active, out var existing))
+            // 1. 更早的检查点（含本回合备份）都要覆盖这次写入涉及的表，回退时才不漏
+            _turnBackups.TryGetValue(active, out var turnBackup);
+            var turnBackupCovered = turnBackup != null;
+            var list = CheckpointsOf(active);
+            if (turnBackup != null && !list.Any(c => c.Id == turnBackup))
             {
-                if (_excel.ExtendSnapshotScope(existing, scope))
+                turnBackupCovered = _excel.ExtendSnapshotScope(turnBackup, scope);
+            }
+            foreach (var cp in list.ToList())
+            {
+                if (Covers(cp, scope)) continue;
+                if (_excel.ExtendSnapshotScope(cp.Id, scope))
                 {
-                    backupId = existing;
-                    return null;
+                    Widen(cp, scope);
+                    continue;
                 }
-                // 记不下新涉及的表：回滚会漏掉它，按"没有备份"处理，重新备份一次
-                Logger.Instance.Warning("ToolDispatcher", "ExtendSnapshotScope failed, taking a fresh backup: " + existing);
+                // 记不下新涉及的表：回到它会漏掉这张表，不再提供这个检查点
+                Logger.Instance.Warning("ToolDispatcher", "ExtendSnapshotScope failed, dropping checkpoint: " + cp.Id);
+                list.Remove(cp);
+                if (cp.Id == turnBackup) turnBackupCovered = false;
             }
 
-            var attempt = _excel.BackupWorkbook(active, $"AI 修改前自动备份（{toolName}）", scope);
+            // 2. 这一步自己的检查点（大工作簿或步骤太多时本回合只靠回合备份）
+            if (turnBackupCovered && (_checkpointsSlowThisTurn || _checkpointsThisTurn >= MaxCheckpointsPerTurn))
+            {
+                backupId = turnBackup;
+                return null;
+            }
+
+            SnapshotAttempt attempt;
+            var watch = Stopwatch.StartNew();
+            try
+            {
+                attempt = _excel.BackupWorkbook(active, $"AI 修改前自动备份（{toolName}）", scope);
+            }
+            catch (Exception ex) when (turnBackupCovered)
+            {
+                attempt = new SnapshotAttempt { Error = ex.Message };
+            }
+            watch.Stop();
+
             if (attempt == null || !attempt.Success)
             {
+                if (turnBackupCovered)
+                {
+                    // 回合备份仍然保护着这次写入，只是这一步没有单独的检查点
+                    Logger.Instance.Warning("ToolDispatcher", "Step checkpoint failed, turn backup still covers it: " + attempt?.Error);
+                    backupId = turnBackup;
+                    return null;
+                }
                 return RefuseWrite(toolName,
                     "修改前自动备份失败，为保护数据本次未执行：" + (attempt?.Error ?? "未知原因"),
                     "请告诉用户可能的原因（磁盘空间不足、单元格正处于编辑状态、工作簿受保护），处理后再试；不要换用其他工具绕过。");
             }
-            _turnBackups[active] = attempt.SnapshotId;
-            backupId = attempt.SnapshotId;
-            Logger.Instance.Info("ToolDispatcher", $"Turn backup created before {toolName}: {backupId}");
+
+            checkpointId = attempt.SnapshotId;
+            _checkpointsThisTurn++;
+            list.Add(new Checkpoint
+            {
+                Id = checkpointId,
+                Whole = scope.WholeWorkbook,
+                Sheets = new HashSet<string>(scope.WholeWorkbook ? Enumerable.Empty<string>() : scope.Sheets, StringComparer.OrdinalIgnoreCase),
+            });
+            if (list.Count > MaxCheckpointsTracked) list.RemoveRange(0, list.Count - MaxCheckpointsTracked);
+
+            if (watch.ElapsedMilliseconds > SlowCheckpointThresholdMs)
+            {
+                _checkpointsSlowThisTurn = true;
+                Logger.Instance.Info("ToolDispatcher", $"Checkpoint took {watch.ElapsedMilliseconds} ms; later steps this turn share the turn backup");
+            }
+            if (!turnBackupCovered)
+            {
+                _turnBackups[active] = checkpointId;
+                turnBackup = checkpointId;
+                Logger.Instance.Info("ToolDispatcher", $"Turn backup created before {toolName}: {checkpointId}");
+            }
+            backupId = turnBackup;
             return null;
+        }
+
+        private List<Checkpoint> CheckpointsOf(string workbookKey)
+        {
+            if (!_checkpoints.TryGetValue(workbookKey, out var list))
+            {
+                list = new List<Checkpoint>();
+                _checkpoints[workbookKey] = list;
+            }
+            return list;
+        }
+
+        private static bool Covers(Checkpoint cp, SnapshotScope scope)
+        {
+            if (cp.Whole) return true;
+            if (scope == null) return true;
+            if (scope.WholeWorkbook) return false;
+            return scope.Sheets.All(s => cp.Sheets.Contains(s));
+        }
+
+        private static void Widen(Checkpoint cp, SnapshotScope scope)
+        {
+            if (scope.WholeWorkbook) { cp.Whole = true; return; }
+            foreach (var sheet in scope.Sheets) cp.Sheets.Add(sheet);
         }
 
         private static ToolResult RefuseWrite(string toolName, string error, string suggestion)

@@ -45,6 +45,11 @@ describe('applyUiEvent', () => {
     expect(step.check).toEqual(check)
   })
 
+  it('remembers the checkpoint taken before a write step', () => {
+    const out = run([start('a', 'write_value', { address: 'A1', value: 1 }), end('a', true, { checkpoint_id: 'cp-1' })])
+    expect(out[0].toolSteps![0].checkpointId).toBe('cp-1')
+  })
+
   it('keeps the error message and hint of a failed step', () => {
     const out = run([
       start('a', 'write_value', { address: 'A1', value: 1 }),

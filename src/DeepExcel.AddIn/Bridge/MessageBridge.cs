@@ -1386,8 +1386,13 @@ namespace DeepExcel.AddIn.Bridge
                 // a missing index costs accuracy, an exception would lose the
                 // user's message.
                 session.SemanticIndex = GetSemanticIndex(session.WorkbookKey);
-                try { session.UserEdits = session.Sidecar?.Dispatcher?.Ledger.TakeUnreportedUserEdits(); }
-                catch { session.UserEdits = null; }
+                try
+                {
+                    var ledger = session.Sidecar?.Dispatcher?.Ledger;
+                    session.UserEdits = ledger?.TakeUnreportedUserEdits();
+                    session.HostNotices = ledger?.TakeNotices();
+                }
+                catch { session.UserEdits = null; session.HostNotices = null; }
                 var context = session.BuildContext(_excelActions);
                 var sessionId = session.NextSessionId();
                 session.IsBusy = true;
@@ -1664,7 +1669,20 @@ namespace DeepExcel.AddIn.Bridge
                     return MakeError("缺少 snapshot_id 参数");
                 }
                 Logger.Instance.Info("MessageBridge", "HandleRollbackSnapshot: " + snapshotId);
+                var meta = _excelActions.GetSnapshotMeta(snapshotId);
+                var owner = meta == null ? null : FindSessionByWorkbook(meta.WorkbookKey);
+                if (owner != null && owner.IsBusy)
+                {
+                    // 任务进行中回退，模型会接着在回退后的表上按旧的认识继续写
+                    return MakeResponse("rollback_result", new
+                    {
+                        success = false,
+                        snapshot_id = snapshotId,
+                        message = "AI 正在处理任务，请先停止再回退。",
+                    });
+                }
                 var r = _excelActions.Rollback(snapshotId);
+                if (r.Success) NotifyModelOfRollback(owner, meta, r);
                 return MakeResponse("rollback_result", new
                 {
                     success = r.Success,
@@ -1681,6 +1699,31 @@ namespace DeepExcel.AddIn.Bridge
                 Logger.Instance.Error("MessageBridge", "HandleRollbackSnapshot failed", ex);
                 return MakeError("回滚失败: " + ex.Message);
             }
+        }
+
+        private WorkbookSession FindSessionByWorkbook(string workbookKey)
+        {
+            if (string.IsNullOrEmpty(workbookKey)) return null;
+            foreach (var kvp in _sessions)
+            {
+                if (WorkbookIdentity.SameKey(kvp.Key, workbookKey)) return kvp.Value;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 用户在面板上回退了：模型之前读到的内容都作废，下一次它开口前要知道这件事。
+        /// </summary>
+        private static void NotifyModelOfRollback(WorkbookSession session, SnapshotMeta meta, RollbackResult r)
+        {
+            var ledger = session?.Sidecar?.Dispatcher?.Ledger;
+            if (ledger == null) return;
+            ledger.ForgetReads();
+            var sheets = r.RestoredSheets != null && r.RestoredSheets.Count > 0
+                ? "（恢复了 " + string.Join("、", r.RestoredSheets) + "）"
+                : "";
+            ledger.AddNotice($"用户在面板上把工作簿回退到了 {meta.CreatedAt:HH:mm:ss} 的检查点{sheets}，这之后的修改都已撤销。" +
+                "你之前读到的内容已作废，需要时重新读取；不要重做被撤销的修改，除非用户要求。");
         }
 
         /// <summary>★ 历史版本：删除指定快照</summary>

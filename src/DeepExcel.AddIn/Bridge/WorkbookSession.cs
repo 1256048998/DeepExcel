@@ -245,6 +245,9 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         public List<string> UserEdits { get; set; }
 
+        /// <summary>两轮之间发生、模型必须知道的事（例如用户回退到了之前的检查点）</summary>
+        public List<string> HostNotices { get; set; }
+
         public object BuildContext(IExcelActions excelActions)
         {
             try
@@ -318,6 +321,7 @@ namespace DeepExcel.AddIn.Bridge
                     // needs just to work out what the sheet contains.
                     structure = SemanticIndex,
                     userEdits = UserEdits,
+                    hostNotices = HostNotices,
                     timestamp = DateTime.Now.ToString("o"),
                 };
             }

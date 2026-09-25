@@ -196,6 +196,17 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
+        public void Notices_such_as_a_panel_rollback_reach_the_model_once()
+        {
+            var fake = BookWithData();
+            var d = Dispatcher(fake);
+            d.Ledger.AddNotice("用户在面板上把工作簿回退到了 10:02:03 的检查点");
+
+            Assert.Contains("10:02:03 的检查点", d.Execute("read_workbook", Args()).Warning);
+            Assert.Null(d.Execute("read_workbook", Args()).Warning);
+        }
+
+        [Fact]
         public void Formatting_does_not_require_a_read()
         {
             var fake = BookWithData();

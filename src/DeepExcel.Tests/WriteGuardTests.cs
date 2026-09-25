@@ -82,7 +82,7 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
-        public void Later_writes_in_the_same_turn_share_the_backup_and_extend_its_scope()
+        public void Later_writes_in_the_same_turn_keep_the_turn_backup_and_extend_its_scope()
         {
             var fake = new FakeExcelActions();
             var d = Dispatcher(fake);
@@ -90,8 +90,10 @@ namespace DeepExcel.Tests
             d.Execute("write_value", Args(("address", "A1"), ("value", "x")));
             var second = d.Execute("write_value", Args(("address", "Sheet2!A1"), ("value", "y")));
 
-            Assert.Single(fake.BackupCalls);
+            // 第二步另存了自己的检查点，但给模型的回合备份仍是第一份
+            Assert.Equal(2, fake.BackupCalls.Count);
             Assert.Equal("backup-1", second.BackupSnapshotId);
+            Assert.Equal("backup-2", second.CheckpointId);
             Assert.Single(fake.ExtendScopeCalls);
             Assert.Equal("backup-1", fake.ExtendScopeCalls[0].Id);
             Assert.Equal(new[] { "Sheet2" }, fake.ExtendScopeCalls[0].Scope.Sheets);

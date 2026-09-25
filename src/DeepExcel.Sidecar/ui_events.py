@@ -10,7 +10,7 @@ Claude Code 的做法是每个工具调用都有开始和结束两行（⏺ 读�
 
 kind:
     tool_start   {id, name, args}                  模型发出一次工具调用
-    tool_end     {id, name, ok, duration_ms, summary?, error?, check?}
+    tool_end     {id, name, ok, duration_ms, summary?, error?, check?, checkpoint_id?}
     status       {text}                            当前在做什么（思考中、等待确认…）
     compaction   {trigger, pre_tokens?, prev_pct?, curr_pct?}
     error        {code, message, hint, retryable}  整轮失败
@@ -109,6 +109,9 @@ def parse_tool_result(content: Any, is_error: bool | None) -> dict:
             check = summarize_verification(payload.get("verification"))
             if check:
                 out["check"] = check
+            checkpoint = payload.get("checkpoint_id")
+            if isinstance(checkpoint, str) and checkpoint:
+                out["checkpoint_id"] = checkpoint
         else:
             out["error"] = {
                 "code": str(payload.get("error_code") or "tool_failed"),

@@ -2771,6 +2771,7 @@ body {
 }
 
 .tool-step-line {
+  position: relative;
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -2821,6 +2822,33 @@ body {
 
 .tool-step-result.error {
   color: #b91c1c;
+}
+
+/* 「回到这一步之前」：平时不占位置也不占视线，鼠标移到这一步上才盖在耗时上面出现 */
+.tool-step-rewind {
+  position: absolute;
+  right: 0;
+  top: 0;
+  padding: 0 0 0 8px;
+  border: none;
+  background: var(--color-bg-secondary, #f8f9fa);
+  color: var(--color-primary);
+  font-family: var(--font);
+  font-size: 11px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.tool-step:hover .tool-step-rewind,
+.tool-step-rewind:focus-visible,
+.tool-step-rewind.pending {
+  opacity: 1;
+}
+
+.tool-step-rewind:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
 }
 
 /* 写入成功但体检发现问题（新增公式错误 / 外部链接）：不是失败，但要看见 */

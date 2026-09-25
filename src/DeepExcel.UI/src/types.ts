@@ -4,7 +4,7 @@ export type Message = {
   streaming?: boolean
   toolName?: string
   result?: string
-  type?: 'clarify' | 'compacted' | 'error' | 'run_summary'
+  type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice'
   options?: string[]
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并
@@ -40,6 +40,8 @@ export type ToolStep = {
   durationMs?: number
   // 写后自动体检（新增公式错误、外部链接）；只在没通过时显示
   check?: ToolStepCheck
+  // 这一步执行前单独存的检查点：有它才显示「回到这一步之前」
+  checkpointId?: string
 }
 
 export type ToolStepCheck = { ok: boolean; summary: string }
@@ -48,7 +50,7 @@ export type ToolStepCheck = { ok: boolean; summary: string }
 export type UiEvent =
   | { v: number; kind: 'tool_start'; id: string; name: string; args?: Record<string, unknown>; ts?: number }
   | { v: number; kind: 'tool_end'; id: string; name: string; ok: boolean; duration_ms?: number;
-      summary?: string; error?: ToolStepError; check?: ToolStepCheck; ts?: number }
+      summary?: string; error?: ToolStepError; check?: ToolStepCheck; checkpoint_id?: string; ts?: number }
   | { v: number; kind: 'status'; text: string; tool?: string; ts?: number }
   | { v: number; kind: 'tool_gen'; id: string; name: string; chars: number; lines?: number;
       preview?: string; ts?: number }

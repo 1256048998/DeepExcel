@@ -14,6 +14,14 @@ interface Props {
   onChoiceSelect?: (choice: string) => void
   // ★ 保存用户消息为提示词模板
   onSaveAsPrompt?: (content: string) => void
+  // 「回到这一步之前」：任务进行中不可用
+  rewind?: RewindControl
+}
+
+export type RewindControl = {
+  onRewind: (step: ToolStep) => void
+  disabled: boolean
+  pendingId: string | null
 }
 
 // 检测内容是否为 Markdown 格式
@@ -36,7 +44,7 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt }: Props) {
+export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind }: Props) {
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -54,6 +62,7 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
           onClarifyAnswer={onClarifyAnswer}
           onChoiceSelect={onChoiceSelect}
           onSaveAsPrompt={onSaveAsPrompt}
+          rewind={rewind}
         />
       ))}
       {loading && (
@@ -75,7 +84,8 @@ function MessageItem({
   onToggleToolGroup,
   onClarifyAnswer,
   onChoiceSelect,
-  onSaveAsPrompt
+  onSaveAsPrompt,
+  rewind
 }: {
   message: Message
   index: number
@@ -83,6 +93,7 @@ function MessageItem({
   onClarifyAnswer?: (answer: string) => void
   onChoiceSelect?: (choice: string) => void
   onSaveAsPrompt?: (content: string) => void
+  rewind?: RewindControl
 }) {
   // 本次会话实时收到的工具步骤：每步一行叙事（⏺ 读取 A1:D20 / ⎿ 20 行 × 4 列）
   if (message.role === 'tool' && message.toolSteps && message.toolSteps.length > 0) {
@@ -91,6 +102,7 @@ function MessageItem({
         steps={message.toolSteps}
         expanded={message.expanded ?? false}
         onToggle={() => onToggleToolGroup?.(index)}
+        rewind={rewind}
       />
     )
   }
@@ -169,7 +181,7 @@ function MessageItem({
   }
 
   // ★ 压缩提示卡：autocompact 触发时插入的轻量提示
-  if (message.type === 'compacted') {
+  if (message.type === 'compacted' || message.type === 'notice') {
     return (
       <div className="message compacted-hint">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 6, verticalAlign: 'middle' }}>
@@ -259,10 +271,11 @@ function MessageItem({
 // 连续多步时默认只显示最后几步，避免一次任务把整屏推走；点击标题展开全部
 const VISIBLE_STEPS_WHEN_COLLAPSED = 3
 
-function ToolSteps({ steps, expanded, onToggle }: {
+function ToolSteps({ steps, expanded, onToggle, rewind }: {
   steps: ToolStep[]
   expanded: boolean
   onToggle: () => void
+  rewind?: RewindControl
 }) {
   const failed = steps.filter(step => step.status === 'error').length
   const running = steps.some(step => step.status === 'running')
@@ -278,7 +291,7 @@ function ToolSteps({ steps, expanded, onToggle }: {
           {!expanded && hidden > 0 && <span className="tool-steps-hidden">（前 {hidden} 步已折叠）</span>}
         </button>
       )}
-      {visible.map(step => <ToolStepLine key={step.id} step={step} />)}
+      {visible.map(step => <ToolStepLine key={step.id} step={step} rewind={rewind} />)}
     </div>
   )
 }
@@ -291,7 +304,9 @@ function lastLines(text: string, n: number): string {
   return lines.slice(-n).join('\n')
 }
 
-function ToolStepLine({ step }: { step: ToolStep }) {
+const REWIND_TOOLTIP = '撤销这一步和它之后的所有修改（包括其他表上的）。回退前的状态会另存一份，可在「历史版本」里找回。'
+
+function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl }) {
   const busy = step.status === 'running' || step.status === 'generating'
   const duration = !busy ? formatDuration(step.durationMs) : ''
   return (
@@ -300,6 +315,17 @@ function ToolStepLine({ step }: { step: ToolStep }) {
         <span className="tool-step-bullet" aria-hidden="true">{busy ? '◌' : '⏺'}</span>
         <span className="tool-step-label" title={step.name}>{step.label}</span>
         {duration && <span className="tool-step-duration">{duration}</span>}
+        {rewind && step.status === 'ok' && step.checkpointId && (
+          <button
+            type="button"
+            className={`tool-step-rewind${rewind.pendingId === step.checkpointId ? ' pending' : ''}`}
+            title={REWIND_TOOLTIP}
+            disabled={rewind.disabled || rewind.pendingId !== null}
+            onClick={() => rewind.onRewind(step)}
+          >
+            {rewind.pendingId === step.checkpointId ? '回退中…' : '回到这一步之前'}
+          </button>
+        )}
       </div>
       {step.code && step.status === 'generating' && (
         <pre className="tool-step-code live">{lastLines(step.code, LIVE_CODE_LINES)}</pre>

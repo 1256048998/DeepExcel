@@ -723,6 +723,12 @@ def _build_excel_context_lite(context: dict) -> str:
         if shown:
             header += f"[用户改动] 上一轮之后用户手动改了 {'、'.join(shown)}，要用这些内容先重新读取\n"
 
+    notices = context.get("hostNotices")
+    if isinstance(notices, list):
+        for notice in notices[:5]:
+            if isinstance(notice, str) and notice.strip():
+                header += f"[提示] {notice.strip()}\n"
+
     # Workbook structure summary: column types, value ranges, blank positions,
     # named ranges and cross-sheet links. Roughly 300-600 tokens per sheet, and
     # it replaces the read_range round-trips the model would otherwise make just

@@ -15,7 +15,7 @@ import { PromptManager } from './components/PromptManager'
 import { UpdateBanner } from './components/UpdateBanner'
 import { SetupNotice } from './components/SetupNotice'
 import { PlanPill } from './components/PlanPill'
-import type { Message, ModelConfig, PlanItem, UiEvent } from './types'
+import type { Message, ModelConfig, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -48,6 +48,8 @@ export default function App() {
   const [statusText, setStatusText] = useState<string | null>(null)
   // 模型用 todo_write 维护的计划清单（输入框上方的计划胶囊）
   const [plan, setPlan] = useState<PlanItem[]>([])
+  // 正在回退的检查点（「回到这一步之前」）
+  const [rewindingId, setRewindingId] = useState<string | null>(null)
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
@@ -248,6 +250,31 @@ export default function App() {
   useEffect(() => {
     flushPendingModelSwitchRef.current = flushPendingModelSwitch
   })
+
+  // 「回到这一步之前」：用这一步执行前存的检查点回退，结果作为一条提示留在对话里
+  const handleRewind = async (step: ToolStep) => {
+    if (!step.checkpointId || loading || rewindingId) return
+    if (!confirm(`回到「${step.label}」之前？\n\n这一步和它之后的所有修改（包括其他表上的）都会撤销。回退前的状态会另存一份，可在「历史版本」里找回。`)) {
+      return
+    }
+    setRewindingId(step.checkpointId)
+    try {
+      // 回退要打开快照、逐表恢复，大工作簿可能要十几秒
+      const resp = await sendToHostWithResponse(
+        { type: 'rollback_snapshot', payload: { snapshot_id: step.checkpointId } },
+        'rollback_result',
+        60000
+      )
+      const ok = resp?.type === 'rollback_result' && resp.payload?.success
+      const restored: string[] = ok ? resp.payload?.restored_sheets ?? [] : []
+      const content = ok
+        ? `已回到「${step.label}」之前${restored.length ? `（恢复了 ${restored.join('、')}）` : ''}。回退前的状态已另存，可在「历史版本」里找回。`
+        : `没能回到「${step.label}」之前：${resp?.payload?.message || '宿主没有响应，请稍后在「历史版本」里重试'}`
+      setMessages(prev => [...prev, { role: 'assistant', type: 'notice', content }])
+    } finally {
+      setRewindingId(null)
+    }
+  }
 
   // ★ 从历史消息保存为提示词/技能：预填 content 并打开管理面板（默认 prompt 类型）
   const handleSaveAsPrompt = (content: string) => {
@@ -751,6 +778,7 @@ export default function App() {
         onClarifyAnswer={handleClarifyAnswer}
         onChoiceSelect={handleChoiceSelect}
         onSaveAsPrompt={handleSaveAsPrompt}
+        rewind={{ onRewind: handleRewind, disabled: loading, pendingId: rewindingId }}
       />
 
       {/* ★ AI Native 权限确认抽屉：从输入框上方 slide-up 显示，类似 Claude Code/Trae/Codex */}

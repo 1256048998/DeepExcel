@@ -64,6 +64,10 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>写后自动体检的结论（公式错误前后对比、新增外部链接、回读样本）；没做体检为 null</summary>
         [JsonPropertyName("verification")]
         public object Verification { get; set; }
+
+        /// <summary>这一步执行前单独存的检查点（面板上「回到这一步之前」用）；和回合备份不同，每步一份</summary>
+        [JsonPropertyName("checkpoint_id")]
+        public string CheckpointId { get; set; }
     }
 
     /// <summary>

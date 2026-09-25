@@ -247,3 +247,10 @@ def test_write_check_is_passed_to_the_panel():
 
 def test_no_verification_no_check():
     assert "check" not in ui_events.parse_tool_result(json.dumps({"success": True, "data": {}}), False)
+
+
+def test_checkpoint_id_is_passed_to_the_panel():
+    out = ui_events.parse_tool_result(json.dumps({"success": True, "data": {}, "checkpoint_id": "abc"}), False)
+    assert out["checkpoint_id"] == "abc"
+    failed = ui_events.parse_tool_result(json.dumps({"success": False, "error": "x", "checkpoint_id": "abc"}), False)
+    assert "checkpoint_id" not in failed
