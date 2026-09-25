@@ -73,6 +73,8 @@ namespace DeepExcel.AddIn.Bridge
         string GetActiveWorkbookKey();
         /// <summary>当前活动工作表名；没有时返回 null</summary>
         string GetActiveSheetName();
+        /// <summary>区域里有没有非空单元格（先读后写检查用）；地址无效时返回 false，交给工具本身报错</summary>
+        bool RangeHasContent(string address);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

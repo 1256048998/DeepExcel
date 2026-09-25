@@ -716,6 +716,13 @@ def _build_excel_context_lite(context: dict) -> str:
 
     header = (" ".join(lines) + "\n") if lines else ""
 
+    # 两轮之间用户手动改过的区域：之前读到的这些内容已经过期
+    edits = context.get("userEdits")
+    if isinstance(edits, list) and edits:
+        shown = [str(e) for e in edits[:20] if e]
+        if shown:
+            header += f"[用户改动] 上一轮之后用户手动改了 {'、'.join(shown)}，要用这些内容先重新读取\n"
+
     # Workbook structure summary: column types, value ranges, blank positions,
     # named ranges and cross-sheet links. Roughly 300-600 tokens per sheet, and
     # it replaces the read_range round-trips the model would otherwise make just

@@ -1386,6 +1386,8 @@ namespace DeepExcel.AddIn.Bridge
                 // a missing index costs accuracy, an exception would lose the
                 // user's message.
                 session.SemanticIndex = GetSemanticIndex(session.WorkbookKey);
+                try { session.UserEdits = session.Sidecar?.Dispatcher?.Ledger.TakeUnreportedUserEdits(); }
+                catch { session.UserEdits = null; }
                 var context = session.BuildContext(_excelActions);
                 var sessionId = session.NextSessionId();
                 session.IsBusy = true;
@@ -2013,6 +2015,33 @@ namespace DeepExcel.AddIn.Bridge
         private const int MaxSessions = 8;
 
         /// <summary>
+        /// Excel 的 SheetChange：不是我们的工具引起的改动，记为用户改动（先读后写 / 读后被改检测）。
+        /// 必须极轻——批量写入时每个改动区域触发一次。只记区域，不读单元格。
+        /// </summary>
+        public void OnSheetChanged(string workbookKey, string sheetName, string address)
+        {
+            if (string.IsNullOrEmpty(workbookKey) || string.IsNullOrEmpty(address)) return;
+            try
+            {
+                if (!_sessions.TryGetValue(workbookKey, out var session) || session?.Sidecar == null) return;
+                var dispatcher = session.Sidecar.Dispatcher;
+                if (dispatcher == null || dispatcher.IsExecuting) return;  // 我们自己的写入
+                // 粘贴、多选删除等会给出逗号分隔的多个区域
+                foreach (var part in address.Split(','))
+                {
+                    if (CellRect.TryParse(part, sheetName, out var rect))
+                    {
+                        dispatcher.Ledger.RecordUserEdit(rect);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("MessageBridge", "OnSheetChanged failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// 工作簿关闭时调用：清理对应会话，释放 sidecar 进程。
         /// </summary>
         public void OnWorkbookClose(string workbookKey)
@@ -2504,6 +2533,20 @@ namespace DeepExcel.AddIn.Bridge
         {
             try { return (_app.ActiveSheet as Worksheet)?.Name; }
             catch { return null; }
+        }
+
+        public bool RangeHasContent(string address)
+        {
+            try
+            {
+                var range = TryResolveRange(address, "range_has_content", out _, out _);
+                if (range == null) return false;
+                return _app.WorksheetFunction.CountA(range) > 0;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>

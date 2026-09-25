@@ -35,6 +35,8 @@ namespace DeepExcel.Tests
         public Func<string, DeepExcel.AddIn.Executor.SnapshotMeta> GetSnapshotMetaFn { get; set; } = _ => null;
         public string ActiveWorkbookKey { get; set; } = @"C:\data\book.xlsx";
         public string ActiveSheetName { get; set; } = "Sheet1";
+        /// <summary>默认所有区域都是空的：不做先读后写检查的测试不受影响</summary>
+        public Func<string, bool> RangeHasContentFn { get; set; } = _ => false;
         public Func<List<DeepExcel.AddIn.Executor.SnapshotMeta>> ListSnapshotsFn { get; set; }
             = () => new List<DeepExcel.AddIn.Executor.SnapshotMeta>();
         public Func<string, bool> DeleteSnapshotFn { get; set; } = _ => true;
@@ -186,6 +188,8 @@ namespace DeepExcel.Tests
         public string GetActiveWorkbookKey() => ActiveWorkbookKey;
 
         public string GetActiveSheetName() => ActiveSheetName;
+
+        public bool RangeHasContent(string address) => RangeHasContentFn(address);
 
         public List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots() => ListSnapshotsFn();
 

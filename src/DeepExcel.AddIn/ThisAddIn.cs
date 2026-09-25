@@ -303,10 +303,14 @@ namespace DeepExcel.AddIn
         {
             try
             {
-                var workbook = (sheet as Worksheet)?.Parent as Workbook;
+                var worksheet = sheet as Worksheet;
+                var workbook = worksheet?.Parent as Workbook;
                 if (workbook != null && _bridge != null)
                 {
-                    _bridge.InvalidateSemanticIndex(GetWorkbookKey(workbook));
+                    var key = GetWorkbookKey(workbook);
+                    _bridge.InvalidateSemanticIndex(key);
+                    // 用户手动改了单元格：模型之前读到的这块内容已经过时（工具自己的写入由 bridge 排除）
+                    _bridge.OnSheetChanged(key, worksheet.Name, target == null ? null : target.Address[false, false]);
                 }
             }
             catch { }

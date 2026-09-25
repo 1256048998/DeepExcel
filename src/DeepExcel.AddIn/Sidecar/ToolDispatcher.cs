@@ -88,9 +88,42 @@ namespace DeepExcel.AddIn.Sidecar
         {
             Logger.Instance.Info("ToolDispatcher", "Execute: " + toolName + ", args keys=" + (args == null ? "null" : string.Join(",", args.Keys)));
 
+            IsExecuting = true;
+            try
+            {
+                var result = ExecuteGuarded(toolName, args);
+                AttachUserEditNotice(result);
+                return result;
+            }
+            finally
+            {
+                IsExecuting = false;
+            }
+        }
+
+        /// <summary>模型读过 / 写过的区域与用户手动改过的区域（先读后写、读后被改检测）。</summary>
+        public ReadLedger Ledger { get; } = new ReadLedger();
+
+        /// <summary>
+        /// 正在执行工具：这期间 Excel 的 SheetChange 是我们自己的写入引起的，不算用户改动。
+        /// 只在 UI 线程上读写（工具和 SheetChange 都在 UI 线程）。
+        /// </summary>
+        public bool IsExecuting { get; private set; }
+
+        private ToolResult ExecuteGuarded(string toolName, Dictionary<string, object> args)
+        {
+            CellRect target = default;
+            var hasTarget = false;
             string backupId = null;
             if (ToolMutationPolicy.IsMutating(toolName))
             {
+                hasTarget = TryResolveWriteTarget(toolName, args, out target);
+                if (hasTarget)
+                {
+                    var ledgerRefusal = CheckLedger(toolName, target);
+                    if (ledgerRefusal != null) return ledgerRefusal;
+                }
+
                 ToolResult refusal;
                 try
                 {
@@ -106,7 +139,128 @@ namespace DeepExcel.AddIn.Sidecar
 
             var result = ExecuteCore(toolName, args);
             if (result != null && backupId != null) result.BackupSnapshotId = backupId;
+            RecordLedger(toolName, result, hasTarget, target);
             return result;
+        }
+
+        private ToolResult CheckLedger(string toolName, CellRect target)
+        {
+            var address = target.ToA1();
+            var verdict = Ledger.Check(target, () => _excel.RangeHasContent(address), out var changed);
+            switch (verdict)
+            {
+                case LedgerVerdict.StaleRead:
+                    return RefuseWrite(toolName,
+                        $"你上次读取之后，用户手动改动了 {string.Join("、", changed)}。你手里的是旧内容，本次未写入。",
+                        $"先重新 read_range 读取 {address}，确认最新内容后再决定怎么写；不要把用户刚改的内容覆盖掉。");
+                case LedgerVerdict.NotRead:
+                    return RefuseWrite(toolName,
+                        $"目标区域 {address} 已有内容，但你还没有读过它，本次未写入。",
+                        $"先用 read_range 读取 {address}（或包含它的区域），确认可以覆盖后再写。");
+                default:
+                    return null;
+            }
+        }
+
+        private void RecordLedger(string toolName, ToolResult result, bool hasTarget, CellRect target)
+        {
+            if (result == null || !result.Success) return;
+            try
+            {
+                if (toolName == "read_range" || toolName == "read_selection")
+                {
+                    // RangeInfo 或截断后的同形对象：取 Excel 解析后的地址，比模型传的参数可靠
+                    var data = result.Data;
+                    var address = data?.GetType().GetProperty("Address")?.GetValue(data) as string;
+                    var sheet = data?.GetType().GetProperty("WorksheetName")?.GetValue(data) as string;
+                    if (CellRect.TryParse(address, sheet ?? _excel.GetActiveSheetName(), out var readRect))
+                    {
+                        Ledger.RecordRead(readRect);
+                    }
+                }
+                else if (toolName == "rollback")
+                {
+                    // 整本内容换掉了：之前读到的都不再可信
+                    Ledger.ForgetReads();
+                }
+                else if (hasTarget)
+                {
+                    Ledger.RecordOwnWrite(target);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ToolDispatcher", "ledger record failed: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// 用户在模型工作期间手动改了单元格：附在这次工具结果里告诉模型（每处只说一次），
+        /// 就像 Claude Code 在文件被外部修改后提醒模型一样。
+        /// </summary>
+        private void AttachUserEditNotice(ToolResult result)
+        {
+            if (result == null) return;
+            var edits = Ledger.TakeUnreportedUserEdits();
+            if (edits.Count == 0) return;
+            var notice = $"用户刚刚手动修改了 {string.Join("、", edits)}（不是你的操作）。和这些单元格相关的数据请重新读取，不要用之前读到的旧值覆盖。";
+            result.Warning = string.IsNullOrEmpty(result.Warning) ? notice : result.Warning + " " + notice;
+        }
+
+        /// <summary>
+        /// 会改单元格内容、且目标区域明确的工具 → 目标区域。格式类（不丢数据）、结构类
+        /// （插删行列由确认抽屉把关）、代码类（目标不可知）不检查。地址解析不了（命名区域等）
+        /// 也不检查，交给工具本身。
+        /// </summary>
+        internal bool TryResolveWriteTarget(string toolName, Dictionary<string, object> args, out CellRect rect)
+        {
+            rect = default;
+            var sheet = _excel.GetActiveSheetName();
+            string address;
+            switch (toolName)
+            {
+                case "write_value":
+                case "write_formula":
+                case "merge_cells":
+                    address = GetArg<string>(args, "address");
+                    return CellRect.TryParse(address, sheet, out rect);
+                case "clear_range":
+                    if (string.Equals(GetArg<string>(args, "clear_type"), "formats", StringComparison.OrdinalIgnoreCase))
+                        return false;
+                    return CellRect.TryParse(GetArg<string>(args, "address"), sheet, out rect);
+                case "write_range":
+                    if (!CellRect.TryParse(GetArg<string>(args, "address"), sheet, out rect)) return false;
+                    var values = Extract2DArray(args, "values");
+                    var rows = values?.Length ?? 1;
+                    var cols = values == null || values.Length == 0 ? 1 : values.Max(r => r?.Length ?? 0);
+                    rect = rect.Resize(rows, cols);
+                    return true;
+                case "fill_formula_down":
+                    if (!CellRect.TryParse(GetArg<string>(args, "from_address"), sheet, out rect)) return false;
+                    int count;
+                    try { count = GetArg<int>(args, "row_count"); } catch { count = 1; }
+                    rect = rect.Resize(Math.Max(1, count) + 1, rect.Col2 - rect.Col1 + 1);
+                    return true;
+                case "copy_range":
+                    if (!CellRect.TryParse(GetArg<string>(args, "source_address"), sheet, out var source)) return false;
+                    if (!CellRect.TryParse(GetArg<string>(args, "dest_address"), sheet, out rect)) return false;
+                    rect = rect.Resize(source.Row2 - source.Row1 + 1, source.Col2 - source.Col1 + 1);
+                    return true;
+                case "replace_formula":
+                case "clean_data":
+                case "sort_data":
+                case "delete_blank_rows":
+                case "split_text_to_columns":
+                case "fill_blank_cells":
+                case "remove_special_chars":
+                case "clean_amount":
+                case "merge_columns":
+                case "rename_columns":
+                case "collapse_spaces":
+                    return CellRect.TryParse(GetArg<string>(args, "range_address"), sheet, out rect);
+                default:
+                    return false;
+            }
         }
 
         private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId)

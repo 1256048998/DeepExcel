@@ -239,6 +239,12 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         public string SemanticIndex { get; set; }
 
+        /// <summary>
+        /// 两轮之间用户手动改过的区域（A1 地址），由 MessageBridge 在 BuildContext 前
+        /// 从 ReadLedger 取出。模型据此知道哪些之前读到的内容已经过期。
+        /// </summary>
+        public List<string> UserEdits { get; set; }
+
         public object BuildContext(IExcelActions excelActions)
         {
             try
@@ -311,6 +317,7 @@ namespace DeepExcel.AddIn.Bridge
                     // the model skip the read_range round-trips it currently
                     // needs just to work out what the sheet contains.
                     structure = SemanticIndex,
+                    userEdits = UserEdits,
                     timestamp = DateTime.Now.ToString("o"),
                 };
             }
