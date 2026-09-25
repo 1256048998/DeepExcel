@@ -29,6 +29,8 @@ namespace DeepExcel.Repair
 
         /// <summary>Excel loaded the add-in but its constructor threw.</summary>
         public const string LastLoadFailed = "E-LOAD-001";
+        // E-LOAD-002/003, E-SIDE-*, E-ENG-* are taken by the add-in's startup
+        // telemetry (DeepExcel.AddIn.Account.StartupErrorCodes). Do not reuse.
 
         public const string DisabledItems = "E-RES-001";
         public const string CrashingAddinList = "E-RES-002";

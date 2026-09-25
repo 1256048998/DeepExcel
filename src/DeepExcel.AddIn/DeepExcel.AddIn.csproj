@@ -83,6 +83,7 @@
     <Compile Include="Diagnostics\Logger.cs" />
     <Compile Include="Executor\ExcelTarget.cs" />
     <Compile Include="Executor\ExecutionResult.cs" />
+    <Compile Include="Account\StartupErrorCodes.cs" />
     <Compile Include="Executor\ProcessJob.cs" />
     <Compile Include="Executor\PythonExecutor.cs" />
     <Compile Include="Executor\SnapshotManager.cs" />

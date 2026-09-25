@@ -15,10 +15,12 @@ namespace DeepExcel.Tests
         private static TelemetryReporter NewReporter()
         {
             // A signed-out session: nothing can be sent, which is the state that
-            // exercises buffering.
-            return new TelemetryReporter(new SessionManager(new TokenVault(
-                System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeepExcelTelemetryTests",
-                    Guid.NewGuid().ToString("N")))));
+            // exercises buffering. Each test gets its own outbox so nothing lands
+            // in the real %APPDATA% one.
+            var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DeepExcelTelemetryTests",
+                Guid.NewGuid().ToString("N"));
+            return new TelemetryReporter(new SessionManager(new TokenVault(root)),
+                outboxPath: System.IO.Path.Combine(root, "outbox", "pending.jsonl"));
         }
 
         [Fact]

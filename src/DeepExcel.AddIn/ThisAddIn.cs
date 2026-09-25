@@ -139,6 +139,7 @@ namespace DeepExcel.AddIn
                 Log("OnConnection FAILED: " + ex.GetType().Name + " - " + ex.Message);
                 Log("Stack: " + ex.StackTrace);
                 WriteLoadFailureBreadcrumb(ex);
+                RecordStartupError(DeepExcel.AddIn.Account.StartupErrorCodes.LoadFailed);
                 throw;
             }
         }
@@ -171,6 +172,23 @@ namespace DeepExcel.AddIn
                     DateTime.Now.ToString("u") + "\t" +
                     ex.GetType().Name + "\t" +
                     (ex.Message ?? "").Replace("\r", " ").Replace("\n", " "));
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 启动失败写进遥测发件箱（同步落盘）：这时往往还没有账号会话、进程也可能马上被 Excel 丢掉，
+        /// 下次正常启动时由 TelemetryReporter 补发。只有诊断码和版本号，不带异常文字。
+        /// </summary>
+        private static void RecordStartupError(string diagnosticCode)
+        {
+            try
+            {
+                DeepExcel.AddIn.Account.TelemetryReporter.AppendToOutbox("startup_error", new Dictionary<string, object>
+                {
+                    ["diagnostic_code"] = diagnosticCode,
+                    ["client_version"] = typeof(ThisAddIn).Assembly.GetName().Version.ToString(),
+                });
             }
             catch { }
         }
@@ -579,6 +597,7 @@ namespace DeepExcel.AddIn
             catch (Exception ex)
             {
                 Log("MessageBridge init FAILED: " + ex.GetType().Name + " - " + ex.Message);
+                RecordStartupError(DeepExcel.AddIn.Account.StartupErrorCodes.BridgeInitFailed);
                 Log("Stack: " + ex.StackTrace);
             }
         }
@@ -859,6 +878,7 @@ namespace DeepExcel.AddIn
             catch (Exception ex)
             {
                 Log("InitializeWebView FAILED: " + ex.GetType().Name + " - " + ex.Message);
+                RecordStartupError(DeepExcel.AddIn.Account.StartupErrorCodes.WebViewInitFailed);
                 Log("Stack: " + ex.StackTrace);
             }
         }
@@ -890,6 +910,7 @@ namespace DeepExcel.AddIn
             catch (Exception ex)
             {
                 Log("InitializeWebViewForPane FAILED: " + ex.GetType().Name + " - " + ex.Message);
+                RecordStartupError(DeepExcel.AddIn.Account.StartupErrorCodes.WebViewInitFailed);
                 Log("Stack: " + ex.StackTrace);
             }
         }

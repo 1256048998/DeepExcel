@@ -260,6 +260,30 @@ namespace DeepExcel.AddIn.Bridge
         }
 
         /// <summary>
+        /// Something stopped the assistant from working at all: the sidecar
+        /// died, or its engine self-check failed. Recorded synchronously into
+        /// the outbox, so it survives Excel going down right after. Only the
+        /// code and the version leave the machine.
+        /// </summary>
+        internal void ReportStartupError(string diagnosticCode)
+        {
+            var reporter = Telemetry;
+            if (reporter == null || string.IsNullOrEmpty(diagnosticCode))
+            {
+                return;
+            }
+            try
+            {
+                reporter.Record("startup_error", new Dictionary<string, object>
+                {
+                    ["diagnostic_code"] = diagnosticCode,
+                    ["client_version"] = typeof(MessageBridge).Assembly.GetName().Version.ToString()
+                });
+            }
+            catch (Exception) { }
+        }
+
+        /// <summary>
         /// Maps a message onto a small fixed vocabulary.
         ///
         /// Sending the message itself would defeat the privacy guarantee, and a

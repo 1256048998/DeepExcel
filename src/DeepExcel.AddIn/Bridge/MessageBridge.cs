@@ -1812,6 +1812,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             var session = FindSessionBySidecar(sender);
             if (session == null) return;
+            ReportEngineFailureOnce(sender, uiEvent);
             if (uiEvent.TryGetProperty("kind", out var kindEl) && kindEl.GetString() == "run_summary" &&
                 uiEvent.TryGetProperty("outcome", out var outcomeEl))
             {
@@ -1926,8 +1927,31 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        /// <summary>引擎自检失败的侧车每条消息都回同一个诊断：每个侧车进程只记一次</summary>
+        private readonly System.Runtime.CompilerServices.ConditionalWeakTable<PythonSidecar, object> _engineFailureReported =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<PythonSidecar, object>();
+
+        private void ReportEngineFailureOnce(PythonSidecar sender, JsonElement uiEvent)
+        {
+            try
+            {
+                if (!uiEvent.TryGetProperty("kind", out var kind) || kind.GetString() != "error") return;
+                if (!uiEvent.TryGetProperty("code", out var codeEl) || codeEl.ValueKind != JsonValueKind.String) return;
+                if (!Account.StartupErrorCodes.Engine.TryGetValue(codeEl.GetString(), out var diagnostic)) return;
+                if (_engineFailureReported.TryGetValue(sender, out _)) return;
+                _engineFailureReported.Add(sender, diagnostic);
+                ReportStartupError(diagnostic);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("MessageBridge", "engine failure telemetry failed: " + ex.Message);
+            }
+        }
+
         private void OnSidecarError(PythonSidecar sender, string error)
         {
+            // PythonSidecar 只在进程意外退出时报这个（主动停止、重启不报）
+            ReportStartupError(Account.StartupErrorCodes.SidecarCrashed);
             var session = FindSessionBySidecar(sender);
             if (session != null)
             {
