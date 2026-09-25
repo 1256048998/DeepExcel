@@ -428,6 +428,23 @@ namespace DeepExcel.AddIn.Bridge
                         return HandleContinueConversation(session, msg);
                     case "delete_conversation":
                         return HandleDeleteConversation(session, msg);
+                    // ★ 工作簿记忆（侧车维护的 NOTES.md）：面板查看 / 修改 / 清除
+                    case "memory_get":
+                        return MakeResponse("memory", Collaboration.WorkbookMemoryStore.Describe(session.WorkbookKey, session.WorkbookName));
+                    case "memory_save":
+                    {
+                        string notes = null;
+                        if (msg.Payload.HasValue && msg.Payload.Value.TryGetProperty("notes", out var notesEl) &&
+                            notesEl.ValueKind == JsonValueKind.String)
+                        {
+                            notes = notesEl.GetString();
+                        }
+                        var refusal = Collaboration.WorkbookMemoryStore.Save(session.WorkbookKey, session.WorkbookName, notes);
+                        return MakeResponse("memory", Collaboration.WorkbookMemoryStore.Describe(session.WorkbookKey, session.WorkbookName, refusal));
+                    }
+                    case "memory_clear":
+                        Collaboration.WorkbookMemoryStore.Clear(session.WorkbookKey);
+                        return MakeResponse("memory", Collaboration.WorkbookMemoryStore.Describe(session.WorkbookKey, session.WorkbookName));
                     default:
                         return MakeError($"Unknown or blocked message type: {msg.Type}");
                 }

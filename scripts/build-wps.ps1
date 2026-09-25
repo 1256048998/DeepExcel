@@ -96,6 +96,8 @@ $requiredFiles = @(
     "tool-dispatcher.js",
     "wps-actions.js",
     "range-paging.js",
+    # 工作簿记忆的面板入口（与 Excel 端共用 workbooks/<hash>/NOTES.md）
+    "workbook-memory-store.js",
     "jsa-executor.js",
     # ★ 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
     "config-store.js",
@@ -159,6 +161,9 @@ if ($LASTEXITCODE -ne 0) { throw 'WPS model-service test failed' }
 
 & node (Join-Path $scriptDir 'test-wps-range-paging.js')
 if ($LASTEXITCODE -ne 0) { throw 'WPS range-paging test failed' }
+
+& node (Join-Path $scriptDir 'test-wps-memory-store.js')
+if ($LASTEXITCODE -ne 0) { throw 'WPS workbook memory store test failed' }
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green

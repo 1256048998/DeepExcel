@@ -4,6 +4,7 @@ import { sendToHost, sendToHostWithResponse, onHostMessage } from './bridge'
 import { MessageList } from './components/MessageList'
 import { InputArea, ModelOption } from './components/InputArea'
 import { HistoryPanel } from './components/HistoryPanel'
+import { MemoryPanel } from './components/MemoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
@@ -55,6 +56,7 @@ export default function App() {
   const [rewindingId, setRewindingId] = useState<string | null>(null)
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const [memoryOpen, setMemoryOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
   const [attachmentsOpen, setAttachmentsOpen] = useState(false)
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([])
@@ -653,6 +655,10 @@ export default function App() {
       icon: menuIcon(<><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></>),
     },
     {
+      key: 'memory', label: '工作簿记忆', onSelect: () => setMemoryOpen(true),
+      icon: menuIcon(<><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></>),
+    },
+    {
       key: 'attachments', label: '附件', onSelect: openAttachments, badge: attachments.length,
       icon: menuIcon(<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />),
     },
@@ -779,6 +785,11 @@ export default function App() {
       <HistoryPanel
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
+      />
+
+      <MemoryPanel
+        open={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
       />
 
       <AttachmentPanel

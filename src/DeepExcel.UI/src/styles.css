@@ -3377,3 +3377,92 @@ body {
   border-bottom-color: var(--de-warning-border);
   color: var(--de-warning);
 }
+
+/* ===== 工作簿记忆 ===== */
+.memory-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 10px 12px;
+  gap: 8px;
+}
+
+.memory-hint {
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-secondary);
+  line-height: 1.6;
+}
+
+.memory-hint code {
+  background: var(--de-bg-subtle);
+  border-radius: var(--de-radius-sm);
+  padding: 0 4px;
+}
+
+.memory-editor {
+  flex: 1;
+  min-height: 220px;
+  resize: none;
+  padding: 8px 10px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  background: var(--de-bg);
+  color: var(--de-text);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-sm);
+  line-height: 1.6;
+}
+
+.memory-editor:focus {
+  outline: none;
+  border-color: var(--de-brand);
+}
+
+.memory-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.memory-meta {
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-tertiary);
+}
+
+.memory-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.memory-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-sm);
+  background: var(--de-bg);
+  color: var(--de-text);
+  font-size: var(--de-fs-xs);
+  font-family: var(--de-font);
+  cursor: pointer;
+}
+
+.memory-btn.primary {
+  background: var(--de-brand);
+  border-color: var(--de-brand);
+  color: var(--de-on-brand);
+}
+
+.memory-btn.primary:hover:not(:disabled) {
+  background: var(--de-brand-hover);
+}
+
+.memory-btn.danger {
+  color: var(--de-danger);
+  border-color: var(--de-danger-border);
+}
+
+.memory-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

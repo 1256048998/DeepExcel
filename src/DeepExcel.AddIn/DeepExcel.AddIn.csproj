@@ -78,6 +78,7 @@
     <Compile Include="Bridge\MessageBridge.cs" />
     <Compile Include="Bridge\Messages.cs" />
     <Compile Include="Collaboration\OperationHistory.cs" />
+    <Compile Include="Collaboration\WorkbookMemoryStore.cs" />
     <Compile Include="Config\AppConfig.cs" />
     <Compile Include="Config\WebViewDataFolder.cs" />
     <Compile Include="Diagnostics\Logger.cs" />

@@ -482,6 +482,7 @@ var SESSION_MESSAGE_TYPES = [
   'list_conversations', 'get_current_messages', 'new_conversation',
   'continue_conversation', 'delete_conversation',
   'list_attachments', 'upload_attachment', 'delete_attachment',
+  'memory_get', 'memory_save', 'memory_clear',
 ]
 
 // ★ 对话历史 / 附件消息：需要会话状态，但不强制 sidecar 在跑
@@ -499,6 +500,23 @@ function _handleSessionMessage(type, payload) {
     case 'list_conversations':
       _respond('conversations', { list: session.conversation.listConversations() })
       return true
+
+    // ★ 工作簿记忆（侧车维护的 NOTES.md）：面板查看 / 修改 / 清除，文件与 Excel 端共用
+    case 'memory_get':
+    case 'memory_save':
+    case 'memory_clear': {
+      var memoryStore = require('./workbook-memory-store')
+      var identity = _readWorkbookIdentity()
+      var refusal = null
+      try {
+        if (type === 'memory_save') refusal = memoryStore.save(identity.key, identity.name, payload && payload.notes)
+        if (type === 'memory_clear') memoryStore.clear(identity.key)
+      } catch (error) {
+        refusal = '保存失败：' + String(error.message || error)
+      }
+      _respond('memory', memoryStore.describe(identity.key, identity.name, refusal))
+      return true
+    }
 
     case 'get_current_messages':
       _respond('current_messages', { messages: session.conversation.currentMessages() })

@@ -216,10 +216,23 @@ const devHost: DevHost | null = isDev && typeof window !== 'undefined'
   ? ((window as any).__deepexcelDevHost = { emit: (type: string, payload: any) => _dispatch({ type, payload }), silent: false })
   : null
 
+const mockMemory = {
+  notes: '# 工作簿记忆\n\n## 结构怪癖\n- 明细表表头在第 3 行\n\n## 用户偏好\n- 金额一律用万元\n\n## 做过的改动\n\n## 禁区\n- 汇总\n',
+  historyCount: 12,
+}
+
 function mockHostResponse(message: HostMessage) {
   const emit = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
 
   switch (message.type) {
+    case 'memory_get':
+    case 'memory_save':
+    case 'memory_clear': {
+      if (message.type === 'memory_save') mockMemory.notes = message.payload?.notes ?? ''
+      if (message.type === 'memory_clear') { mockMemory.notes = ''; mockMemory.historyCount = 0 }
+      emit('memory', { available: true, workbookName: '2026 经营分析.xlsx', error: null, ...mockMemory })
+      return
+    }
     case 'account_status':
       // 没有这个 mock 的时候，App 启动时那次 account_status 会一直等到超时，
       // 而 accountStatus 停在 null 就意味着 setupNeeded 永远不成立——dev 下
