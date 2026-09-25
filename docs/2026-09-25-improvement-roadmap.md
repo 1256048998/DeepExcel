@@ -50,14 +50,14 @@ DeepExcel 本质上是「工作簿里的 Claude Code」。Claude Code 在代码�
 |---|---|---|---|---|
 | F1 | 回滚会不保存就关掉**当前活动**工作簿，再用快照覆盖磁盘原文件；用户中途切换过工作簿时会关错文件【确认】 | `Executor/SnapshotManager.cs` 回滚段 | 打开快照为隐藏工作簿，按受影响的表替换回会话绑定的目标工作簿；恢复前先对当前状态再存一份；不改写磁盘原文件 | 已完成（2026-09-24）：两边都有的表原地恢复，其他表对它的引用不断；目标工作簿没打开就拒绝；真 Excel 集成测试 10 项（`DEEPEXCEL_EXCEL_TESTS=1`） |
 | F2 | 免费额度按模型调用次数计（每成功调用一次 `tasks_used += 1`），一个真实任务要调十几次【确认】 | `server/app/proxy/router.py` 记账段 | 每个用户任务生成 `task_id` 经请求头传给代理；服务端按 task_id 去重计数，并设单任务上限；老客户端不带头时兼容旧逻辑 | 托管模式对外收费前必须完成 |
-| F3 | WebView2 数据目录按进程号新建、从不清理（开发机已 162 个、约 3.1 GB）【确认】 | `ThisAddIn.cs::InitializeWebView` | 固定共享目录；创建失败才回退到按 pid，并在启动时清理死 pid 目录；发版做一次性清理 | 待做 |
+| F3 | WebView2 数据目录按进程号新建、从不清理（开发机已 162 个、约 3.1 GB）【确认】 | `ThisAddIn.cs::InitializeWebView` | 固定共享目录；创建失败才回退到按 pid，并在启动时清理死 pid 目录；发版做一次性清理 | 已完成（2026-09-25，c8e5bd9）：固定共享数据目录，创建失败才按进程号回退；启动时清理旧的按进程目录 |
 | F4 | `auto_analyze` 在 sidecar 注册了，C# 侧没有实现，调用必败【确认】；`echo` / `quick_summary` 等同类 | `excel_tools.py` | 删除或实现；system prompt 的工具清单与实际注册对齐 | 已完成（2026-09-24）：删除 `auto_analyze`/`echo`/`quick_summary`/`create_plan`/`update_plan`；`<available-tools>` 与注册表一致（去掉不存在的 `remove_duplicates`，补上 20 个漏列的工具），均有守卫测试 |
 | F5 | 写入类工具不自动备份，依赖模型记得调 `create_snapshot` | `Sidecar/ToolDispatcher.cs` | 每个用户回合首次写入前统一备份，**备份失败则不执行** | 已完成（2026-09-24）：未列入只读白名单的工具一律先备份；活动工作簿不是会话绑定的那本时也拒绝写入；结果带 `backup_snapshot_id` |
 | F6 | `execute_python` 碰不到工作簿，但失败会触发 F1 那种回滚 | `excel_tools.py`、`PythonExecutor.cs` | 失败不回滚，或暂时从模型可见工具中下线 | 已完成（2026-09-24）：不再建快照、失败不回滚，描述改为「纯计算、碰不到工作簿」 |
-| F7 | WPS 只实现 27 个工具，模型能看到全部 | `sidecar.py` 注册处 | 按宿主注册工具 | 待做 |
-| F8 | `_ResponseCache` 在工作簿变化后仍返回旧答案 | `sidecar.py` | 删掉，或把选区与结构摘要哈希纳入缓存键 | 待做 |
-| F9 | 停止只取消读循环，没有 interrupt + 排空；下一问可能吃到上一问的残留结果【推断】 | `sidecar.py` run_agent_loop | interrupt → 限时读到 ResultMessage → 超时 disconnect，下一问 resume；「本轮已终结」标志丢弃残留 | 待做 |
-| F10 | 上下文压缩事件在 Excel、WPS 两端都被丢弃 | `PythonSidecar.cs`、`sidecar-host.js` | 随事件信封一起修 | 待做 |
+| F7 | WPS 只实现 27 个工具，模型能看到全部 | `sidecar.py` 注册处 | 按宿主注册工具 | 已完成（2026-09-25，b50b7b5）：WPS 只注册它真能执行的工具 |
+| F8 | `_ResponseCache` 在工作簿变化后仍返回旧答案 | `sidecar.py` | 删掉，或把选区与结构摘要哈希纳入缓存键 | 已完成（2026-09-25，b50b7b5）：删掉回答缓存 |
+| F9 | 停止只取消读循环，没有 interrupt + 排空；下一问可能吃到上一问的残留结果【推断】 | `sidecar.py` run_agent_loop | interrupt → 限时读到 ResultMessage → 超时 disconnect，下一问 resume；「本轮已终结」标志丢弃残留 | 已完成（2026-09-25，a469dd4）：interrupt + 限时排空，残留输出读到上一轮为止；任务进行中可插话 |
+| F10 | 上下文压缩事件在 Excel、WPS 两端都被丢弃 | `PythonSidecar.cs`、`sidecar-host.js` | 随事件信封一起修 | 已完成（2026-09-25，e720d3f）：随 ui_event 信封一起修，压缩事件两端都显示 |
 | F11 | xlsm 工作簿快照被存成 `.xlsx`【确认：真 Excel 打开旧式快照报「文件格式或扩展名无效」】 | `SnapshotManager.cs` | 按源扩展名和格式保存 | 已完成（2026-09-24） |
 | F12 | PreToolUse hook 出错时放行 | `sidecar.py` | 对高风险工具（VBA / JSA / send_keys）改为拒绝并记日志 | 已完成（2026-09-24）：高风险工具在钩子出错时拒绝 |
 | F13 | 钩子对低风险工具返回 `continue_`，而手写的 `allowed_tools` 漏了 20 个工具：图表标题/配色/数据标签/组合图/导出、透视刷新/分组/显示方式/总计/切片器、高亮重复共 11 个低风险工具**每次调用都被 CLI 拒绝**【确认：发布包同款 SDK 0.2.109 实测】 | `sidecar.py` | 低风险工具显式 allow；`allowed_tools` 从注册表生成；按宿主注册（Excel 不再注册 `execute_jsa`） | 已完成（2026-09-24） |
