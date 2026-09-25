@@ -1,0 +1,144 @@
+/*
+ * 设计 token：面板里所有颜色、字号、间距、圆角、阴影都从这里取。
+ * styles.css 只引用语义 token（--de-*），不写死颜色；改主题、做暗色、适配
+ * Windows 高对比度都只动这一个文件。
+ *
+ * 基准：
+ *   - 品牌蓝 #1A66D9，白底对比 5.32:1
+ *   - 冷灰中性色；所有承载信息的文字对比度 ≥ 4.5:1（tertiary 也是）
+ *   - 字号 6 档：11 / 12 / 13 / 14 / 16 / 18
+ *   - 间距 4px 网格；圆角 4 / 6 / 8 / 12 / pill
+ *   - 阴影一律和真实 border 搭配，不单靠阴影分层
+ */
+
+:root {
+  /* 品牌 */
+  --de-brand: #1a66d9;
+  --de-brand-hover: #1552b0;
+  --de-brand-soft: #edf3fd;
+  --de-brand-border: #bcd3f6;
+  --de-on-brand: #ffffff;
+  --de-on-brand-muted: #d6e4fb;
+
+  /* 中性（冷灰） */
+  --de-bg: #ffffff;
+  --de-bg-subtle: #f6f7f9;
+  --de-bg-muted: #eef0f3;
+  --de-border: #e2e5ea;
+  --de-border-strong: #c9ced6;
+  --de-text: #1b1f24;
+  --de-text-secondary: #555e6b;   /* 白底 6.5:1 */
+  --de-text-tertiary: #626b7a;    /* 白底 5.4:1，muted 底 4.7:1 */
+
+  /* 语义色：文字 / 实底 / 浅底 / 边框 */
+  --de-success: #047857;
+  --de-success-solid: #16a34a;
+  --de-success-soft: #ecfdf5;
+  --de-success-border: #a7f3d0;
+
+  --de-warning: #b45309;
+  --de-warning-solid: #d97706;
+  --de-warning-soft: #fff7ed;
+  --de-warning-border: #f9c77a;
+
+  --de-danger: #b91c1c;
+  --de-danger-solid: #d93025;
+  --de-danger-solid-hover: #b3261e;
+  --de-danger-soft: #fef2f2;
+  --de-danger-border: #fecaca;
+
+  /* 代码块（深色底，暗色主题下也保持） */
+  --de-code-bg: #1e1e2e;
+  --de-code-border: #2a2a3a;
+  --de-code-text: #cdd6f4;
+  --de-code-muted: #8b9bd9;
+
+  /* 字号 6 档 */
+  --de-fs-xs: 11px;
+  --de-fs-sm: 12px;
+  --de-fs-md: 13px;
+  --de-fs-base: 14px;
+  --de-fs-lg: 16px;
+  --de-fs-xl: 18px;
+
+  /* 间距（4px 网格） */
+  --de-space-1: 4px;
+  --de-space-2: 8px;
+  --de-space-3: 12px;
+  --de-space-4: 16px;
+  --de-space-5: 20px;
+  --de-space-6: 24px;
+
+  /* 圆角 */
+  --de-radius-sm: 4px;
+  --de-radius-md: 6px;
+  --de-radius-lg: 8px;
+  --de-radius-xl: 12px;
+  --de-radius-pill: 999px;
+
+  /* 阴影（配合 border 使用） */
+  --de-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --de-shadow-md: 0 4px 12px rgba(16, 24, 40, 0.1);
+  --de-shadow-lg: 0 8px 24px rgba(16, 24, 40, 0.16);
+  --de-focus-ring: 0 0 0 2px color-mix(in srgb, var(--de-brand) 35%, transparent);
+
+  --de-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  --de-font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+
+  color-scheme: light;
+}
+
+/*
+ * 暗色（预留）：跟随 Excel / WPS 深色主题时在 <html> 上设 data-theme="dark"。
+ * 只换 token，组件样式不用改。
+ */
+:root[data-theme='dark'] {
+  --de-brand: #5b9bf0;
+  --de-brand-hover: #7cb0f5;
+  --de-brand-soft: #1b2a40;
+  --de-brand-border: #2c4870;
+  --de-on-brand: #0d1117;
+  --de-on-brand-muted: #1b2a40;
+
+  --de-bg: #17191c;
+  --de-bg-subtle: #1f2226;
+  --de-bg-muted: #272b30;
+  --de-border: #30353c;
+  --de-border-strong: #454b54;
+  --de-text: #e6e8eb;
+  --de-text-secondary: #b3b9c2;
+  --de-text-tertiary: #969ea9;
+
+  --de-success: #4ade80;
+  --de-success-solid: #22c55e;
+  --de-success-soft: #13261b;
+  --de-success-border: #1f5134;
+  --de-warning: #fbbf24;
+  --de-warning-solid: #f59e0b;
+  --de-warning-soft: #2a1f0e;
+  --de-warning-border: #5c4318;
+  --de-danger: #f87171;
+  --de-danger-solid: #ef4444;
+  --de-danger-solid-hover: #dc2626;
+  --de-danger-soft: #2a1414;
+  --de-danger-border: #5c2323;
+
+  color-scheme: dark;
+}
+
+/*
+ * Windows 高对比度：系统会强制替换颜色，这里只保证靠颜色区分的状态仍有边框 / 轮廓。
+ */
+@media (forced-colors: active) {
+  button,
+  .message,
+  .tool-step-result.error,
+  .tool-step-result.check-failed {
+    border: 1px solid CanvasText;
+  }
+
+  :focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+}

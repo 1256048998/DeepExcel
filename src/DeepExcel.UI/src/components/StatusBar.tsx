@@ -11,9 +11,9 @@ const STATUS_TEXT: Record<ConnectionStatus, string> = {
 }
 
 const STATUS_COLOR: Record<ConnectionStatus, string> = {
-  connecting: '#f59e0b',
-  connected: '#10b981',
-  disconnected: '#ef4444'
+  connecting: 'var(--de-warning-solid)',
+  connected: 'var(--de-success-solid)',
+  disconnected: 'var(--de-danger-solid)'
 }
 
 export function StatusBar({ status }: Props) {
