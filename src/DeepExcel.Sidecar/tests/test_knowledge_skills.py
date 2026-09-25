@@ -7,7 +7,9 @@ import pytest
 import knowledge_skills
 from excel_tools import register_all_tools
 
-BUNDLED = ("delivery-quality", "cn-data-cleaning", "cn-formula-writing", "cn-financial-reconciliation")
+BUNDLED = ("delivery-quality", "cn-data-cleaning", "cn-formula-writing", "cn-financial-reconciliation",
+           "cn-payroll-tax", "cn-attendance-roster", "sales-reporting", "ar-aging-reconciliation",
+           "vba-writing-debugging", "wps-jsa")
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +45,20 @@ def test_index_lists_every_skill_with_description():
     assert index.startswith("\n<knowledge-skills>") and index.endswith("</knowledge-skills>")
     for name in BUNDLED:
         assert f"- {name}（" in index
+
+
+def test_index_lists_only_skills_for_this_host():
+    excel, wps = knowledge_skills.index_prompt(host="excel"), knowledge_skills.index_prompt(host="wps")
+    assert "- vba-writing-debugging（" in excel and "- wps-jsa（" not in excel
+    assert "- wps-jsa（" in wps and "- vba-writing-debugging（" not in wps
+    # 没声明 hosts 的两边都有：WPS 没注册清洗工具，但清洗知识照样用得上
+    assert "- cn-data-cleaning（" in excel and "- cn-data-cleaning（" in wps
+
+
+def test_index_stays_small():
+    # 索引常驻 system prompt，正文按需读；技能多了以后索引本身也不能膨胀
+    for host in ("excel", "wps"):
+        assert len(knowledge_skills.index_prompt(host=host)) < 2500
 
 
 def test_index_is_empty_without_skills():

@@ -42,6 +42,10 @@ class Skill:
     directory: Path
     body: str
     files: list[str] = field(default_factory=list)
+    # 这份知识讲的是哪些工具（frontmatter 的 tools:）；也用于遥测改写「用户实际遇到的报错」
+    tools: list[str] = field(default_factory=list)
+    # 只适用于哪些宿主（frontmatter 的 hosts:），空表示都适用
+    hosts: list[str] = field(default_factory=list)
 
 
 def _parse(directory: Path) -> Skill | None:
@@ -66,8 +70,12 @@ def _parse(directory: Path) -> Skill | None:
     except ValueError:
         version = 1
     files = sorted(p.name for p in directory.glob("*.md") if p.name != "SKILL.md" and _SAFE_FILE.match(p.name))
+    def listed(key):
+        return [t.strip() for t in (meta.get(key) or "").split(",") if t.strip()]
+
     return Skill(name=name, title=meta.get("title") or name, description=meta["description"],
-                 version=version, directory=directory, body=m.group("body").strip(), files=files)
+                 version=version, directory=directory, body=m.group("body").strip(), files=files,
+                 tools=listed("tools"), hosts=listed("hosts"))
 
 
 def _scan(root: Path) -> dict[str, Skill]:
@@ -92,8 +100,13 @@ def catalog() -> dict[str, Skill]:
     return skills
 
 
-def index_prompt(skills: dict[str, Skill] | None = None) -> str:
+def index_prompt(skills: dict[str, Skill] | None = None, host: str | None = None) -> str:
+    """host：只列适用于这个宿主的技能（frontmatter hosts: excel / wps；不写就是两边都适用）。
+    WPS 会话里不列 VBA 技能、Excel 会话里不列 JSA 技能，省得模型去读用不上的知识。
+    不按 tools: 过滤——WPS 没注册清洗工具，但中文数据清洗的知识照样用得上。"""
     skills = catalog() if skills is None else skills
+    if host is not None:
+        skills = {name: s for name, s in skills.items() if not s.hosts or host in s.hosts}
     if not skills:
         return ""
     lines = [

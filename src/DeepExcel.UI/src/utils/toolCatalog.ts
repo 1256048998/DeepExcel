@@ -54,6 +54,12 @@ const SKILL_TITLES: Record<string, string> = {
   'cn-data-cleaning': '中文数据清洗',
   'cn-formula-writing': '中文用户的公式写入',
   'cn-financial-reconciliation': '财务报表勾稽核对',
+  'cn-payroll-tax': '工资表与个税',
+  'cn-attendance-roster': '考勤与花名册',
+  'sales-reporting': '销售报表',
+  'ar-aging-reconciliation': '应收账龄与对账',
+  'vba-writing-debugging': 'VBA 编写与调试',
+  'wps-jsa': 'WPS JSA 宏',
 }
 
 export const TOOL_LABELS: Record<string, Label> = {
