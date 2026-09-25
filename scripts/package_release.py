@@ -109,10 +109,18 @@ WPS_ITEMS = [
     # 对话历史 + 附件
     "conversation-store.js",
     "attachment-store.js",
-    "sidecar",
-    "web",
     "images",
 ]
+
+# WPS 端的 sidecar/ 与 web/ 不是源码，而是 Excel 端同名产物的副本。以前打包直接从
+# src/DeepExcel.Wps/ 下取——那两个目录被 gitignore，是 build-wps.ps1 某次运行留下的
+# 旧拷贝。2026-09-25 检查时，那份 sidecar 停在 09-13：缺 tools=[] 的纵深防御 hook、
+# MaxTurns、UTF-8 流修复，发版就会把 WPS 用户带回三个安全修复之前。
+# 现在从刚组装好的 Excel 载荷里复制，两个宿主拿到的侧车和面板逐字节相同。
+WPS_DERIVED_FROM_EXCEL = {
+    "sidecar": "sidecar",
+    "web": "WebViewAssets",
+}
 
 WPS_REQUIRED_FILES = [
     "main.js",
@@ -194,6 +202,22 @@ def copy_item(source_root, item, destination_root):
     else:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def copy_derived_wps_items(excel_payload, wps_payload):
+    """WPS 的 sidecar/、web/ 一律取自 Excel 载荷，见 WPS_DERIVED_FROM_EXCEL。"""
+    for wps_name, excel_name in WPS_DERIVED_FROM_EXCEL.items():
+        source = os.path.join(excel_payload, excel_name)
+        if not os.path.isdir(source):
+            fail("Excel payload is missing %s, needed for WPS %s/" % (excel_name, wps_name))
+        destination = os.path.join(wps_payload, wps_name)
+        if os.path.exists(destination):
+            shutil.rmtree(destination)
+        shutil.copytree(
+            source,
+            destination,
+            ignore=shutil.ignore_patterns("__pycache__", "tests", "*.pyc", "*.pyo"),
+        )
 
 
 def read_assembly_version(dll_path):
@@ -460,6 +484,7 @@ def assemble_payload(version):
         copy_item(BIN_RELEASE, item, excel_payload)
     for item in WPS_ITEMS:
         copy_item(WPS_SOURCE, item, wps_payload)
+    copy_derived_wps_items(excel_payload, wps_payload)
 
     for relative_path in WPS_REQUIRED_FILES:
         packaged_path = os.path.join(wps_payload, relative_path)

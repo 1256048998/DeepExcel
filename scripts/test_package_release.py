@@ -251,7 +251,6 @@ def test_every_wps_source_file_is_packaged(module):
     ghosts = sorted(
         name for name in packaged
         if not os.path.exists(os.path.join(wps_root, name.replace("/", os.sep)))
-        and name not in ("web", "sidecar")
     )
     check("WPS_ITEMS lists nothing that no longer exists", not ghosts,
           "stale entries: %s" % ", ".join(ghosts) if ghosts else "")
@@ -263,6 +262,53 @@ def test_every_wps_source_file_is_packaged(module):
     check("the add-in manifest is a required file",
           "jsplugins.xml" in module.WPS_REQUIRED_FILES,
           "without it a missing manifest becomes a silent user-facing failure")
+
+
+def test_wps_sidecar_and_web_come_from_excel_payload(module):
+    """WPS 的 sidecar/ 与 web/ 必须取自 Excel 载荷，不能再从 src/DeepExcel.Wps 取。
+
+    那两个目录被 gitignore，是开发机上某次 build-wps.ps1 的旧产物。2026-09-25
+    发现那份 sidecar 比源码落后三个安全修复，而打包脚本正是从那里取的。
+    """
+    for name in module.WPS_DERIVED_FROM_EXCEL:
+        check("WPS_ITEMS does not package %s/ from the WPS tree" % name,
+              name not in module.WPS_ITEMS,
+              "src/DeepExcel.Wps/%s is a stale build output" % name)
+    for excel_name in module.WPS_DERIVED_FROM_EXCEL.values():
+        check("Excel payload ships %s for WPS to reuse" % excel_name,
+              excel_name in module.EXCEL_ITEMS)
+
+    work = tempfile.mkdtemp(prefix="wps-derived-")
+    try:
+        excel_payload = os.path.join(work, "Excel")
+        wps_payload = os.path.join(work, "Wps")
+        os.makedirs(os.path.join(excel_payload, "sidecar", "tests"))
+        os.makedirs(os.path.join(excel_payload, "sidecar", "__pycache__"))
+        os.makedirs(os.path.join(excel_payload, "WebViewAssets", "assets"))
+        os.makedirs(wps_payload)
+        with open(os.path.join(excel_payload, "sidecar", "sidecar.py"), "w") as f:
+            f.write("CURRENT = True\n")
+        with open(os.path.join(excel_payload, "sidecar", "tests", "test_x.py"), "w") as f:
+            f.write("")
+        with open(os.path.join(excel_payload, "WebViewAssets", "index.html"), "w") as f:
+            f.write("<html></html>")
+        # 模拟一份残留在目标里的旧拷贝：必须被整体替换，不能与新文件混在一起
+        os.makedirs(os.path.join(wps_payload, "sidecar"))
+        with open(os.path.join(wps_payload, "sidecar", "stale.py"), "w") as f:
+            f.write("STALE = True\n")
+
+        module.copy_derived_wps_items(excel_payload, wps_payload)
+
+        with open(os.path.join(wps_payload, "sidecar", "sidecar.py")) as f:
+            check("WPS sidecar is the Excel payload copy", "CURRENT" in f.read())
+        check("stale WPS sidecar files are removed",
+              not os.path.exists(os.path.join(wps_payload, "sidecar", "stale.py")))
+        check("sidecar tests are not shipped to WPS",
+              not os.path.exists(os.path.join(wps_payload, "sidecar", "tests")))
+        check("WPS web/ comes from Excel WebViewAssets",
+              os.path.isfile(os.path.join(wps_payload, "web", "index.html")))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def test_release_doc_covers_every_build_step(module):
@@ -467,6 +513,7 @@ def main():
     test_signing_rejects_self_signed_sources(module)
     test_updater_is_packaged(module)
     test_every_wps_source_file_is_packaged(module)
+    test_wps_sidecar_and_web_come_from_excel_payload(module)
     test_release_doc_covers_every_build_step(module)
     test_update_manifest_guards(module)
 

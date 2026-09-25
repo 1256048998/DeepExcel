@@ -70,7 +70,16 @@ if (Test-Path $sidecarSrc) {
         Remove-Item -Path $sidecarDest -Recurse -Force
     }
     New-Item -Path $sidecarDest -ItemType Directory -Force | Out-Null
-    Copy-Item -Path (Join-Path $sidecarSrc "*.py") -Destination $sidecarDest -Force
+    # 与 _compile_only.ps1 一致：整棵侧车源码树（含子包），排除测试与缓存
+    Get-ChildItem -LiteralPath $sidecarSrc -Force | Where-Object {
+        $_.Name -notin @('tests', '__pycache__', '.pytest_cache') -and
+        ($_.PSIsContainer -or $_.Extension -in @('.py', '.md', '.json'))
+    } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $sidecarDest -Recurse -Force
+    }
+    Get-ChildItem -LiteralPath $sidecarDest -Recurse -Directory -Force |
+        Where-Object { $_.Name -in @('__pycache__', 'tests', '.pytest_cache') } |
+        Remove-Item -Recurse -Force
     Write-Host "  Copied sidecar Python files to: $sidecarDest" -ForegroundColor Green
 }
 

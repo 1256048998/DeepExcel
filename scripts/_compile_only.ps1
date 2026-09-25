@@ -160,10 +160,18 @@ if (Test-Path -LiteralPath $sidecarOutput) {
     Remove-Item -LiteralPath $sidecarOutput -Recurse -Force
 }
 New-Item -ItemType Directory -Path $sidecarOutput -Force | Out-Null
-Copy-Item (Join-Path $srcSidecar 'sidecar.py') (Join-Path $outDir 'sidecar') -Force
-Copy-Item (Join-Path $srcSidecar 'ipc.py') (Join-Path $outDir 'sidecar') -Force
-Copy-Item (Join-Path $srcSidecar 'excel_tools.py') (Join-Path $outDir 'sidecar') -Force
-Copy-Item (Join-Path $srcSidecar 'system_prompt.py') (Join-Path $outDir 'sidecar') -Force
+# 整个侧车源码树都复制（顶层 .py + 子包 / 数据目录），只排除测试与缓存。
+# 以前逐个列出 4 个文件名：新增模块就会在用户机器上 ImportError，而开发机
+# 直接跑源码目录，永远发现不了。
+Get-ChildItem -LiteralPath $srcSidecar -Force | Where-Object {
+    $_.Name -notin @('tests', '__pycache__', '.pytest_cache') -and
+    ($_.PSIsContainer -or $_.Extension -in @('.py', '.md', '.json'))
+} | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $sidecarOutput -Recurse -Force
+}
+Get-ChildItem -LiteralPath $sidecarOutput -Recurse -Directory -Force |
+    Where-Object { $_.Name -in @('__pycache__', 'tests', '.pytest_cache') } |
+    Remove-Item -Recurse -Force
 Write-Host "Sidecar files copied"
 
 # ★ 复制 WebViewAssets 前端构建产物到 bin\Release
