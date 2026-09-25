@@ -50,13 +50,14 @@ body {
 .messages {
   flex: 1;
   overflow-y: auto;
-  padding: 16px;
-  background: var(--de-bg-subtle);
+  padding: var(--de-space-4) var(--de-space-3);
+  background: var(--de-bg);
 }
 
 .message {
+  position: relative;
   max-width: 85%;
-  margin-bottom: 12px;
+  margin-bottom: var(--de-space-3);
   padding: 10px 14px;
   border-radius: var(--de-radius-lg);
   word-wrap: break-word;
@@ -69,15 +70,21 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* 用户消息：浅中性色气泡靠右；助手消息：不要气泡，全宽正文（窄侧栏里每一像素都给内容） */
 .message.user {
   margin-left: auto;
-  background: var(--de-brand);
-  color: white;
+  padding: 8px 12px;
+  background: var(--de-bg-muted);
+  color: var(--de-text);
+  border-radius: var(--de-radius-xl);
+  border-bottom-right-radius: var(--de-radius-sm);
 }
 
 .message.assistant {
-  margin-right: auto;
-  background: var(--de-bg-muted);
+  max-width: 100%;
+  margin-right: 0;
+  padding: 2px 2px;
+  background: transparent;
   color: var(--de-text);
 }
 
@@ -1065,30 +1072,32 @@ body {
   min-height: 20px;
 }
 
-.role-label {
-  font-size: var(--de-fs-xs);
-  font-weight: 500;
-  color: var(--de-text-secondary);
-  opacity: 0.7;
-}
-
-/* ★ 用户消息（蓝底）上的"你"标签和复制按钮用浅色，提升对比度 */
-.message.user .role-label {
-  color: rgba(255, 255, 255, 0.9);
-  opacity: 1;
-}
-
-.message.user .copy-btn {
-  color: rgba(255, 255, 255, 0.85);
-}
-
-.message.user .copy-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
 .message.tool .message-header {
   margin-bottom: 0;
+}
+
+/* 消息操作条（复制 / 存为提示词）：悬停时浮在消息右上角，不占正文空间 */
+.message-actions {
+  position: absolute;
+  top: -12px;
+  right: 4px;
+  z-index: 1;
+  display: flex;
+  gap: 2px;
+  padding: 1px;
+  background: var(--de-bg);
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  box-shadow: var(--de-shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.message:hover .message-actions,
+.message-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 /* === 复制按钮 === */
@@ -1127,7 +1136,7 @@ body {
 
 /* 工具消息的复制按钮位置 */
 .msg-copy-btn {
-  margin-left: auto;
+  opacity: 1;
 }
 
 .tool-copy-btn {
@@ -1275,29 +1284,9 @@ body {
   accent-color: var(--de-brand);
 }
 
-/* 用户消息中的 Markdown（白色背景，不需要额外样式） */
-.message.user .message-content h1,
-.message.user .message-content h2,
-.message.user .message-content h3 {
-  color: white;
-}
-
-.message.user .message-content p,
-.message.user .message-content li,
-.message.user .message-content blockquote {
-  color: rgba(255, 255, 255, 0.95);
-}
-
-.message.user .message-content a {
-  color: var(--de-on-brand-muted);
-}
-
-.message.user .message-content pre {
-  background: rgba(0, 0, 0, 0.2);
-}
-
+/* 用户消息是浅底深字，Markdown 用默认样式即可；行内代码换成白底以便和气泡区分 */
 .message.user code.md-inline-code {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--de-bg);
 }
 
 /* === 模型配置弹窗（左右分栏） === */
@@ -2696,19 +2685,13 @@ body {
   background: transparent;
   border: 1px solid transparent;
   border-radius: var(--de-radius-sm);
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--de-text-secondary);
   cursor: pointer;
-  opacity: 0;
-  transition: all 0.15s;
-}
-
-.message.user:hover .save-prompt-btn {
-  opacity: 1;
 }
 
 .save-prompt-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.3);
+  background: var(--de-bg-muted);
+  border-color: var(--de-border);
 }
 
 /* === 压缩提示卡（autocompact 触发时显示） === */
@@ -3024,9 +3007,9 @@ body {
 }
 
 .queued-label {
-  margin-left: 6px;
+  margin-top: 2px;
   font-size: var(--de-fs-xs);
-  opacity: 0.8;
+  color: var(--de-text-tertiary);
 }
 
 .loading-status {

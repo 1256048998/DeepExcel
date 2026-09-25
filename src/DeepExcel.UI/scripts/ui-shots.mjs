@@ -83,7 +83,7 @@ const scenes = {
     emit('ui_event', ev('tool_end', { id: 'r1', name: 'read_workbook', ok: true, duration_ms: 120 }))
     const code = 'Sub BuildPivot()\n    Dim ws As Worksheet\n    Set ws = Worksheets("数据")\n    Dim pc As PivotCache\n    Set pc = ActiveWorkbook.PivotCaches.Create( _\n        SourceType:=xlDatabase, SourceData:=ws.Range("A1:F500"))\n'
     emit('ui_event', ev('tool_gen', { id: 'r2', name: 'execute_vba', chars: code.length, lines: 6, preview: code }))
-    emit('ui_event', ev('status', { text: '正在编写 VBA（已 6 行）' }))
+    emit('ui_event', ev('status', { text: '仍在等待模型响应（25 秒）…' }))
   },
 
   error: async ({ emit, send }) => {
