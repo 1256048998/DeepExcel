@@ -57,6 +57,24 @@ namespace DeepExcel.AddIn.Executor
                 };
             }
 
+            // 编译前静态检查：编译错误和死循环在 Excel 里是弹窗或整个卡死，注入前就退回给模型
+            var issues = DeepExcel.AddIn.Security.VbaStaticChecker.Check(StripCodeFence(vbaCode));
+            var blocking = issues.FindAll(i => i.Level == DeepExcel.AddIn.Security.VbaIssueLevel.Error);
+            if (blocking.Count > 0)
+            {
+                Logger.Instance.Info("VBAExecutor", $"Static check rejected the code: {blocking.Count} error(s)");
+                return new ToolResult
+                {
+                    Name = "execute_vba",
+                    Success = false,
+                    Error = $"VBA 代码有 {blocking.Count} 处问题，没有执行：\n" +
+                            DeepExcel.AddIn.Security.VbaStaticChecker.Describe(blocking),
+                    Suggestion = "按上面逐条改好后重新调用 execute_vba（行号是你给的代码里的行号）",
+                };
+            }
+            var warnings = DeepExcel.AddIn.Security.VbaStaticChecker.Describe(
+                issues.FindAll(i => i.Level == DeepExcel.AddIn.Security.VbaIssueLevel.Warning));
+
             // ★ P0-3 沙箱校验：阻止 LLM 执行 Shell / WScript.Shell / 文件系统 / 网络请求
             var sandboxError = DeepExcel.AddIn.Security.CodeSandbox.ValidateVba(procCode);
             if (sandboxError != null)
@@ -112,10 +130,25 @@ namespace DeepExcel.AddIn.Executor
                 module = vbProject.VBComponents.Add(vbext_ComponentType.vbext_ct_StdModule);
                 module.Name = moduleName;
 
-                // ★ VBA Unicode 编码转换：系统 ANSI 代码页不支持中文时，AddFromString 会把中文变 "?"
-                // 将 VBA 字符串字面量中的非 ASCII 字符自动转换为 ChrW() 调用
+                // ★ 代码页安全：AddFromString 按系统 ANSI 代码页转码，表示不了的字（英文 Windows 上的中文）
+                // 会变成 "?"。这些字符串改写成运行时拼出来的表达式（见 VbaEncoding）
                 stage = "code injection";
-                string encodedCode = EncodeVbaUnicode(procCode);
+                var encoded = VbaEncoding.Encode(procCode);
+                if (encoded.TooLong)
+                {
+                    return new ToolResult
+                    {
+                        Name = "execute_vba",
+                        Success = false,
+                        Error = "代码里的中文字符串太长，改写后超过了 VBA 单条语句的续行上限",
+                        Suggestion = "把长字符串拆成几个变量分别赋值，或直接用 write_value / write_range 写进单元格",
+                    };
+                }
+                string encodedCode = encoded.Code;
+                if (encoded.UsesHelper)
+                {
+                    encodedCode += "\r\n\r\n" + VbaEncoding.HelperFunction;
+                }
                 wrapperName = "DeepExcelInvoke" + Guid.NewGuid().ToString("N").Substring(0, 8);
                 encodedCode += "\r\n\r\n" + BuildInvocationWrapper(entryPoint, wrapperName);
                 module.CodeModule.AddFromString(encodedCode);
@@ -158,7 +191,8 @@ namespace DeepExcel.AddIn.Executor
                 {
                     Name = "execute_vba",
                     Success = true,
-                    Data = new { macro = entryPoint }
+                    Data = new { macro = entryPoint },
+                    Warning = warnings,
                 };
             }
             catch (Exception ex)
@@ -490,126 +524,6 @@ namespace DeepExcel.AddIn.Executor
                 return "已保留执行前快照；如工作簿被部分修改，可从“历史版本”手动回滚。请让 AI 根据原始 VBA 错误修正代码后重试。";
             }
             return "VBA 尚未开始执行，工作簿内容未被修改。";
-        }
-
-        /// <summary>
-        /// ★ VBA Unicode 编码转换：将 VBA 代码字符串字面量中的非 ASCII 字符转为 ChrW() 调用。
-        /// 解决系统 ANSI 代码页不支持中文（如英文 Windows cp1252）导致 AddFromString 中文变 "?" 的问题。
-        /// 转换后 VBA 代码全为 ASCII，VBA 解析器不会出错；ChrW() 在运行时返回正确 Unicode 字符。
-        /// 例如："销售数据" → ChrW(38144) & ChrW(21806) & ChrW(25968) & ChrW(25454)
-        /// </summary>
-        internal static string EncodeVbaUnicode(string code)
-        {
-            if (string.IsNullOrEmpty(code)) return code;
-
-            var result = new StringBuilder(code.Length * 2);
-            int i = 0;
-            bool inString = false;
-            var stringBuf = new StringBuilder();
-
-            while (i < code.Length)
-            {
-                char c = code[i];
-
-                if (!inString)
-                {
-                    if (c == '"')
-                    {
-                        inString = true;
-                        stringBuf.Clear();
-                        i++;
-                    }
-                    else
-                    {
-                        result.Append(c);
-                        i++;
-                    }
-                }
-                else
-                {
-                    // 在字符串内
-                    if (c == '"')
-                    {
-                        // 检查是否是转义的 ""
-                        if (i + 1 < code.Length && code[i + 1] == '"')
-                        {
-                            stringBuf.Append('"');
-                            i += 2;
-                        }
-                        else
-                        {
-                            // 字符串结束，处理收集到的内容
-                            inString = false;
-                            i++;
-                            result.Append(EncodeStringToChrW(stringBuf.ToString()));
-                        }
-                    }
-                    else
-                    {
-                        stringBuf.Append(c);
-                        i++;
-                    }
-                }
-            }
-
-            // 异常情况：代码以未闭合的字符串结尾
-            if (inString && stringBuf.Length > 0)
-            {
-                result.Append(EncodeStringToChrW(stringBuf.ToString()));
-            }
-
-            return result.ToString();
-        }
-
-        /// <summary>
-        /// 将 VBA 字符串内容转换为 ChrW() 调用表达式。
-        /// 全 ASCII 的字符串保持原样（"hello"）。
-        /// 包含非 ASCII 的字符串拆分为 ChrW() & "ascii" 形式。
-        /// </summary>
-        private static string EncodeStringToChrW(string content)
-        {
-            // 检查是否有非 ASCII 字符
-            bool hasNonAscii = false;
-            foreach (char ch in content)
-            {
-                if (ch > 127) { hasNonAscii = true; break; }
-            }
-
-            if (!hasNonAscii)
-            {
-                // 全 ASCII，保持原样
-                return "\"" + content.Replace("\"", "\"\"") + "\"";
-            }
-
-            // 包含非 ASCII，转换为 ChrW() 调用
-            var parts = new List<string>();
-            var asciiBuf = new StringBuilder();
-
-            foreach (char ch in content)
-            {
-                if (ch <= 127)
-                {
-                    asciiBuf.Append(ch);
-                }
-                else
-                {
-                    if (asciiBuf.Length > 0)
-                    {
-                        parts.Add("\"" + asciiBuf.ToString().Replace("\"", "\"\"") + "\"");
-                        asciiBuf.Clear();
-                    }
-                    parts.Add("ChrW(" + (int)ch + ")");
-                }
-            }
-            if (asciiBuf.Length > 0)
-            {
-                parts.Add("\"" + asciiBuf.ToString().Replace("\"", "\"\"") + "\"");
-            }
-
-            if (parts.Count == 0)
-                return "\"\"";
-
-            return string.Join(" & ", parts);
         }
     }
 }

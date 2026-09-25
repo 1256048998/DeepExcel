@@ -2782,6 +2782,7 @@ namespace DeepExcel.AddIn.Bridge
                 Data = result.Data,
                 Error = result.Error,
                 Suggestion = result.Suggestion,
+                Warning = result.Warning,
             };
         }
 

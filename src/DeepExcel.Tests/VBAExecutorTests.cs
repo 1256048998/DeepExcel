@@ -91,14 +91,5 @@ namespace DeepExcel.Tests
             Assert.Contains("Call Demo", wrapper);
             Assert.Contains("Err.Description", wrapper);
         }
-
-        [Fact]
-        public void EncodeVbaUnicode_PreservesChineseStringThroughChrW()
-        {
-            var code = VBAExecutor.EncodeVbaUnicode("Range(\"A1\").Value = \"销售完成\"");
-
-            Assert.DoesNotContain("销售完成", code);
-            Assert.Contains("ChrW(", code);
-        }
     }
 }

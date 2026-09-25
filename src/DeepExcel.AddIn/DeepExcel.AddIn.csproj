@@ -87,6 +87,7 @@
     <Compile Include="Executor\SnapshotManager.cs" />
     <Compile Include="Executor\SnapshotPolicy.cs" />
     <Compile Include="Executor\VBAExecutor.cs" />
+    <Compile Include="Executor\VbaEncoding.cs" />
     <Compile Include="Performance\PerformanceOptimizer.cs" />
     <Compile Include="Perception\FileSniff.cs" />
     <Compile Include="Perception\RangeAnalyzer.cs" />
@@ -98,6 +99,7 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Security\SecurityGateway.cs" />
     <Compile Include="Security\SecurityManager.cs" />
+    <Compile Include="Security\VbaStaticChecker.cs" />
     <Compile Include="Sidecar\PythonSidecar.cs" />
     <Compile Include="Sidecar\SidecarProtocol.cs" />
     <Compile Include="Sidecar\ToolDispatcher.cs" />

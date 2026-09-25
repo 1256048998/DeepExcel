@@ -26,5 +26,7 @@ namespace DeepExcel.AddIn.Executor
         public object Data { get; set; }
         public string Error { get; set; }
         public string Suggestion { get; set; }
+        /// <summary>执行成功但值得告诉模型的事（静态检查的 warning、恢复了被 VBA 改掉的应用状态、自动关掉的弹窗）</summary>
+        public string Warning { get; set; }
     }
 }
