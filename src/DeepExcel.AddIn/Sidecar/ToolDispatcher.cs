@@ -10,6 +10,8 @@ using System.Threading;
 using System.Windows.Forms;
 using DeepExcel.AddIn.Bridge;
 using DeepExcel.AddIn.Diagnostics;
+using SnapshotScope = DeepExcel.AddIn.Executor.SnapshotScope;
+using WorkbookIdentity = DeepExcel.AddIn.Executor.WorkbookIdentity;
 using DeepExcel.AddIn.Tools;
 using Microsoft.Office.Interop.Excel;
 
@@ -59,12 +61,114 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         /// <summary>
+        /// 本会话绑定的工作簿 key（由 WorkbookSession 注入，另存为后跟着变）。
+        /// 为 null 时不做绑定检查（例如没有会话的调用路径）。
+        /// </summary>
+        public Func<string> BoundWorkbookKey { get; set; }
+
+        /// <summary>本回合已建的自动备份：工作簿 key → 快照 ID。每条用户消息开始时清空。</summary>
+        private readonly Dictionary<string, string> _turnBackups =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>新的用户回合开始：下一次写入会重新备份</summary>
+        public void BeginTurn()
+        {
+            _turnBackups.Clear();
+        }
+
+        /// <summary>
         /// 同步执行工具（必须在 STA 主线程调用）
+        ///
+        /// 会改工作簿的工具（见 ToolMutationPolicy）先经过写入守卫：
+        /// 每个用户回合第一次写入前整本备份一次，之后的写入只把涉及的表记进同一份快照；
+        /// 备份失败、或活动工作簿已不是本会话绑定的那本，就不执行（fail-closed）。
+        /// 以前只有 clean_data / execute_vba 会自动备份，其余写入都依赖模型记得调 create_snapshot。
         /// </summary>
         public ToolResult Execute(string toolName, Dictionary<string, object> args)
         {
             Logger.Instance.Info("ToolDispatcher", "Execute: " + toolName + ", args keys=" + (args == null ? "null" : string.Join(",", args.Keys)));
 
+            string backupId = null;
+            if (ToolMutationPolicy.IsMutating(toolName))
+            {
+                ToolResult refusal;
+                try
+                {
+                    refusal = EnsureBackupBeforeWrite(toolName, args, out backupId);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Instance.Error("ToolDispatcher", "Write guard failed: " + toolName, ex);
+                    refusal = RefuseWrite(toolName, "修改前自动备份失败，为保护数据本次未执行（" + ex.Message + "）", null);
+                }
+                if (refusal != null) return refusal;
+            }
+
+            var result = ExecuteCore(toolName, args);
+            if (result != null && backupId != null) result.BackupSnapshotId = backupId;
+            return result;
+        }
+
+        private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId)
+        {
+            backupId = null;
+            var active = _excel.GetActiveWorkbookKey();
+            if (string.IsNullOrEmpty(active))
+            {
+                return RefuseWrite(toolName, "没有打开的工作簿，无法在修改前备份，本次未执行", null);
+            }
+
+            // 所有工具都写 ActiveWorkbook。用户中途切到别的工作簿时，继续执行就会改错文件。
+            var bound = BoundWorkbookKey?.Invoke();
+            if (!string.IsNullOrEmpty(bound) && !WorkbookIdentity.SameKey(active, bound))
+            {
+                return RefuseWrite(toolName,
+                    $"当前活动窗口已切换到另一个工作簿，而本次对话属于「{DisplayName(bound)}」。为避免改错文件，本次修改未执行。",
+                    "请告诉用户切回原工作簿后再继续，不要换用其他工具重试。");
+            }
+
+            var scope = ToolMutationPolicy.ResolveScope(toolName,
+                key => GetArg<string>(args, key),
+                () => _excel.GetActiveSheetName());
+
+            if (_turnBackups.TryGetValue(active, out var existing))
+            {
+                if (_excel.ExtendSnapshotScope(existing, scope))
+                {
+                    backupId = existing;
+                    return null;
+                }
+                // 记不下新涉及的表：回滚会漏掉它，按"没有备份"处理，重新备份一次
+                Logger.Instance.Warning("ToolDispatcher", "ExtendSnapshotScope failed, taking a fresh backup: " + existing);
+            }
+
+            var attempt = _excel.BackupWorkbook(active, $"AI 修改前自动备份（{toolName}）", scope);
+            if (attempt == null || !attempt.Success)
+            {
+                return RefuseWrite(toolName,
+                    "修改前自动备份失败，为保护数据本次未执行：" + (attempt?.Error ?? "未知原因"),
+                    "请告诉用户可能的原因（磁盘空间不足、单元格正处于编辑状态、工作簿受保护），处理后再试；不要换用其他工具绕过。");
+            }
+            _turnBackups[active] = attempt.SnapshotId;
+            backupId = attempt.SnapshotId;
+            Logger.Instance.Info("ToolDispatcher", $"Turn backup created before {toolName}: {backupId}");
+            return null;
+        }
+
+        private static ToolResult RefuseWrite(string toolName, string error, string suggestion)
+        {
+            Logger.Instance.Warning("ToolDispatcher", $"Write refused: tool={toolName}, reason={error}");
+            return new ToolResult { Name = toolName, Success = false, Error = error, Suggestion = suggestion };
+        }
+
+        private static string DisplayName(string workbookKey)
+        {
+            try { return Path.GetFileName(workbookKey); }
+            catch { return workbookKey; }
+        }
+
+        private ToolResult ExecuteCore(string toolName, Dictionary<string, object> args)
+        {
             // ★ AI Native 改造后：权限确认由 PreToolUse hook 异步处理，UI 线程不再阻塞，
             // Excel 不会误触发 WorkbookBeforeClose，不再需要 ExecutionGuard 保护标志。
             try
@@ -442,22 +546,10 @@ namespace DeepExcel.AddIn.Sidecar
                             GetArg<string>(args, "table_name"));
 
                     case "create_snapshot":
-                        var snapshotId = _excel.CreateSnapshot();
-                        return new ToolResult
-                        {
-                            Name = toolName,
-                            Success = !string.IsNullOrEmpty(snapshotId),
-                            Data = new { snapshot_id = snapshotId },
-                        };
+                        return ExecuteCreateSnapshot();
 
                     case "rollback":
-                        var sid = GetArg<string>(args, "snapshot_id");
-                        var success = _excel.Rollback(sid);
-                        return new ToolResult
-                        {
-                            Name = toolName,
-                            Success = success,
-                        };
+                        return ExecuteRollback(GetArg<string>(args, "snapshot_id"));
 
                     case "read_attachment":
                         return ExecuteReadAttachment(args);
@@ -488,6 +580,63 @@ namespace DeepExcel.AddIn.Sidecar
                     Error = ex.Message,
                 };
             }
+        }
+
+        private ToolResult ExecuteCreateSnapshot()
+        {
+            var bound = BoundWorkbookKey?.Invoke();
+            string snapshotId;
+            string error = null;
+            if (string.IsNullOrEmpty(bound))
+            {
+                snapshotId = _excel.CreateSnapshot();
+            }
+            else
+            {
+                // 备份会话绑定的那本，而不是恰好处于活动状态的那本
+                var attempt = _excel.BackupWorkbook(bound, "手动快照", SnapshotScope.Whole());
+                snapshotId = attempt?.SnapshotId;
+                error = attempt?.Error;
+            }
+            return new ToolResult
+            {
+                Name = "create_snapshot",
+                Success = !string.IsNullOrEmpty(snapshotId),
+                Data = new { snapshot_id = snapshotId },
+                Error = string.IsNullOrEmpty(snapshotId) ? (error ?? "创建快照失败") : null,
+            };
+        }
+
+        private ToolResult ExecuteRollback(string snapshotId)
+        {
+            // 模型只能恢复本会话工作簿的快照：快照 ID 来自上下文，传错了不能去改另一本
+            var bound = BoundWorkbookKey?.Invoke();
+            var meta = _excel.GetSnapshotMeta(snapshotId);
+            if (!string.IsNullOrEmpty(bound) && meta != null && !string.IsNullOrEmpty(meta.WorkbookKey)
+                && !WorkbookIdentity.SameKey(meta.WorkbookKey, bound))
+            {
+                return new ToolResult
+                {
+                    Name = "rollback",
+                    Success = false,
+                    Error = $"快照 {snapshotId} 属于另一个工作簿「{meta.WorkbookName}」，不能在本次对话中恢复。",
+                };
+            }
+
+            var r = _excel.Rollback(snapshotId);
+            return new ToolResult
+            {
+                Name = "rollback",
+                Success = r != null && r.Success,
+                Error = r == null ? "恢复失败" : r.Error,
+                Data = r == null ? null : new
+                {
+                    pre_restore_snapshot_id = r.PreRestoreSnapshotId,
+                    restored_sheets = r.RestoredSheets,
+                    removed_sheets = r.RemovedSheets,
+                    warnings = r.Warnings,
+                },
+            };
         }
 
         /// <summary>
@@ -867,20 +1016,7 @@ namespace DeepExcel.AddIn.Sidecar
             }
             try
             {
-                // ★ 数据清洗前自动创建快照，方便用户回滚
-                // clean_data 是批量修改操作，一旦出错很难手动撤销，自动建快照兜底。
-                string snapshotId = null;
-                try
-                {
-                    snapshotId = _excel.CreateSnapshot();
-                    Logger.Instance.Info("ToolDispatcher",
-                        $"clean_data auto-snapshot created: {snapshotId}");
-                }
-                catch (Exception snapEx)
-                {
-                    Logger.Instance.Warning("ToolDispatcher",
-                        "clean_data auto-snapshot failed (continuing anyway): " + snapEx.Message);
-                }
+                // 修改前的备份由 Execute 的写入守卫统一完成（备份失败不会走到这里）
 
                 var cleaner = new DataCleaner(_excelApp);
                 var results = new List<string>();
@@ -936,17 +1072,12 @@ namespace DeepExcel.AddIn.Sidecar
                     }
                 }
 
-                var toolResult = new ToolResult
+                return new ToolResult
                 {
                     Name = "clean_data",
                     Success = true,
-                    Data = new { operations = results, snapshot_id = snapshotId }
+                    Data = new { operations = results }
                 };
-                if (!string.IsNullOrEmpty(snapshotId))
-                {
-                    toolResult.Suggestion = "已自动创建历史快照，如需回滚请使用 rollback 工具。";
-                }
-                return toolResult;
             }
             catch (Exception ex)
             {

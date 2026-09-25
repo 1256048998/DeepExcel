@@ -83,6 +83,7 @@
     <Compile Include="Executor\ExecutionResult.cs" />
     <Compile Include="Executor\PythonExecutor.cs" />
     <Compile Include="Executor\SnapshotManager.cs" />
+    <Compile Include="Executor\SnapshotPolicy.cs" />
     <Compile Include="Executor\VBAExecutor.cs" />
     <Compile Include="Performance\PerformanceOptimizer.cs" />
     <Compile Include="Perception\RangeAnalyzer.cs" />
@@ -95,6 +96,7 @@
     <Compile Include="Sidecar\PythonSidecar.cs" />
     <Compile Include="Sidecar\SidecarProtocol.cs" />
     <Compile Include="Sidecar\ToolDispatcher.cs" />
+    <Compile Include="Sidecar\ToolMutationPolicy.cs" />
     <Compile Include="TaskPaneControl.cs" />
     <Compile Include="IRibbonCallbacks.cs" />
     <Compile Include="Extensions\DictionaryExtensions.cs" />

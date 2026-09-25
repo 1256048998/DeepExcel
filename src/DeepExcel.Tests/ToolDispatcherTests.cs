@@ -167,7 +167,7 @@ namespace DeepExcel.Tests
         {
             var fake = new FakeExcelActions
             {
-                RollbackFn = (id) => id == "snap-1",
+                RollbackFn = (id) => new DeepExcel.AddIn.Executor.RollbackResult { Success = id == "snap-1" },
             };
 
             var dispatcher = new ToolDispatcher(fake, null);

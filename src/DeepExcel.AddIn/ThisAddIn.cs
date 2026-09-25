@@ -1104,17 +1104,7 @@ namespace DeepExcel.AddIn
         /// </summary>
         private static string GetWorkbookKey(Workbook wb)
         {
-            try
-            {
-                string fullName = wb.FullName;
-                if (!string.IsNullOrEmpty(fullName) && (fullName.Contains("\\") || fullName.Contains("/")))
-                    return fullName;
-                return wb.Name ?? "workbook_" + wb.GetHashCode();
-            }
-            catch
-            {
-                return "workbook_" + wb.GetHashCode();
-            }
+            return DeepExcel.AddIn.Executor.WorkbookIdentity.KeyOf(wb);
         }
 
         /// <summary>

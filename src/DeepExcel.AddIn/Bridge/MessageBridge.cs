@@ -86,8 +86,8 @@ namespace DeepExcel.AddIn.Bridge
             var workbookAnalyzer = new WorkbookAnalyzer(excelApp);
             var rangeAnalyzer = new RangeAnalyzer();
             var snapshotManager = new SnapshotManager(excelApp);
-            var vbaExecutor = new VBAExecutor(excelApp, snapshotManager);
-            var pythonExecutor = new PythonExecutor(excelApp, snapshotManager);
+            var vbaExecutor = new VBAExecutor(excelApp);
+            var pythonExecutor = new PythonExecutor(excelApp);
 
             _excelActions = new ExcelActionsImpl(
                 excelApp, workbookAnalyzer, rangeAnalyzer, vbaExecutor, pythonExecutor, snapshotManager);
@@ -138,6 +138,8 @@ namespace DeepExcel.AddIn.Bridge
                 // ★ 注入附件映射引用给 ToolDispatcher，read_attachment 工具通过此映射查找附件路径。
                 // 引用 session.Attachments，session 增删附件时自动同步（同一对象引用）。
                 session.Sidecar.Dispatcher.Attachments = session.Attachments;
+                // 写入守卫据此拒绝在用户切走后改错工作簿；取值用委托，另存为改 key 后自动跟上
+                session.Sidecar.Dispatcher.BoundWorkbookKey = () => session.WorkbookKey;
 
                 // ★ 不自动加载历史对话到当前对话。
                 // 用户打开面板默认是新对话；要看历史需点"历史对话"按钮主动选择"继续"。
@@ -159,17 +161,8 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         private static string GetWorkbookKey(Workbook wb)
         {
-            try
-            {
-                string fullName = wb.FullName;
-                if (!string.IsNullOrEmpty(fullName) && (fullName.Contains("\\") || fullName.Contains("/")))
-                    return fullName;
-                return wb.Name ?? "workbook_" + wb.GetHashCode();
-            }
-            catch
-            {
-                return "workbook_" + wb.GetHashCode();
-            }
+            // 与快照归属同一规则，否则回滚找不到会话对应的工作簿
+            return DeepExcel.AddIn.Executor.WorkbookIdentity.KeyOf(wb);
         }
 
         /// <summary>
@@ -1658,8 +1651,17 @@ namespace DeepExcel.AddIn.Bridge
                     return MakeError("缺少 snapshot_id 参数");
                 }
                 Logger.Instance.Info("MessageBridge", "HandleRollbackSnapshot: " + snapshotId);
-                bool ok = _excelActions.Rollback(snapshotId);
-                return MakeResponse("rollback_result", new { success = ok, snapshot_id = snapshotId });
+                var r = _excelActions.Rollback(snapshotId);
+                return MakeResponse("rollback_result", new
+                {
+                    success = r.Success,
+                    snapshot_id = snapshotId,
+                    message = r.Error,
+                    pre_restore_snapshot_id = r.PreRestoreSnapshotId,
+                    restored_sheets = r.RestoredSheets,
+                    removed_sheets = r.RemovedSheets,
+                    warnings = r.Warnings,
+                });
             }
             catch (Exception ex)
             {
@@ -2432,9 +2434,37 @@ namespace DeepExcel.AddIn.Bridge
             return _snapshotManager.CreateSnapshot();
         }
 
-        public bool Rollback(string snapshotId)
+        public DeepExcel.AddIn.Executor.RollbackResult Rollback(string snapshotId)
         {
             return _snapshotManager.Rollback(snapshotId);
+        }
+
+        public DeepExcel.AddIn.Executor.SnapshotAttempt BackupWorkbook(
+            string workbookKey, string reason, DeepExcel.AddIn.Executor.SnapshotScope scope)
+        {
+            return _snapshotManager.TryCreateSnapshotFor(workbookKey, reason, scope);
+        }
+
+        public bool ExtendSnapshotScope(string snapshotId, DeepExcel.AddIn.Executor.SnapshotScope scope)
+        {
+            return _snapshotManager.ExtendScope(snapshotId, scope);
+        }
+
+        public DeepExcel.AddIn.Executor.SnapshotMeta GetSnapshotMeta(string snapshotId)
+        {
+            return _snapshotManager.GetMeta(snapshotId);
+        }
+
+        public string GetActiveWorkbookKey()
+        {
+            try { return DeepExcel.AddIn.Executor.WorkbookIdentity.KeyOf(_app.ActiveWorkbook); }
+            catch { return null; }
+        }
+
+        public string GetActiveSheetName()
+        {
+            try { return (_app.ActiveSheet as Worksheet)?.Name; }
+            catch { return null; }
         }
 
         /// <summary>

@@ -225,6 +225,8 @@ namespace DeepExcel.AddIn.Sidecar
 
         public void SendUserMessage(string text, string sessionId, object context)
         {
+            // 新的用户回合：本回合第一次写入前重新备份
+            _dispatcher.BeginTurn();
             var msg = new { type = SidecarProtocol.TypeUserMessage, text, session_id = sessionId, context };
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
         }
@@ -300,8 +302,10 @@ namespace DeepExcel.AddIn.Sidecar
             WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
         }
 
-        public void SendToolResult(string callId, bool success, object data, string error, string suggestion, object context)
+        public void SendToolResult(string callId, bool success, object data, string error, string suggestion, object context,
+            string backupSnapshotId = null)
         {
+            // backup_snapshot_id 原样进入模型看到的工具结果，模型据此可调 rollback 撤销本回合修改
             var msg = new
             {
                 type = SidecarProtocol.TypeToolResult,
@@ -311,6 +315,7 @@ namespace DeepExcel.AddIn.Sidecar
                 error,
                 suggestion,
                 context,
+                backup_snapshot_id = backupSnapshotId,
             };
             string json;
             try
@@ -333,6 +338,7 @@ namespace DeepExcel.AddIn.Sidecar
                     error = "工具执行成功但结果数据无法序列化: " + ex.Message,
                     suggestion,
                     context = (object)new { },
+                    backup_snapshot_id = backupSnapshotId,
                 };
                 json = JsonSerializer.Serialize(safeMsg, _jsonOptions);
             }
@@ -584,7 +590,8 @@ namespace DeepExcel.AddIn.Sidecar
                         data: result.Data,
                         error: result.Error,
                         suggestion: result.Suggestion,
-                        context: context);
+                        context: context,
+                        backupSnapshotId: result.BackupSnapshotId);
                     Logger.Instance.Info("PythonSidecar", $"HandleToolCall END: tool={toolName}");
                 }
                 catch (Exception sendEx)

@@ -17,7 +17,6 @@ namespace DeepExcel.AddIn.Executor
     public class VBAExecutor
     {
         private readonly Microsoft.Office.Interop.Excel.Application _app;
-        private readonly SnapshotManager _snapshots;
         private const string DefaultMacroName = "DeepExcel_TempMacro";
         private const int ExcelBusyHResult = unchecked((int)0x800AC472);
         private const string RunOkMarker = "__DEEPEXCEL_VBA_OK__";
@@ -27,10 +26,9 @@ namespace DeepExcel.AddIn.Executor
             @"^[ \t]*(?:(?:Public|Private|Friend|Static)\s+)*Sub\s+([^\s(]+)\s*\(([^)]*)\)",
             RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.Compiled);
 
-        public VBAExecutor(Microsoft.Office.Interop.Excel.Application app, SnapshotManager snapshots)
+        public VBAExecutor(Microsoft.Office.Interop.Excel.Application app)
         {
             _app = app;
-            _snapshots = snapshots;
         }
 
         /// <summary>
@@ -72,7 +70,6 @@ namespace DeepExcel.AddIn.Executor
                 };
             }
 
-            string snapshotId = null;
             string moduleName = null;
             string wrapperName = null;
             string stage = "preflight";
@@ -106,10 +103,6 @@ namespace DeepExcel.AddIn.Executor
                         Error = "VBA项目不可访问"
                     };
                 }
-
-                // Access checks must happen before the snapshot. A disabled
-                // VBProject setting should not create a useless history item.
-                snapshotId = _snapshots.CreateSnapshot("before-vba");
 
                 // Every execution gets an isolated module. Reusing the old
                 // DeepExcelModule left stale procedures behind after the second
@@ -165,7 +158,7 @@ namespace DeepExcel.AddIn.Executor
                 {
                     Name = "execute_vba",
                     Success = true,
-                    Data = new { snapshotId, macro = entryPoint }
+                    Data = new { macro = entryPoint }
                 };
             }
             catch (Exception ex)
@@ -202,10 +195,10 @@ namespace DeepExcel.AddIn.Executor
                 Logger.Instance.Error("VBAExecutor",
                     $"Execution failed: stage={stage}, entry={entryPoint}, hresult=0x{hresult:X8}", executionError);
 
-                // Automatic rollback closes and reopens the workbook. That
-                // destroys the active sidecar session before it can receive the
-                // error and turns one VBA error into several secondary errors.
-                // Keep the snapshot available for an explicit user rollback.
+                // No automatic rollback: the dispatcher backed the workbook up
+                // before this call (fail-closed) and reports that snapshot id
+                // as backup_snapshot_id, so the user or the model can restore
+                // it explicitly.
                 return new ToolResult
                 {
                     Name = "execute_vba",
@@ -215,8 +208,6 @@ namespace DeepExcel.AddIn.Executor
                     Data = new
                     {
                         rolledBack = false,
-                        rollbackAvailable = !string.IsNullOrEmpty(snapshotId),
-                        snapshotId,
                         stage,
                         hresult = $"0x{hresult:X8}"
                     }

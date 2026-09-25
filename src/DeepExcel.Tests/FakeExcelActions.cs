@@ -28,7 +28,13 @@ namespace DeepExcel.Tests
         public Func<string, object, ToolResult> WriteValueFn { get; set; } = (a, v) => new ToolResult { Success = true };
         public Func<string, object[][], ToolResult> WriteRangeFn { get; set; } = (a, v) => new ToolResult { Success = true };
         public Func<string> CreateSnapshotFn { get; set; } = () => "snap-1";
-        public Func<string, bool> RollbackFn { get; set; } = _ => true;
+        public Func<string, DeepExcel.AddIn.Executor.RollbackResult> RollbackFn { get; set; }
+            = id => new DeepExcel.AddIn.Executor.RollbackResult { Success = true, SnapshotId = id };
+        public Func<string, string, DeepExcel.AddIn.Executor.SnapshotScope, DeepExcel.AddIn.Executor.SnapshotAttempt> BackupWorkbookFn { get; set; }
+        public Func<string, DeepExcel.AddIn.Executor.SnapshotScope, bool> ExtendSnapshotScopeFn { get; set; } = (id, scope) => true;
+        public Func<string, DeepExcel.AddIn.Executor.SnapshotMeta> GetSnapshotMetaFn { get; set; } = _ => null;
+        public string ActiveWorkbookKey { get; set; } = @"C:\data\book.xlsx";
+        public string ActiveSheetName { get; set; } = "Sheet1";
         public Func<List<DeepExcel.AddIn.Executor.SnapshotMeta>> ListSnapshotsFn { get; set; }
             = () => new List<DeepExcel.AddIn.Executor.SnapshotMeta>();
         public Func<string, bool> DeleteSnapshotFn { get; set; } = _ => true;
@@ -41,6 +47,13 @@ namespace DeepExcel.Tests
         public List<string> ExecutePythonCalls { get; } = new List<string>();
         public int CreateSnapshotCalls { get; private set; }
         public List<string> RollbackCalls { get; } = new List<string>();
+        /// <summary>(workbookKey, reason, scope)</summary>
+        public List<(string Key, string Reason, DeepExcel.AddIn.Executor.SnapshotScope Scope)> BackupCalls { get; }
+            = new List<(string, string, DeepExcel.AddIn.Executor.SnapshotScope)>();
+        public List<(string Id, DeepExcel.AddIn.Executor.SnapshotScope Scope)> ExtendScopeCalls { get; }
+            = new List<(string, DeepExcel.AddIn.Executor.SnapshotScope)>();
+        /// <summary>按顺序记录"备份"和"执行"，用于断言备份发生在写入之前</summary>
+        public List<string> Timeline { get; } = new List<string>();
         /// <summary>其余"只要能调通就行"的方法统一记到这里：(方法名, 主要参数)</summary>
         public List<(string Method, string Arg)> OtherCalls { get; } = new List<(string, string)>();
 
@@ -65,24 +78,35 @@ namespace DeepExcel.Tests
         public ToolResult ExecuteVBA(string code, string macroName = null)
         {
             ExecuteVBACalls.Add((code, macroName));
+            Timeline.Add("execute_vba");
             return ExecuteVBAFn(code, macroName);
         }
 
         public ToolResult ExecutePython(string code)
         {
             ExecutePythonCalls.Add(code);
+            Timeline.Add("execute_python");
             return ExecutePythonFn(code);
         }
 
         public ToolResult WriteFormula(string address, string formula)
         {
             WriteFormulaCalls.Add((address, formula));
+            Timeline.Add("write_formula");
             return WriteFormulaFn(address, formula);
         }
 
-        public ToolResult WriteValue(string address, object value) => WriteValueFn(address, value);
+        public ToolResult WriteValue(string address, object value)
+        {
+            Timeline.Add("write_value");
+            return WriteValueFn(address, value);
+        }
 
-        public ToolResult WriteRange(string address, object[][] values) => WriteRangeFn(address, values);
+        public ToolResult WriteRange(string address, object[][] values)
+        {
+            Timeline.Add("write_range");
+            return WriteRangeFn(address, values);
+        }
 
         // ============ Sheet 管理 ============
         public ToolResult AddSheet(string name) => Record("add_sheet", name);
@@ -134,11 +158,34 @@ namespace DeepExcel.Tests
             return CreateSnapshotFn();
         }
 
-        public bool Rollback(string snapshotId)
+        public DeepExcel.AddIn.Executor.RollbackResult Rollback(string snapshotId)
         {
             RollbackCalls.Add(snapshotId);
             return RollbackFn(snapshotId);
         }
+
+        private int _backupSeq;
+
+        public DeepExcel.AddIn.Executor.SnapshotAttempt BackupWorkbook(
+            string workbookKey, string reason, DeepExcel.AddIn.Executor.SnapshotScope scope)
+        {
+            BackupCalls.Add((workbookKey, reason, scope));
+            Timeline.Add("backup");
+            if (BackupWorkbookFn != null) return BackupWorkbookFn(workbookKey, reason, scope);
+            return new DeepExcel.AddIn.Executor.SnapshotAttempt { SnapshotId = "backup-" + (++_backupSeq) };
+        }
+
+        public bool ExtendSnapshotScope(string snapshotId, DeepExcel.AddIn.Executor.SnapshotScope scope)
+        {
+            ExtendScopeCalls.Add((snapshotId, scope));
+            return ExtendSnapshotScopeFn(snapshotId, scope);
+        }
+
+        public DeepExcel.AddIn.Executor.SnapshotMeta GetSnapshotMeta(string snapshotId) => GetSnapshotMetaFn(snapshotId);
+
+        public string GetActiveWorkbookKey() => ActiveWorkbookKey;
+
+        public string GetActiveSheetName() => ActiveSheetName;
 
         public List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots() => ListSnapshotsFn();
 
@@ -147,6 +194,7 @@ namespace DeepExcel.Tests
         private ToolResult Record(string method, string arg)
         {
             OtherCalls.Add((method, arg));
+            Timeline.Add(method);
             return new ToolResult { Name = method, Success = true };
         }
     }

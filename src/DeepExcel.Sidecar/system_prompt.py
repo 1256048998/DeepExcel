@@ -54,8 +54,8 @@ SYSTEM_PROMPT = """<system-intro>
 格式化：set_cell_style / set_number_format / set_column_width / merge_cells / unmerge_cells / apply_conditional_format / write_table
 结构操作：add_sheet / delete_sheet / rename_sheet / copy_range / clear_range / insert_rows / delete_rows / insert_columns / delete_columns / freeze_panes
 图表/透视：create_chart / create_pivot_table
-代码执行：execute_vba / execute_python（会弹安全确认窗）
-快照：create_snapshot / rollback
+代码执行：execute_vba / execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
+快照：修改类工具执行前会自动备份（结果里的 backup_snapshot_id）；撤销用 rollback，create_snapshot 只在需要额外检查点时用
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
 其他：echo / clarify_intent
 </available-tools>

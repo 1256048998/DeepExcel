@@ -150,7 +150,7 @@ async def execute_jsa(args):
     return _wrap_result(result)
 
 
-@tool("execute_python", "执行 Python 代码（操作 Excel）", {"code": str})
+@tool("execute_python", "执行纯计算的 Python 代码（字符串处理、正则、数学计算）。碰不到工作簿：读写 Excel 请用对应的工具或 execute_vba。脚本失败不会影响工作簿。", {"code": str})
 async def execute_python(args):
     result = await call_csharp("execute_python", {"code": args["code"]})
     return _wrap_result(result)
@@ -331,7 +331,7 @@ async def write_table(args):
     return _wrap_result(result)
 
 
-@tool("rollback", "回滚到指定快照", {"snapshot_id": str})
+@tool("rollback", "把工作簿恢复到指定快照。修改类工具的结果里带 backup_snapshot_id（本回合第一次修改前自动做的备份），传入它即可撤销本回合的修改；恢复前会自动另存当前状态，恢复本身也可撤销。", {"snapshot_id": str})
 async def rollback(args):
     result = await call_csharp("rollback", {"snapshot_id": args["snapshot_id"]})
     return _wrap_result(result)
@@ -510,10 +510,8 @@ async def add_pivot_slicer(args):
     return _wrap_result(result)
 
 
-@tool("auto_analyze", "自动分析数据范围并生成统计报告（包含基础统计、异常值检测、图表建议）。data_range 为数据区域地址（如 A1:C100）。", {"data_range": str})
-async def auto_analyze(args):
-    result = await call_csharp("auto_analyze", {"data_range": args["data_range"]})
-    return _wrap_result(result)
+# ★ auto_analyze 已移除：宿主端没有对应实现（调用必然返回"未知工具"，白白浪费一轮）。
+# tests/test_excel_tools.py 的守卫会拦住下一个只在这里注册、C# 侧没有实现的工具。
 
 
 @tool("quick_summary", "快速生成数据摘要：读取指定范围，计算基础统计（求和、平均、最大、最小、计数），并返回一句话摘要。address 为数据区域地址。", {"address": str})
@@ -633,7 +631,7 @@ def register_all_tools() -> list:
         freeze_panes,
         apply_conditional_format, write_table,
         clarify_intent,
-        auto_analyze, quick_summary,
+        quick_summary,
         create_plan, update_plan,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,

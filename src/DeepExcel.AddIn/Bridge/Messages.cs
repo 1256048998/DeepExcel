@@ -56,6 +56,10 @@ namespace DeepExcel.AddIn.Bridge
 
         [JsonPropertyName("context")]
         public object Context { get; set; }      // Excel 上下文快照
+
+        /// <summary>写入前自动备份的快照 ID（本回合首次写入时创建，同回合共用），可传给 rollback 撤销</summary>
+        [JsonPropertyName("backup_snapshot_id")]
+        public string BackupSnapshotId { get; set; }
     }
 
     /// <summary>

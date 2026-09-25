@@ -1067,7 +1067,7 @@ async def main():
                 "freeze_panes",
                 "apply_conditional_format", "write_table",
                 "clarify_intent",
-                "auto_analyze", "quick_summary",
+                "quick_summary",
                 "create_plan", "update_plan",
                 # ★ Computer Use 工具
                 "screenshot_excel", "send_keys",

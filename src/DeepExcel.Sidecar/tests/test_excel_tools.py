@@ -98,3 +98,43 @@ async def test_clean_data_passes_operations_list():
         await fn({"range_address": "A1:A100", "operations": ["trim_spaces", "remove_duplicates"]})
         call_args = mock.call_args[0]
         assert call_args[1]["operations"] == ["trim_spaces", "remove_duplicates"]
+
+
+def _registered_tool_names():
+    from excel_tools import register_all_tools
+    names = []
+    for t in register_all_tools():
+        n = getattr(t, 'name', None) or getattr(t, '__name__', None)
+        if n is None:
+            fn = getattr(t, 'handler', None) or getattr(t, 'fn', None)
+            n = getattr(fn, '__name__', None) if fn else None
+        names.append(n)
+    return names
+
+
+# 只在 WPS 宿主实现的工具（Excel 端没有对应分支是预期的）
+_WPS_ONLY_TOOLS = {"execute_jsa"}
+
+
+def test_every_host_call_has_a_csharp_handler():
+    """sidecar 转发给宿主的每个工具，ToolDispatcher 里都必须有对应分支。
+
+    auto_analyze 曾经只在这里注册、C# 侧没有实现：模型每次调用都拿到"未知工具"，
+    白白浪费一轮，却没有任何测试会因此变红。
+    """
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    py = (root / "src" / "DeepExcel.Sidecar" / "excel_tools.py").read_text(encoding="utf-8")
+    cs = (root / "src" / "DeepExcel.AddIn" / "Sidecar" / "ToolDispatcher.cs").read_text(encoding="utf-8")
+    called = set(re.findall(r'call_csharp\(\s*"(\w+)"', py))
+    handled = set(re.findall(r'case "(\w+)":', cs))
+    assert called, "没解析到任何 call_csharp 调用，正则可能过时了"
+    missing = sorted(called - handled - _WPS_ONLY_TOOLS)
+    assert missing == [], f"这些工具在 C# 侧没有实现，调用必然失败：{missing}"
+
+
+def test_auto_analyze_is_not_offered_to_the_model():
+    import sidecar
+    assert "auto_analyze" not in _registered_tool_names()
+    assert '"auto_analyze"' not in open(sidecar.__file__, encoding="utf-8").read()

@@ -10,23 +10,23 @@ using DeepExcel.AddIn.Diagnostics;
 namespace DeepExcel.AddIn.Executor
 {
     /// <summary>
-    /// Python执行引擎
-    /// 支持执行Python脚本，与Excel交互（通过临时csv文件传递数据）
-    /// 要求用户系统已安装Python和openpyxl/pandas
+    /// Python执行引擎：只做纯计算。
+    ///
+    /// CodeSandbox 禁掉了 openpyxl/pandas/win32com/xlwings 等，脚本碰不到工作簿，
+    /// 所以这里不建快照、失败也不回滚。以前脚本一出语法错误就触发回滚，
+    /// 而旧回滚会关掉工作簿、覆盖磁盘原文件——对一个根本没改过工作簿的操作纯属破坏。
     /// </summary>
     public class PythonExecutor
     {
         private readonly Application _excelApp;
-        private readonly SnapshotManager _snapshots;
         private string _pythonPath;
 
         public bool PythonAvailable => !string.IsNullOrEmpty(_pythonPath);
         public string PythonPath => _pythonPath;
 
-        public PythonExecutor(Application excelApp, SnapshotManager snapshots)
+        public PythonExecutor(Application excelApp)
         {
             _excelApp = excelApp;
-            _snapshots = snapshots;
             _pythonPath = FindPythonPath();
         }
 
@@ -68,8 +68,6 @@ namespace DeepExcel.AddIn.Executor
                 };
             }
 
-            // 执行前快照
-            var snapshotId = _snapshots.CreateSnapshot();
             var tempScript = Path.GetTempFileName() + ".py";
             var tempInput = Path.GetTempFileName() + ".json";
             var tempOutput = Path.GetTempFileName() + ".json";
@@ -122,13 +120,11 @@ namespace DeepExcel.AddIn.Executor
                     {
                         Logger.Instance.Error("PythonExecutor", "Kill failed: " + killEx.Message);
                     }
-                    _snapshots.Rollback(snapshotId);
                     return new ToolResult
                     {
                         Name = "execute_python",
                         Success = false,
                         Error = $"Python 脚本执行超时（{timeoutMs / 1000} 秒）。请简化代码或减少数据处理量。",
-                        Data = new { snapshotId }
                     };
                 }
 
@@ -142,25 +138,22 @@ namespace DeepExcel.AddIn.Executor
                     {
                         Name = "execute_python",
                         Success = true,
-                        Data = new { output, result = resultData, snapshotId }
+                        Data = new { output, result = resultData }
                     };
                 }
                 else
                 {
-                    // 失败回滚
-                    _snapshots.Rollback(snapshotId);
                     return new ToolResult
                     {
                         Name = "execute_python",
                         Success = false,
                         Error = error,
-                        Data = new { output, snapshotId }
+                        Data = new { output }
                     };
                 }
             }
             catch (Exception ex)
             {
-                _snapshots.Rollback(snapshotId);
                 return new ToolResult
                 {
                     Name = "execute_python",

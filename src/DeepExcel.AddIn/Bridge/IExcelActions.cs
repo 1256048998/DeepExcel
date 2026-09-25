@@ -59,8 +59,20 @@ namespace DeepExcel.AddIn.Bridge
         ToolResult WriteTable(string address, string tableName);
 
         // 安全类
+        /// <summary>给当前活动工作簿做整本快照（模型的 create_snapshot 工具）；失败返回 null</summary>
         string CreateSnapshot();
-        bool Rollback(string snapshotId);
+        /// <summary>给指定 key 的已打开工作簿做快照，失败时 Error 说明原因（写入前的自动备份用）</summary>
+        DeepExcel.AddIn.Executor.SnapshotAttempt BackupWorkbook(string workbookKey, string reason, DeepExcel.AddIn.Executor.SnapshotScope scope);
+        /// <summary>扩大快照的覆盖范围；false 表示没记下，调用方应视为备份失败</summary>
+        bool ExtendSnapshotScope(string snapshotId, DeepExcel.AddIn.Executor.SnapshotScope scope);
+        DeepExcel.AddIn.Executor.SnapshotMeta GetSnapshotMeta(string snapshotId);
+        /// <summary>恢复到快照所属的已打开工作簿（不看 ActiveWorkbook，不改写磁盘原文件）</summary>
+        DeepExcel.AddIn.Executor.RollbackResult Rollback(string snapshotId);
+
+        /// <summary>当前活动工作簿的会话 key（规则见 WorkbookIdentity）；没有时返回 null</summary>
+        string GetActiveWorkbookKey();
+        /// <summary>当前活动工作表名；没有时返回 null</summary>
+        string GetActiveSheetName();
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

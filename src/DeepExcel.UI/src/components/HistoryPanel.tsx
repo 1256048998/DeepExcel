@@ -38,10 +38,10 @@ export function HistoryPanel({ open, onClose }: Props) {
         setRollingBack(null)
         if (data.payload?.success) {
           setError(null)
-          // 回滚成功后关闭面板（工作簿已切换）
           setTimeout(() => onClose(), 600)
         } else {
-          setError('回滚失败，请检查日志')
+          // 宿主会说明原因（例如快照所属的工作簿没打开），直接给用户看
+          setError(data.payload?.message || '回滚失败，请检查日志')
         }
       } else if (data.type === 'delete_snapshot_result') {
         setDeleting(null)
@@ -68,7 +68,7 @@ export function HistoryPanel({ open, onClose }: Props) {
   }
 
   const handleRollback = (snapshot: Snapshot) => {
-    if (!confirm(`确定要回滚到该快照吗？\n\n时间：${snapshot.createdAt}\n工作簿：${snapshot.workbookName}\n\n当前未保存的修改将丢失。`)) {
+    if (!confirm(`确定要回滚到该快照吗？\n\n时间：${snapshot.createdAt}\n工作簿：${snapshot.workbookName}\n\n恢复前会自动保存当前状态，之后仍可在历史版本中找回；磁盘上的文件不会被改写。`)) {
       return
     }
     setRollingBack(snapshot.id)
