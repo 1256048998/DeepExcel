@@ -78,6 +78,7 @@ from claude_agent_sdk.types import (
 
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
+from model_windows import apply_context_window
 from ipc import _message_buffer, read_message, route_message, write_message
 from ipc import _init_buffer, request_permission, take_steer_messages
 from system_prompt import SYSTEM_PROMPT
@@ -411,6 +412,10 @@ def stale_env_keys(env_config: dict) -> list:
         stale.append("ANTHROPIC_API_KEY")
     else:
         stale.append("ANTHROPIC_AUTH_TOKEN")
+    # 压缩窗口只能由我们按当前模型设置；从外部环境继承来的值属于别的模型
+    for key in ("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"):
+        if key not in env_config:
+            stale.append(key)
     return stale
 
 
@@ -1177,6 +1182,10 @@ async def main():
 
         routing_mode = (cfg or {}).get("routing_mode", "byok")
         env_config, model = build_env_config(cfg, os.environ)
+        # ★ 模型真实的上下文窗口：CLI 对不认识的模型一律按 200K、在 167K 时压缩（见 model_windows.py）
+        model, window_env = apply_context_window(model, (cfg or {}).get("context_window"))
+        env_config.update(window_env)
+        sys.stderr.write(f"[sidecar] cli model={model}, window_env={window_env}\n")
         max_turns = resolve_max_turns(cfg)
         sys.stderr.write(f"[sidecar] max_turns={max_turns} (configured={(cfg or {}).get('max_turns')})\n")
 

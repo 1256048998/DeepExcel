@@ -153,10 +153,10 @@ sidecar 输出统一的 `{"type":"ui_event","event":{...}}`，C# 与 WPS 宿主�
 
 ## 模型、环境与可观测性
 
-- **长上下文被提前压缩**：非 Claude 模型可能在约 155K token 就被 CLI 压缩【推断】。修法（例如给模型名加窗口后缀）由服务端 EndpointConfig 决定并在代理层剥离，客户端不自行判断。
+- **长上下文被提前压缩**（已完成）：实测 CLI 对非 Claude 模型一律按 200K 算、167K 时压缩，而 DeepSeek v4（flash / pro）的窗口是 1,048,576。侧车 `model_windows.py` 按实测窗口给模型名加 `[1m]`（CLI 发请求前会去掉，托管代理也会剥离），窗口小于 1M 或小于 200K 时再用 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 调到真实大小；只收录实测过的模型。托管模式下窗口可由服务端 EndpointConfig 的 `context_window` 给出，优先于内置表。
 - **claude.exe 启动自检**：验证 `tools=[]` 时不依赖 Git Bash、老 Win10 上 ConPTY 可用；不满足时给出明确诊断码，而不是「没有回复」。
 - **遥测落盘发件箱**：事件先写本地 `pending.jsonl`，上报成功再删；加载失败、sidecar 崩溃时由 C# 同步写文件；启动时补发。字段仍只走现有白名单。
-- **trace_id 全链路**：C# 每个任务生成随机 trace_id，贯穿 sidecar 日志、代理请求头和服务端日志；可与 F2 的 task_id 合并。
+- **trace_id 全链路**（部分放弃）：CLI 的自定义请求头（`ANTHROPIC_CUSTOM_HEADERS`）只能按进程设置，无法随任务变化；固定值会让服务端把整个会话算成一个任务。服务端已按请求形状判定新任务（F2），客户端不发 `x-trace-id`。
 - **WPS 能否直接加载 Excel 的 VSTO 插件**（经 `Software\Kingsoft\Office\ET\AddinsWL` 白名单）：验证 CustomTaskPane 与 WebView2 是否可用。可行则两个宿主共用一套代码；结论出来前不改现有「WPS 保证不崩」的策略。
 
 ---
