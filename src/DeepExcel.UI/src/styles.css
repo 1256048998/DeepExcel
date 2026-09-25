@@ -47,11 +47,45 @@ body {
   color: var(--de-brand);
 }
 
+.messages-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;
+  overflow-anchor: none;
   padding: var(--de-space-4) var(--de-space-3);
   background: var(--de-bg);
+}
+
+/* 往上翻阅时出现，点一下回到最新内容并恢复自动跟随 */
+.jump-to-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: var(--de-space-3);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--de-space-1);
+  padding: 4px 12px;
+  background: var(--de-bg);
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  box-shadow: var(--de-shadow-md);
+  color: var(--de-text-secondary);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+}
+
+.jump-to-bottom:hover {
+  color: var(--de-brand);
+  border-color: var(--de-brand-border);
 }
 
 .message {

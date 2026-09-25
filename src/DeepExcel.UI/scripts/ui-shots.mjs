@@ -106,6 +106,53 @@ const scenes = {
   menu: async ({ page }) => {
     await page.click('[aria-label="更多"]')
   },
+
+  // 滚动：往上翻时新内容不把人拽回底部；「回到底部」恢复跟随；发新消息总是回到底部
+  scroll: async ({ page, emit, send }) => {
+    const problems = []
+    const answer = Array.from({ length: 18 }, (_, i) => `第 ${i + 1} 行说明文字，用来把对话撑高。`).join('\n\n')
+    for (let i = 1; i <= 4; i++) {
+      await send(`问题 ${i}`)
+      await emit('stream_delta', { delta: answer })
+      await emit('stream_end', {})
+    }
+    const metrics = () => page.evaluate(() => {
+      const el = document.querySelector('.messages')
+      return { gap: el.scrollHeight - el.scrollTop - el.clientHeight, top: el.scrollTop, jump: !!document.querySelector('.jump-to-bottom') }
+    })
+    await page.waitForTimeout(150)
+    let m = await metrics()
+    if (m.gap > 60) problems.push(`新内容到达后没有贴底（离底 ${m.gap}px）`)
+
+    await page.evaluate(() => { document.querySelector('.messages').scrollTop = 0 })
+    await page.waitForTimeout(100)
+    await emit('ui_event', ev('tool_start', { id: 's1', name: 'read_range', args: { address: 'A1:D9' } }))
+    await emit('stream_delta', { delta: answer })
+    await page.waitForTimeout(200)
+    m = await metrics()
+    if (m.top > 50) problems.push(`往上翻阅时被新内容拽走了（scrollTop ${m.top}）`)
+    if (!m.jump) {
+      problems.push(`往上翻阅时没有出现「回到底部」（${JSON.stringify(m)}）`)
+      return problems
+    }
+
+    await page.click('.jump-to-bottom')
+    await page.waitForTimeout(150)
+    await emit('stream_delta', { delta: '\n\n再来一段。' })
+    await page.waitForTimeout(150)
+    m = await metrics()
+    if (m.gap > 60) problems.push(`点「回到底部」后没有恢复跟随（离底 ${m.gap}px）`)
+    if (m.jump) problems.push('点「回到底部」后按钮没有消失')
+
+    await emit('stream_end', {})
+    await page.evaluate(() => { document.querySelector('.messages').scrollTop = 0 })
+    await page.waitForTimeout(100)
+    await send('再问一个')
+    await page.waitForTimeout(150)
+    m = await metrics()
+    if (m.gap > 60) problems.push(`发出新消息后没有回到底部（离底 ${m.gap}px）`)
+    return problems
+  },
 }
 
 // ---------------- 执行 ----------------
@@ -125,8 +172,9 @@ async function runScene(page, scene) {
   }
   const emit = (type, payload) => page.evaluate(([t, p]) => window.__deepexcelDevHost.emit(t, p), [type, payload])
   // 场景函数在 Node 里跑，逐条把消息送进页面，和真实宿主一样是一条一条到达的
-  await scene.run({ emit: (t, p) => emit(t, p), send, page })
+  const problems = await scene.run({ emit: (t, p) => emit(t, p), send, page })
   await page.waitForTimeout(300)
+  return Array.isArray(problems) ? problems : []
 }
 
 async function findOverflow(page) {
@@ -190,7 +238,7 @@ async function main() {
         await page.waitForSelector('textarea')
         await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }' })
         await page.waitForTimeout(300)
-        await runScene(page, scene)
+        errors.push(...await runScene(page, scene))
         const file = join(outDir, `${scene.name}-${width}.png`)
         await page.screenshot({ path: file })
         const overflow = await findOverflow(page)

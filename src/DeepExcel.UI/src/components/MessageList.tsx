@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import type { Message, ToolStep, ToolStepChanges } from '../types'
 import { formatDuration } from '../utils/uiEvents'
+import { useStickToBottom } from '../utils/useStickToBottom'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
 import { StreamingChoices } from './StreamingChoices'
@@ -45,40 +46,73 @@ function isMarkdown(content: string): boolean {
 }
 
 export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind }: Props) {
-  const endRef = useRef<HTMLDivElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
 
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  // 回调每次 App 渲染都是新函数；包一层稳定引用，消息项才能 memo（流式输出时只重绘最后一条）
+  const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind })
+  latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind }
+  const toggle = useCallback((i: number) => latest.current.onToggleToolGroup?.(i), [])
+  const clarify = useCallback((a: string) => latest.current.onClarifyAnswer?.(a), [])
+  const choose = useCallback((c: string) => latest.current.onChoiceSelect?.(c), [])
+  const savePrompt = useCallback((c: string) => latest.current.onSaveAsPrompt?.(c), [])
+  const onRewind = useCallback((step: ToolStep) => latest.current.onRewind?.(step), [])
+  const hasRewind = !!rewind
+  const rewindDisabled = rewind?.disabled ?? true
+  const rewindPending = rewind?.pendingId ?? null
+  const stableRewind = useMemo<RewindControl | undefined>(
+    () => (hasRewind ? { onRewind, disabled: rewindDisabled, pendingId: rewindPending } : undefined),
+    [hasRewind, onRewind, rewindDisabled, rewindPending],
+  )
+
+  // 用户刚发出一条消息：不管之前翻到哪里，都回到底部
+  const lastLength = useRef(messages.length)
+  const forcePin = messages.length > lastLength.current && messages[messages.length - 1]?.role === 'user'
+  useEffect(() => { lastLength.current = messages.length }, [messages.length])
+
+  const contentKey = useMemo(() => ({}), [messages, loading, statusText])
+  const { pinned, jumpToBottom } = useStickToBottom(containerRef, contentRef, contentKey, forcePin)
 
   return (
-    <div className="messages">
-      {messages.map((msg, idx) => (
-        <MessageItem
-          key={idx}
-          message={msg}
-          index={idx}
-          onToggleToolGroup={onToggleToolGroup}
-          onClarifyAnswer={onClarifyAnswer}
-          onChoiceSelect={onChoiceSelect}
-          onSaveAsPrompt={onSaveAsPrompt}
-          rewind={rewind}
-        />
-      ))}
-      {loading && (
-        <div className="message assistant loading">
-          <span className="dot"></span>
-          <span className="dot"></span>
-          <span className="dot"></span>
-          {statusText && <span className="loading-status">{statusText}</span>}
+    <div className="messages-wrap">
+      <div className="messages" ref={containerRef}>
+        <div className="messages-content" ref={contentRef}>
+          {messages.map((msg, idx) => (
+            <MessageItem
+              key={idx}
+              message={msg}
+              index={idx}
+              onToggleToolGroup={onToggleToolGroup ? toggle : undefined}
+              onClarifyAnswer={onClarifyAnswer ? clarify : undefined}
+              onChoiceSelect={onChoiceSelect ? choose : undefined}
+              onSaveAsPrompt={onSaveAsPrompt ? savePrompt : undefined}
+              rewind={stableRewind}
+            />
+          ))}
+          {loading && (
+            <div className="message assistant loading">
+              <span className="dot"></span>
+              <span className="dot"></span>
+              <span className="dot"></span>
+              {statusText && <span className="loading-status">{statusText}</span>}
+            </div>
+          )}
         </div>
+      </div>
+      {!pinned && (
+        <button type="button" className="jump-to-bottom" onClick={jumpToBottom} title="回到底部">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <polyline points="19 12 12 19 5 12" />
+          </svg>
+          回到底部
+        </button>
       )}
-      <div ref={endRef} />
     </div>
   )
 }
 
-function MessageItem({
+const MessageItem = memo(function MessageItem({
   message,
   index,
   onToggleToolGroup,
@@ -265,7 +299,7 @@ function MessageItem({
       )}
     </div>
   )
-}
+})
 
 // 连续多步时默认只显示最后几步，避免一次任务把整屏推走；点击标题展开全部
 const VISIBLE_STEPS_WHEN_COLLAPSED = 3
