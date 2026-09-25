@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ui:shots": "node scripts/ui-shots.mjs"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -21,6 +22,7 @@
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
     "@vitejs/plugin-react": "^4.0.0",
+    "playwright-core": "^1.63.0",
     "typescript": "^5.0.0",
     "vite": "^5.0.0",
     "vitest": "^2.1.9"

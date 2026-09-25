@@ -205,6 +205,17 @@ const mockProviders: Record<string, any> = {
   }
 }
 
+/**
+ * ★ 开发环境：注入宿主消息的口子（只在 vite dev 下存在，Excel / WPS 里没有）。
+ * 截图回归（npm run ui:shots）和手工调试用它把面板摆到指定场景：
+ *   window.__deepexcelDevHost.emit('ui_event', { v: 1, kind: 'tool_start', ... })
+ * silent=true 时 mock 不再对 user_message 回模拟的流式回复，场景完全由脚本决定。
+ */
+type DevHost = { emit: (type: string, payload: any) => void; silent: boolean }
+const devHost: DevHost | null = isDev && typeof window !== 'undefined'
+  ? ((window as any).__deepexcelDevHost = { emit: (type: string, payload: any) => _dispatch({ type, payload }), silent: false })
+  : null
+
 function mockHostResponse(message: HostMessage) {
   const emit = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
 
@@ -257,7 +268,12 @@ function mockHostResponse(message: HostMessage) {
     case 'save_model_config':
       emit('config_saved', { success: true })
       return
+    case 'rollback_snapshot':
+      emit('rollback_result', { success: true, snapshot_id: message.payload?.snapshot_id, restored_sheets: ['Sheet1'] })
+      return
   }
+
+  if (devHost?.silent) return
 
   if (message.type === 'user_message') {
     const content = message.payload.content
