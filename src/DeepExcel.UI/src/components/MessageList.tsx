@@ -460,7 +460,7 @@ function PlanCard({ message, index, busy, onDecision }: {
   const decided = message.planDecision
   return (
     <div className={`message plan-card${decided ? ' decided' : ''}`}>
-      <div className="plan-card-title">方案待批准</div>
+      <div className="plan-card-title">{decided ? '方案' : '方案待批准'}</div>
       <div className="plan-card-summary">{plan.summary}</div>
       <ol className="plan-card-steps">
         {plan.steps.map((step, i) => (
