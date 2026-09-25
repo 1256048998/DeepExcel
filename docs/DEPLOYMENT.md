@@ -61,6 +61,10 @@ python scripts\package_release.py --version 0.5.0
 
 若确实要发一版不带更新清单的：`--no-update-manifest`。它会打印醒目提示，不会静默跳过。
 
+**只改了知识技能**（`src/DeepExcel.Sidecar/knowledge/`）不必发版：用同一把私钥
+`python scripts\knowledge_pack.py build --key <pem> --out knowledge_pack.json`，把它放进 `UPDATE_MANIFEST_DIR`
+即可，客户端下次更新检查时验签替换。细节见 `server/README.md` 的「知识包」一节。
+
 ## 签名状态：当前不签名
 
 DeepExcel 目前**没有购买代码签名证书**，发布形态就是未签名安装包 + 公布 SHA-256。

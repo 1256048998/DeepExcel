@@ -531,6 +531,52 @@ def test_update_manifest_guards(module):
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def test_knowledge_pack_guards(module):
+    """Bundled skills must be publishable as a signed pack, and the pack must
+    round-trip through the real signer. The sidecar and the pack builder parse
+    skills independently; if they disagree, a skill that works from the
+    installer silently vanishes the first time the server ships a pack."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    sys.path.insert(0, os.path.join(ROOT, "src", "DeepExcel.Sidecar"))
+    import knowledge_pack
+    import knowledge_skills
+    import update_signing
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    payload = knowledge_pack.build_payload(pack_version=1)
+    packed = sorted(skill["name"] for skill in payload["skills"])
+    bundled = sorted(knowledge_skills._scan(knowledge_skills.BUNDLED_DIR))
+    check("every bundled knowledge skill is publishable", packed == bundled, "%s vs %s" % (packed, bundled))
+
+    workspace = tempfile.mkdtemp(prefix="knowledge-guard-")
+    try:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        key_path = os.path.join(workspace, "key.pem")
+        with open(key_path, "wb") as stream:
+            stream.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+        import base64
+        modulus, exponent = update_signing.public_key_bytes(key.public_key().public_numbers())
+        m64, e64 = base64.b64encode(modulus).decode(), base64.b64encode(exponent).decode()
+
+        pack = update_signing.sign_payload(key_path, payload)
+        verified = knowledge_pack.verify_pack(pack, m64, e64)
+        check("a signed knowledge pack verifies", verified["pack_version"] == 1)
+
+        manifest = update_signing.sign_payload(key_path, update_signing.build_payload(
+            version="0.6.0", url="https://updates.example.com/s.exe", sha256="a" * 64, size=1))
+        expect_failure("an update manifest is not accepted as a knowledge pack",
+                       lambda: knowledge_pack.verify_pack(manifest, m64, e64), "not a knowledge pack")
+
+        bad = os.path.join(workspace, "knowledge", "Bad Name")
+        os.makedirs(bad)
+        expect_failure("skill directory names are validated before signing",
+                       lambda: knowledge_pack.collect_skills(os.path.dirname(bad)), "not allowed")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def main():
     module = load_module()
     print("=== package_release guards ===")
@@ -543,6 +589,7 @@ def main():
     test_sidecar_copies_keep_subpackages(module)
     test_release_doc_covers_every_build_step(module)
     test_update_manifest_guards(module)
+    test_knowledge_pack_guards(module)
 
     print()
     if FAILURES:

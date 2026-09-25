@@ -148,6 +148,18 @@ namespace DeepExcel.AddIn.Bridge
             {
                 UpdateService service = Updates;
 
+                // 知识包跟着更新检查走：同一个源、同一把签名公钥，与安装包是否待装无关
+                try
+                {
+                    new KnowledgeSync()
+                        .RunOnceAsync(KnowledgePack.UrlForFeed(service.Options.FeedUrl), CancellationToken.None)
+                        .GetAwaiter().GetResult();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Instance.Warning("Knowledge", "知识包同步异常：" + ex.Message);
+                }
+
                 // Ready: already downloaded and verified, waiting on the user.
                 // Blocked: failed to install repeatedly, so re-checking would
                 // only re-stage something that cannot install on this machine.

@@ -13,6 +13,9 @@ Publishing a release is therefore a file drop:
 No restart, no database, no deploy. Manifests are re-read when their mtime
 changes.
 
+The knowledge pack (skills the agent reads on demand) is published the same
+way, as ``knowledge_pack.json`` in that directory, and served by /knowledge.
+
 Deliberately unauthenticated. A user whose session expired, or who never signed
 in, still needs to be able to receive a fix, and the manifest is a public
 artifact whose integrity comes from its signature rather than from who asked.
@@ -139,16 +142,64 @@ def latest(channel: str = "stable") -> Response:
             detail={"reason": "manifest_invalid", "message": "Update manifest is implausibly large"},
         )
 
-    cached = _cache.get(channel)
+    return _relay(channel, path, stat)
+
+
+def _relay(cache_key: str, path: str, stat: os.stat_result, max_bytes: int = MAX_MANIFEST_BYTES) -> Response:
+    cached = _cache.get(cache_key)
     if cached is None or cached.mtime != stat.st_mtime or cached.size != stat.st_size:
         with open(path, "r", encoding="utf-8") as stream:
-            body = stream.read(MAX_MANIFEST_BYTES + 1)
+            body = stream.read(max_bytes + 1)
         _validate(body, path)
         cached = _Cached(mtime=stat.st_mtime, size=stat.st_size, body=body)
-        _cache[channel] = cached
+        _cache[cache_key] = cached
 
     return Response(
         content=cached.body,
         media_type="application/json",
         headers={"Cache-Control": f"public, max-age={_CACHE_SECONDS}"},
     )
+
+
+# The knowledge pack is signed like a manifest (scripts/knowledge_pack.py) and
+# dropped into the same directory. The underscore keeps the name outside
+# _CHANNEL_PATTERN, so /latest?channel=... can never hand it out as a channel.
+KNOWLEDGE_PACK_FILE = "knowledge_pack.json"
+
+# Mirrors KnowledgePack.MaxPackBytes on the client: a 1 MB payload is about
+# 1.34 MB once base64-encoded inside the envelope.
+MAX_KNOWLEDGE_PACK_BYTES = 2 * 1024 * 1024
+
+
+@router.get("/knowledge")
+def knowledge() -> Response:
+    """Relays the signed knowledge pack.
+
+    Knowledge text ends up in the model's context, so it is treated like code:
+    signed offline with the update key and verified by the client. Same
+    unauthenticated relay as the manifest, for the same reason.
+    """
+    directory = get_settings().update_manifest_dir
+    if not directory:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "reason": "updates_not_configured",
+                "message": "This deployment publishes no update feed (UPDATE_MANIFEST_DIR unset).",
+            },
+        )
+    path = os.path.join(directory, KNOWLEDGE_PACK_FILE)
+    try:
+        stat = os.stat(path)
+    except OSError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"reason": "no_release", "message": "No knowledge pack published"},
+        ) from None
+    if stat.st_size > MAX_KNOWLEDGE_PACK_BYTES:
+        logger.error("Knowledge pack %s is %d bytes; refusing to serve", path, stat.st_size)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"reason": "manifest_invalid", "message": "Knowledge pack is implausibly large"},
+        )
+    return _relay("\0knowledge", path, stat, MAX_KNOWLEDGE_PACK_BYTES)

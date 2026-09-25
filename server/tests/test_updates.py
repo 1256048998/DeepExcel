@@ -166,3 +166,50 @@ def test_response_is_cacheable(feed):
     # The feed is polled by every client on every start; without this it is a
     # request per client per session straight to the origin.
     assert "max-age" in response.headers["cache-control"]
+
+
+def test_knowledge_pack_is_relayed_byte_for_byte(feed):
+    client, _, directory = feed
+    body = json.dumps(dict(MANIFEST, payload="a" * 200_000))
+    (directory / updates_router.KNOWLEDGE_PACK_FILE).write_text(body, encoding="utf-8")
+    updates_router.reset_cache()
+
+    response = client.get("/api/v1/updates/knowledge")
+
+    assert response.status_code == 200, response.text
+    # Larger than a manifest may be: the knowledge limit is its own.
+    assert response.text == body
+
+
+def test_knowledge_pack_unpublished_is_a_404(feed):
+    client, _, _ = feed
+    response = client.get("/api/v1/updates/knowledge")
+    assert response.status_code == 404
+    assert response.json()["detail"]["reason"] == "no_release"
+
+
+def test_knowledge_pack_is_never_served_as_a_channel(feed):
+    client, _, directory = feed
+    (directory / updates_router.KNOWLEDGE_PACK_FILE).write_text(json.dumps(MANIFEST), encoding="utf-8")
+    updates_router.reset_cache()
+
+    response = client.get("/api/v1/updates/latest?channel=knowledge_pack")
+
+    assert response.status_code == 400
+
+
+def test_knowledge_pack_that_is_not_a_signed_envelope_is_refused(feed):
+    client, _, directory = feed
+    (directory / updates_router.KNOWLEDGE_PACK_FILE).write_text('{"skills": []}', encoding="utf-8")
+    updates_router.reset_cache()
+
+    response = client.get("/api/v1/updates/knowledge")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["reason"] == "manifest_invalid"
+
+
+def test_knowledge_endpoint_without_feed_dir_is_unconfigured(make_client):
+    response = make_client().get("/api/v1/updates/knowledge")
+    assert response.status_code == 503
+    assert response.json()["detail"]["reason"] == "updates_not_configured"

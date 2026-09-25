@@ -104,6 +104,22 @@ cp update.json /srv/deepexcel/updates/stable.json
 
 服务端只做结构校验（是不是合法 JSON、必需字段在不在），不验签——验签是客户端的事，那才是需要被说服的一方。结构校验的作用是拦住"运维复制错了文件"，否则那看起来会像一个正常工作的部署，而所有客户端已经静默停止升级。
 
+### 知识包（可选）
+
+模型按需读取的知识技能（`src/DeepExcel.Sidecar/knowledge/`）可以不发版就更新：离线签名后放进同一个目录。
+
+```bash
+python scripts/knowledge_pack.py build --key D:/offline/deepexcel-update.pem --out knowledge_pack.json
+python scripts/knowledge_pack.py verify --pack knowledge_pack.json
+cp knowledge_pack.json /srv/deepexcel/updates/knowledge_pack.json
+```
+
+`GET /api/v1/updates/knowledge` 原样返回它。客户端跟着更新检查一起拉（启动 1 分钟后、之后每 6 小时），用内置公钥验签后整包替换到 `%LOCALAPPDATA%\DeepExcel\knowledge`；侧车在同名技能的缓存版本不低于内置版本时用缓存。
+
+- **知识包和更新清单用同一把私钥。** 知识正文进入模型上下文，等于给 agent 的指令；不签名的话，拿下服务端就多了一条提示词注入通道。
+- `pack_version` 默认取当前时间戳，客户端只接受比本机更新的包，回放旧包无效。
+- 包里去掉的技能会从缓存消失，安装包自带的那份仍在。WPS 没有账号 / 服务端连接，只读 Excel 端同步下来的同一个缓存目录。
+
 **镜像必须真的构建过一次才算数。** `requirements.txt` 的版本号是从可用环境导出的，不是手写的——
 手写过一次 `alembic==1.16.6`，那个版本根本不存在，直到第一次 docker build 才暴露。`httpx` 也曾
 只列在 dev 依赖里（本地由 pytest 带入），生产镜像一 import 代理模块就启动失败。
