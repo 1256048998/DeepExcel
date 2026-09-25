@@ -88,6 +88,7 @@
     <Compile Include="Executor\SnapshotPolicy.cs" />
     <Compile Include="Executor\VBAExecutor.cs" />
     <Compile Include="Performance\PerformanceOptimizer.cs" />
+    <Compile Include="Perception\FileSniff.cs" />
     <Compile Include="Perception\RangeAnalyzer.cs" />
     <Compile Include="Perception\RangeInfo.cs" />
     <Compile Include="Perception\RangePaging.cs" />

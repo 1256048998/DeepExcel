@@ -2069,6 +2069,21 @@ namespace DeepExcel.AddIn.Sidecar
 
             Logger.Instance.Info("ToolDispatcher", $"read_attachment: fileName={fileName}, path={filePath}");
 
+            // 先看文件头：企业透明加密的密文、设了打开密码的文件，在这里就说清楚，
+            // 不交给 Excel 去报看不懂的错误（密码文件还会弹出密码框卡住 Excel）
+            var sniff = DeepExcel.AddIn.Perception.FileSniff.Sniff(filePath);
+            if (!sniff.Ok)
+            {
+                Logger.Instance.Info("ToolDispatcher", $"read_attachment: sniff={sniff.Verdict} file={fileName}");
+                return new ToolResult
+                {
+                    Name = "read_attachment",
+                    Success = false,
+                    Error = $"{fileName}：{sniff.Message}",
+                    Suggestion = sniff.Suggestion,
+                };
+            }
+
             var ext = System.IO.Path.GetExtension(fileName).ToLowerInvariant();
 
             // 文本文件：直接读取内容
@@ -2157,6 +2172,9 @@ namespace DeepExcel.AddIn.Sidecar
         /// 用 Excel COM 以 ReadOnly 方式打开附件 xlsx，读取所有 sheet 数据后关闭。
         /// 临时关闭 ScreenUpdating 避免界面闪烁。
         /// </summary>
+        /// <summary>打开附件时传的占位密码（见 ReadAttachmentExcel）</summary>
+        internal const string AttachmentPasswordProbe = "\u0001deepexcel-no-password";
+
         private ToolResult ReadAttachmentExcel(string filePath, string fileName)
         {
             Workbook wb = null;
@@ -2166,11 +2184,13 @@ namespace DeepExcel.AddIn.Sidecar
                 prevScreenUpdating = _excelApp.ScreenUpdating;
                 _excelApp.ScreenUpdating = false;
 
-                // ReadOnly 打开，不更新链接，只读
+                // ReadOnly 打开，不更新链接，只读。Password 传一个不可能是真密码的值：
+                // 没设密码的文件会忽略它；设了密码的文件立刻报错，而不是弹出密码框卡住 Excel
                 wb = _excelApp.Workbooks.Open(
                     Filename: filePath,
                     UpdateLinks: 0,
                     ReadOnly: true,
+                    Password: AttachmentPasswordProbe,
                     IgnoreReadOnlyRecommended: true,
                     Origin: XlPlatform.xlWindows,
                     Editable: false,
@@ -2262,12 +2282,18 @@ namespace DeepExcel.AddIn.Sidecar
             catch (Exception ex)
             {
                 Logger.Instance.Error("ToolDispatcher", $"read_attachment: Open Excel failed: {filePath}", ex);
+                var needsPassword = ex.Message.IndexOf("密码", StringComparison.Ordinal) >= 0 ||
+                                    ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
                 return new ToolResult
                 {
                     Name = "read_attachment",
                     Success = false,
-                    Error = "打开附件 Excel 文件失败: " + ex.Message,
-                    Suggestion = "附件文件可能被其他程序锁定或格式损坏",
+                    Error = needsPassword
+                        ? $"{fileName}：文件设置了打开密码"
+                        : "打开附件 Excel 文件失败: " + ex.Message,
+                    Suggestion = needsPassword
+                        ? "请在 Excel 中输入密码打开，另存一份没有打开密码的副本再上传"
+                        : "附件文件可能被其他程序锁定或格式损坏",
                 };
             }
             finally
