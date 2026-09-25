@@ -66,7 +66,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import AssistantMessage, HookMatcher, ResultMessage, StreamEvent, TextBlock, ToolUseBlock
 
-from excel_tools import register_all_tools
+from excel_tools import host_tool_note, register_all_tools
 from ipc import _message_buffer, read_message, route_message, write_message
 from ipc import _init_buffer, request_permission
 from system_prompt import SYSTEM_PROMPT
@@ -275,42 +275,10 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
         return {"continue_": True}
 
 
-class _ResponseCache:
-    """轻量级请求级响应缓存 — 只缓存纯文本响应（无工具调用副作用）。
-    线程安全，支持 LRU 淘汰和 TTL 过期。
-    """
-
-    def __init__(self, max_size: int = 100, ttl_minutes: int = 5):
-        self._cache = {}
-        self._lock = threading.Lock()
-        self.max_size = max_size
-        self.ttl = ttl_minutes * 60
-
-    def get(self, key: str):
-        with self._lock:
-            if key in self._cache:
-                entry = self._cache[key]
-                if time.time() - entry["timestamp"] < self.ttl:
-                    return entry["data"]
-                else:
-                    del self._cache[key]
-        return None
-
-    def set(self, key: str, data: str):
-        if not isinstance(data, str) or len(data) > 10000:
-            return
-        with self._lock:
-            if len(self._cache) >= self.max_size:
-                oldest = min(self._cache.keys(), key=lambda k: self._cache[k]["timestamp"])
-                del self._cache[oldest]
-            self._cache[key] = {"data": data, "timestamp": time.time()}
-
-    def clear(self):
-        with self._lock:
-            self._cache.clear()
-
-
-_response_cache = _ResponseCache()
+# 以前这里有一个「纯文本回答」缓存（5 分钟、按用户原话做键）。工作簿一变，
+# 「这张表有多少行」「A 列合计是多少」这类回答就是错的，而缓存照样原样返回，
+# 连模型都没被问到。Claude Code 从不缓存回答，理由相同：答案取决于此刻的状态。
+# 2026-09-25 删除。
 
 
 DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -400,21 +368,6 @@ def stale_env_keys(env_config: dict) -> list:
     else:
         stale.append("ANTHROPIC_AUTH_TOKEN")
     return stale
-
-
-def _build_cache_key(user_text: str, attachments: list, model: str, base_url: str) -> str:
-    """构建请求缓存键。
-    包含：用户文本 + 附件摘要 + 模型 + base_url + 日期
-    """
-    import hashlib
-    att_summary = []
-    if attachments and isinstance(attachments, list):
-        for a in attachments:
-            if isinstance(a, dict):
-                att_summary.append(f"{a.get('name','')}:{a.get('size',0)}")
-    date_str = time.strftime("%Y-%m-%d")
-    key_str = f"{user_text}|{'|'.join(att_summary)}|{model}|{base_url}|{date_str}"
-    return hashlib.md5(key_str.encode("utf-8")).hexdigest()
 
 
 def _parent_watchdog():
@@ -884,21 +837,9 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
         sys.stderr.write(f"[sidecar] run_agent_loop: processing user message (len={len(user_text)}), supports_vision={supports_vision}\n")
         sys.stderr.flush()
 
-        # ★ 缓存检查：纯文本问答场景（无附件、无历史上下文）尝试命中缓存
         history = _message_buffer.get("restore_history")
         has_history = history and isinstance(history, list) and len(history) > 0
         has_attachments = attachments and isinstance(attachments, list) and len(attachments) > 0
-        use_cache = not has_history and not has_attachments and len(user_text) < 500
-
-        if use_cache:
-            cache_key = _build_cache_key(user_text, attachments or [], model, base_url)
-            cached = _response_cache.get(cache_key)
-            if cached:
-                sys.stderr.write(f"[sidecar] cache hit, returning cached response\n")
-                sys.stderr.flush()
-                await write_message({"type": "stream_delta", "text": cached})
-                await write_message({"type": "stream_end", "input_tokens": 0, "output_tokens": 0, "cached": True})
-                continue
 
         # ★ 附件上下文注入：如果有附件，把附件信息拼到用户消息前面
         final_text = user_text
@@ -975,13 +916,6 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
 
             sys.stderr.write(f"[sidecar] receive_response completed, tool_calls={_tool_calls_in_turn}, text_len={len(_collected_text)}\n")
             sys.stderr.flush()
-
-            # ★ 缓存存储：纯文本响应（无工具调用）才缓存，避免副作用
-            if use_cache and _tool_calls_in_turn == 0 and _collected_text:
-                cache_key = _build_cache_key(user_text, attachments or [], model, base_url)
-                _response_cache.set(cache_key, _collected_text)
-                sys.stderr.write(f"[sidecar] cached response (key={cache_key[:16]}...)\n")
-                sys.stderr.flush()
 
         except Exception as e:
             sys.stderr.write(f"[sidecar] run_agent_loop exception: {type(e).__name__}: {e}\n")
@@ -1066,8 +1000,10 @@ async def main():
         # KV Cache 命中率越高。当前 SYSTEM_PROMPT 约 1000 tokens，建议扩展到 5000+。
 
         # 注册工具到 MCP server。按宿主注册：WPS 专用的 execute_jsa 不出现在 Excel 会话里
-        host_tools = register_all_tools("wps" if os.environ.get("DEEPEXCEL_HOST") == "wps" else "excel")
+        host = "wps" if os.environ.get("DEEPEXCEL_HOST") == "wps" else "excel"
+        host_tools = register_all_tools(host)
         server = create_sdk_mcp_server(name="excel", tools=host_tools)
+        system_prompt = SYSTEM_PROMPT + host_tool_note(host, [t.name for t in host_tools])
 
         options = ClaudeAgentOptions(
             model=model,
@@ -1081,7 +1017,7 @@ async def main():
             # 免确认名单从注册表生成，不再手写（手写版本曾漏掉 20 个工具）。
             # 真正的放行/确认由 PreToolUse 钩子决定，这里只是兜底。
             allowed_tools=[f"mcp__excel__{t.name}" for t in host_tools],
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             max_turns=max_turns,  # ★ 来自设置 MaxTurns，见 resolve_max_turns
             env=env_config,  # ★ DeepSeek 配置必须在这里传
             # ★ 关键修复：setting_sources=[] 禁用 SDK 读取 ~/.claude/settings.json 等

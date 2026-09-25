@@ -134,7 +134,9 @@ def test_placeholder_tools_are_not_offered_to_the_model(name):
 def test_wps_only_tools_are_registered_only_for_wps():
     assert "execute_jsa" not in _registered_tool_names("excel")
     assert "execute_jsa" in _registered_tool_names("wps")
-    assert set(_registered_tool_names("excel")) <= set(_registered_tool_names("wps"))
+    # WPS 只注册 tool-dispatcher.js 真正实现的那部分（见 test_host_tools.py），
+    # 所以反过来：WPS 能用的（除 execute_jsa 外）Excel 一定也能用。
+    assert set(_registered_tool_names("wps")) - {"execute_jsa"} <= set(_registered_tool_names("excel"))
 
 
 def test_system_prompt_tool_list_matches_what_is_registered():

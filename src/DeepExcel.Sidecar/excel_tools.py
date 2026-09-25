@@ -533,6 +533,30 @@ _HOST_ONLY_TOOLS = {
     "execute_jsa": "wps",
 }
 
+# WPS 宿主（src/DeepExcel.Wps/tool-dispatcher.js 的 case 分支）实际实现的工具。
+# WPS 的工具分发只实现了 Excel 的一小半：图表、透视、快照、VBA、清洗等在 WPS 里
+# 调用永远拿到「WPS 端暂未实现」，白白浪费一轮还让用户以为功能坏了。所以 WPS 会话
+# 只注册这里列出的工具。tests/test_host_tools.py 逐条比对 JS 源码，两边不一致就变红。
+WPS_HOST_TOOLS = frozenset({
+    "read_range", "write_formula", "write_value", "write_range",
+    "read_workbook", "read_selection", "sort_data", "filter_data",
+    "merge_cells", "unmerge_cells", "add_sheet", "delete_sheet", "rename_sheet",
+    "set_number_format", "set_column_width", "freeze_panes", "fill_formula_down",
+    "copy_range", "clear_range", "insert_rows", "delete_rows", "insert_columns",
+    "delete_columns", "set_cell_style", "write_table", "execute_jsa",
+})
+
+# 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
+SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent"})
+
+
+def host_supports_tool(host: str, name: str) -> bool:
+    if _HOST_ONLY_TOOLS.get(name, host) != host:
+        return False
+    if host == "wps":
+        return name in WPS_HOST_TOOLS or name in SIDECAR_CHANNEL_TOOLS
+    return True
+
 
 def register_all_tools(host: str = "excel") -> list:
     """返回当前宿主可用的 @tool 工具对象列表。
@@ -566,4 +590,18 @@ def register_all_tools(host: str = "excel") -> list:
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]
-    return [t for t in tools if _HOST_ONLY_TOOLS.get(t.name, host) == host]
+    return [t for t in tools if host_supports_tool(host, t.name)]
+
+
+def host_tool_note(host: str, registered: list) -> str:
+    """系统提示词里的 <available-tools> 是按 Excel 写的全集。WPS 会话只注册了
+    WPS 真正能执行的那部分，这里补一段说明，免得模型按提示词去找不存在的工具。"""
+    if host != "wps":
+        return ""
+    return (
+        "\n\n<host-tools>\n当前宿主是 WPS 表格。本会话只提供以下工具，"
+        "提示词其他地方提到、但不在此列的工具在 WPS 下不可用，不要尝试调用；"
+        "需要时改用 execute_jsa 或告诉用户该功能请在 Excel 中完成：\n"
+        + ", ".join(sorted(registered))
+        + "\n</host-tools>"
+    )
