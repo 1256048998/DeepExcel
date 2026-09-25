@@ -18,7 +18,6 @@ namespace DeepExcel.AddIn.Executor
     {
         private readonly Microsoft.Office.Interop.Excel.Application _app;
         private const string DefaultMacroName = "DeepExcel_TempMacro";
-        private const int ExcelBusyHResult = unchecked((int)0x800AC472);
         private const string RunOkMarker = "__DEEPEXCEL_VBA_OK__";
         private const string RunErrorMarker = "__DEEPEXCEL_VBA_ERROR__";
         private const char RunResultSeparator = (char)30;
@@ -94,8 +93,10 @@ namespace DeepExcel.AddIn.Executor
             VBProject vbProject = null;
             VBComponent module = null;
             Exception executionError = null;
-            bool screenUpdatingChanged = false;
-            bool previousScreenUpdating = true;
+            AppStateGuard appState = null;
+            List<string> restoredState = null;
+            DialogGuard dialogGuard = null;
+            bool vbeWasVisible = false;
 
             try
             {
@@ -173,15 +174,42 @@ namespace DeepExcel.AddIn.Executor
                 System.Windows.Forms.Application.DoEvents();
 
                 // 4. 执行宏
-                // ★ 临时关闭 Application.ScreenUpdating 提升性能 + 防闪烁
+                // ★ 记下全局开关（执行后把代码改了没改回来的恢复），临时关闭 ScreenUpdating 提升性能 + 防闪烁
                 stage = "macro execution";
-                previousScreenUpdating = _app.ScreenUpdating;
+                appState = AppStateGuard.Capture(_app);
+                vbeWasVisible = IsVbeVisible();
                 _app.ScreenUpdating = false;
-                screenUpdatingChanged = true;
+                // 执行期间弹出的对话框没人能点：后台线程按「绝不点是」的规则代点
+                dialogGuard = DialogGuard.Start(DialogGuard.ProcessOf(SafeHwnd()));
+
+                // ★ 先显式编译：让 Application.Run 去触发编译的话，编译错误弹窗点掉之后 VBE 会进入
+                // 中断模式，Run 一直不返回（Excel 卡死）。「调试 → 编译」出错只弹窗、不进中断模式
+                stage = "compile";
+                if (!CompileProject(module, dialogGuard, out var compileError))
+                {
+                    return new ToolResult
+                    {
+                        Name = "execute_vba",
+                        Success = false,
+                        Error = compileError,
+                        Suggestion = "代码没有执行、工作簿没有被修改。按编译错误改好后重新调用 execute_vba",
+                    };
+                }
+
+                stage = "macro execution";
                 var runSw = System.Diagnostics.Stopwatch.StartNew();
-                var runResult = RunMacroWithBusyRetry(qualifiedMacroName);
+                object runResult;
+                try
+                {
+                    runResult = RunMacroWithBusyRetry(qualifiedMacroName);
+                }
+                finally
+                {
+                    dialogGuard.Dispose();
+                }
                 ThrowIfVbaReportedError(runResult);
                 runSw.Stop();
+                restoredState = appState.Restore();
 
                 // 执行后立即处理消息泵，恢复 WebView2 心跳
                 System.Windows.Forms.Application.DoEvents();
@@ -192,7 +220,8 @@ namespace DeepExcel.AddIn.Executor
                     Name = "execute_vba",
                     Success = true,
                     Data = new { macro = entryPoint },
-                    Warning = warnings,
+                    Warning = JoinNotes(warnings, AppStateGuard.Describe(restoredState),
+                        DialogGuard.Describe(dialogGuard.Handled)),
                 };
             }
             catch (Exception ex)
@@ -201,10 +230,14 @@ namespace DeepExcel.AddIn.Executor
             }
             finally
             {
-                if (screenUpdatingChanged)
+                if (appState != null && restoredState == null)
                 {
-                    try { _app.ScreenUpdating = previousScreenUpdating; }
-                    catch (Exception ex) { Logger.Instance.Warning("VBAExecutor", "Restore ScreenUpdating failed: " + ex.Message); }
+                    restoredState = appState.Restore();
+                }
+                // 编译错误会把 VBE 窗口拉出来；弹窗点掉之后把它收回去
+                if (dialogGuard != null && dialogGuard.Handled.Count > 0 && !vbeWasVisible)
+                {
+                    HideVbe();
                 }
 
                 // Remove only the unique module created by this invocation.
@@ -226,6 +259,9 @@ namespace DeepExcel.AddIn.Executor
             {
                 var hresult = executionError.HResult;
                 var friendlyError = BuildFriendlyError(executionError, stage);
+                // 编译错误的具体原因只写在 VBE 弹窗上：弹窗内容比 COM 异常有用得多
+                var dialogs = DialogGuard.Describe(dialogGuard?.Handled);
+                if (dialogs != null) friendlyError += "\n" + dialogs;
                 Logger.Instance.Error("VBAExecutor",
                     $"Execution failed: stage={stage}, entry={entryPoint}, hresult=0x{hresult:X8}", executionError);
 
@@ -239,6 +275,7 @@ namespace DeepExcel.AddIn.Executor
                     Success = false,
                     Error = friendlyError,
                     Suggestion = BuildFailureSuggestion(executionError, stage),
+                    Warning = AppStateGuard.Describe(restoredState),
                     Data = new
                     {
                         rolledBack = false,
@@ -256,23 +293,97 @@ namespace DeepExcel.AddIn.Executor
             };
         }
 
-        private object RunMacroWithBusyRetry(string qualifiedMacroName)
+        private const int CompileProjectControlId = 578;  // VBE「调试 → 编译 VBAProject」
+        private const int CompileTimeoutMs = 10000;
+
+        private static bool IsEnabled(Microsoft.Office.Core.CommandBarControl control)
         {
-            const int maxAttempts = 3;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            try { return control.Enabled; }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// 编译整个工程。编译错误会弹对话框（DialogGuard 点掉）并把光标停在出错行：这时返回 false，
+        /// 错误信息 = 弹窗内容 + 出错那一行的代码。编译命令拿不到（极少见）时当作通过，交给 Run。
+        /// </summary>
+        private bool CompileProject(VBComponent module, DialogGuard guard, out string error)
+        {
+            error = null;
+            Microsoft.Office.Core.CommandBarControl control = null;
+            try
             {
-                try
+                control = _app.VBE.CommandBars.FindControl(Id: CompileProjectControlId);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("VBAExecutor", "Compile command unavailable: " + ex.Message);
+            }
+            // 已经编译过的工程该命令是灰的；新加了模块一定可用
+            if (control == null || !control.Enabled) return true;
+
+            var before = guard.Handled.Count;
+            // Execute 只是把命令投递出去：编译在 Excel 处理消息时才发生。编译通过后该命令变灰；
+            // 编译出错则弹窗（DialogGuard 记下并点掉），命令保持可用
+            control.Execute();
+            var dialogs = guard.Handled;
+            var waited = System.Diagnostics.Stopwatch.StartNew();
+            while (dialogs.Count == before && waited.ElapsedMilliseconds < CompileTimeoutMs)
+            {
+                System.Windows.Forms.Application.DoEvents();
+                if (!IsEnabled(control)) return true;
+                Thread.Sleep(20);
+                dialogs = guard.Handled;
+            }
+            if (dialogs.Count == before)
+            {
+                Logger.Instance.Warning("VBAExecutor", "Compile did not finish in time; running anyway");
+                return true;
+            }
+
+            var message = dialogs[dialogs.Count - 1].Text;
+            var lineText = "";
+            try
+            {
+                module.CodeModule.CodePane.GetSelection(out var startLine, out _, out _, out _);
+                if (startLine > 0)
                 {
-                    return _app.Run(qualifiedMacroName);
-                }
-                catch (COMException ex) when (ex.HResult == ExcelBusyHResult && attempt < maxAttempts)
-                {
-                    Logger.Instance.Warning("VBAExecutor", $"Excel busy during Application.Run; retry {attempt}/{maxAttempts}");
-                    System.Windows.Forms.Application.DoEvents();
-                    Thread.Sleep(150 * attempt);
+                    lineText = "；出错的是这一行：" + module.CodeModule.get_Lines(startLine, 1).Trim();
                 }
             }
-            return null;
+            catch { }
+            error = "VBA 编译错误，没有执行：" + (string.IsNullOrWhiteSpace(message) ? "（弹窗没有文字）" : message) + lineText;
+            return false;
+        }
+
+        private static string JoinNotes(params string[] notes)
+        {
+            var present = Array.FindAll(notes, n => !string.IsNullOrWhiteSpace(n));
+            return present.Length == 0 ? null : string.Join("\n", present);
+        }
+
+        private int SafeHwnd()
+        {
+            try { return _app.Hwnd; }
+            catch { return 0; }
+        }
+
+        private bool IsVbeVisible()
+        {
+            try { return _app.VBE.MainWindow.Visible; }
+            catch { return false; }
+        }
+
+        private void HideVbe()
+        {
+            try { _app.VBE.MainWindow.Visible = false; }
+            catch (Exception ex) { Logger.Instance.Warning("VBAExecutor", "Hide VBE failed: " + ex.Message); }
+        }
+
+        private object RunMacroWithBusyRetry(string qualifiedMacroName)
+        {
+            // 瞬时错误表示调用被拒绝、宏没开始跑，重试不会重复执行
+            return ComErrors.Retry(() => _app.Run(qualifiedMacroName), "Application.Run",
+                () => System.Windows.Forms.Application.DoEvents());
         }
 
         internal static string BuildInvocationWrapper(string entryPoint, string wrapperName)
@@ -492,7 +603,7 @@ namespace DeepExcel.AddIn.Executor
             {
                 return "Excel 未授权 DeepExcel 访问 VBA 工程对象模型。";
             }
-            if (ex.HResult == ExcelBusyHResult)
+            if (ComErrors.IsTransient(ex))
             {
                 return "Excel 当前正忙，暂时无法执行 VBA。";
             }
@@ -515,7 +626,7 @@ namespace DeepExcel.AddIn.Executor
             {
                 return "在 Excel 的“文件 → 选项 → 信任中心 → 信任中心设置 → 宏设置”中，仅勾选“信任对 VBA 工程对象模型的访问”，然后重启 Excel；不建议启用所有宏。";
             }
-            if (ex.HResult == ExcelBusyHResult)
+            if (ComErrors.IsTransient(ex))
             {
                 return "先按 Esc 结束单元格编辑并关闭 Excel 弹窗，再重试。";
             }

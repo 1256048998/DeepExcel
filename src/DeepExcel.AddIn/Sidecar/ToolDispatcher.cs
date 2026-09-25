@@ -113,6 +113,8 @@ namespace DeepExcel.AddIn.Sidecar
             _turnBackups.Clear();
             _checkpointsSlowThisTurn = false;
             _checkpointsThisTurn = 0;
+            _lastErrorSignature = null;
+            _sameErrorCount = 0;
         }
 
         /// <summary>
@@ -136,12 +138,41 @@ namespace DeepExcel.AddIn.Sidecar
                 {
                     var result = ExecuteGuarded(toolName, args);
                     AttachUserEditNotice(result);
+                    TrackRepeatedError(result);
                     return result;
                 }
             }
             finally
             {
                 IsExecuting = false;
+            }
+        }
+
+        private string _lastErrorSignature;
+        private int _sameErrorCount;
+
+        /// <summary>
+        /// 同一个错误连续出现 3 次（不论哪个工具）：模型多半在原地打转，在建议里明确要它换策略。
+        /// 错误里的数字（行号、地址里的行）不参与比较，换个行号重试同一种错也算同一个。
+        /// </summary>
+        private void TrackRepeatedError(ToolResult result)
+        {
+            if (result == null) return;
+            if (result.Success || string.IsNullOrEmpty(result.Error))
+            {
+                _lastErrorSignature = null;
+                _sameErrorCount = 0;
+                return;
+            }
+            var signature = System.Text.RegularExpressions.Regex.Replace(result.Error, @"\d+", "#");
+            if (signature.Length > 160) signature = signature.Substring(0, 160);
+            _sameErrorCount = signature == _lastErrorSignature ? _sameErrorCount + 1 : 1;
+            _lastErrorSignature = signature;
+            if (_sameErrorCount >= DeepExcel.AddIn.Executor.ComErrors.SameErrorLimit)
+            {
+                result.Suggestion = string.IsNullOrEmpty(result.Suggestion)
+                    ? DeepExcel.AddIn.Executor.ComErrors.ChangeStrategyHint
+                    : result.Suggestion + "\n" + DeepExcel.AddIn.Executor.ComErrors.ChangeStrategyHint;
             }
         }
 
@@ -556,11 +587,35 @@ namespace DeepExcel.AddIn.Sidecar
             catch { return workbookKey; }
         }
 
+        /// <summary>瞬时 COM 错误重试之间的等待；测试里改成 0</summary>
+        internal Func<int, int> TransientRetryDelayMs { get; set; } = attempt => 150 * attempt;
+
         private ToolResult ExecuteCore(string toolName, Dictionary<string, object> args)
+        {
+            try
+            {
+                // 瞬时错误（Excel 暂时拒绝调用）只对只读工具整体重试：写入工具可能已经执行了前几步，
+                // 重跑会重复插行之类的副作用，交给模型带着提示决定
+                if (ToolMutationPolicy.IsMutating(toolName)) return ExecuteCoreOnce(toolName, args);
+                return DeepExcel.AddIn.Executor.ComErrors.Retry(() => ExecuteCoreOnce(toolName, args), toolName, null, TransientRetryDelayMs);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("ToolDispatcher", "Execute failed: " + toolName, ex);
+                return new ToolResult
+                {
+                    Name = toolName,
+                    Success = false,
+                    Error = ex.Message,
+                    Suggestion = DeepExcel.AddIn.Executor.ComErrors.Hint(ex),
+                };
+            }
+        }
+
+        private ToolResult ExecuteCoreOnce(string toolName, Dictionary<string, object> args)
         {
             // ★ AI Native 改造后：权限确认由 PreToolUse hook 异步处理，UI 线程不再阻塞，
             // Excel 不会误触发 WorkbookBeforeClose，不再需要 ExecutionGuard 保护标志。
-            try
             {
                 switch (toolName)
                 {
@@ -969,16 +1024,6 @@ namespace DeepExcel.AddIn.Sidecar
                             Error = $"未知工具: {toolName}",
                         };
                 }
-            }
-            catch (Exception ex)
-            {
-                Logger.Instance.Error("ToolDispatcher", "Execute failed: " + toolName, ex);
-                return new ToolResult
-                {
-                    Name = toolName,
-                    Success = false,
-                    Error = ex.Message,
-                };
             }
         }
 
