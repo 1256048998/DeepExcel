@@ -16,6 +16,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --postwrite  # 写后体检报公式模式异常，模型自己修掉
     python scripts/live_sidecar_events.py --explore    # 大工作簿派只读子 agent 分头摸底，只交回结论
     python scripts/live_sidecar_events.py --memory     # 工作簿记忆：记下偏好和禁区，新会话里模型已经知道
+    python scripts/live_sidecar_events.py --skill      # 知识技能：身份证号被科学计数法吞掉，先读技能再如实告知
 """
 
 from __future__ import annotations
@@ -689,7 +690,44 @@ def memory_scenario() -> int:
     return 1 if problems else 0
 
 
+def skill_scenario() -> int:
+    """知识技能：身份证号被存成了数字。模型应当先 load_skill 读中文数据清洗，
+    然后告诉用户后几位已经丢了、要从源文件重新导入，而不是自己补全。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    context = {"workbookKey": "", "workbookName": "员工花名册.xlsx", "activeSheet": "花名册"}
+    ids = [410102199003071000, 110105198512120000, 320106197708250000]
+    values = [["姓名", "身份证号", "入职日期"]] + [[n, i, "2026年3月1日"] for n, i in zip(["张三", "李四", "王五"], ids)]
+
+    def host(tool, args):
+        if tool in ("read_range", "read_selection"):
+            return {"success": True, "data": {"address": "花名册!A1:C4", "values": values,
+                                              "number_formats": [["General", "0.00E+00", "@"]] * 4}}
+        if tool == "list":
+            return {"success": True, "data": {"sheets": [{"name": "花名册", "used_range": "A1:C4"}]}}
+        if tool == "read_workbook":
+            return {"success": True, "data": {"sheets": [{"name": "花名册", "used_range": "A1:C4"}]}}
+        return {"success": True, "data": {}}
+
+    tools, answer = _one_turn("花名册 B 列的身份证号显示成 4.10102E+17 这种样子，帮我把它们弄成正常的 18 位号码。有问题直接在回复里说，不要弹选项。",
+                              context, host, env)
+    print("--- 回复 ---\n" + answer)
+    problems = []
+    loaded = [args.get("name") for name, args in tools if name.endswith("load_skill")]
+    if "cn-data-cleaning" not in loaded:
+        problems.append(f"model did not load cn-data-cleaning (loaded: {loaded})")
+    writes = [(name, args) for name, args in tools if name.split("__")[-1].startswith(("write", "execute", "fill"))]
+    if any("1000" in json.dumps(args) or "0000" in json.dumps(args) for _, args in writes):
+        problems.append(f"model wrote the corrupted digits back as if they were real: {writes}")
+    if not any(word in answer for word in ("重新导入", "源文件", "原始文件", "找不回", "无法恢复", "丢失")):
+        problems.append("reply does not tell the user the trailing digits are lost")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--skill" in sys.argv:
+        sys.exit(skill_scenario())
     if "--memory" in sys.argv:
         sys.exit(memory_scenario())
     if "--explore" in sys.argv:

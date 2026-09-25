@@ -78,6 +78,7 @@ from claude_agent_sdk.types import (
 
 import explorer
 import selfcheck
+import knowledge_skills
 import workbook_memory
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
@@ -1308,6 +1309,8 @@ async def main():
         explorer.configure(env_config, model, host)
         server = create_sdk_mcp_server(name="excel", tools=host_tools)
         system_prompt = SYSTEM_PROMPT + host_tool_note(host, [t.name for t in host_tools])
+        # 知识技能索引放在末尾：正文不常驻，模型按需 load_skill
+        system_prompt += knowledge_skills.index_prompt()
 
         options = ClaudeAgentOptions(
             model=model,

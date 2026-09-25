@@ -361,6 +361,28 @@ async def update_workbook_notes(args):
     return _wrap_result({"success": True, "data": {"message": message}})
 
 
+@tool(
+    "load_skill",
+    "读取一份专业知识（<knowledge-skills> 里列出的技能）。先只传 name 读正文；"
+    "正文里提到补充文件（如 wps.md）时再传 file 读它",
+    {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "技能名，如 cn-data-cleaning"},
+            "file": {"type": "string", "description": "可选：补充文件名，如 wps.md；读正文时不要传"},
+        },
+        "required": ["name"],
+    },
+)
+async def load_skill(args):
+    import knowledge_skills
+    file = args.get("file")
+    # 模型偶尔把「不传」写成字符串 null / None
+    if not isinstance(file, str) or file.strip().lower() in ("", "null", "none", "skill.md"):
+        file = None
+    return _wrap_result(knowledge_skills.load(args.get("name") or "", file))
+
+
 @tool("read_workbook", "读取当前工作簿的结构信息", {})
 async def read_workbook(args):
     result = await call_csharp("read_workbook", {})
@@ -858,7 +880,7 @@ WPS_HOST_TOOLS = frozenset({
 })
 
 # 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
-SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes"})
+SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes", "load_skill"})
 
 # 宿主原语：宿主分发器里有这个分支，但不注册给模型，只由侧车工具调用
 WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
@@ -911,7 +933,7 @@ def register_all_tools(host: str = "excel") -> list:
         insert_rows, delete_rows, insert_columns, delete_columns,
         freeze_panes,
         apply_conditional_format, write_table,
-        clarify_intent, todo_write, update_workbook_notes,
+        clarify_intent, todo_write, update_workbook_notes, load_skill,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]

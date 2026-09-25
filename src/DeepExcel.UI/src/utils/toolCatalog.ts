@@ -48,6 +48,14 @@ const LIST_KINDS: Record<string, string> = {
   charts: '图表',
 }
 
+// 内置知识技能的中文名（服务端下发的新技能没有条目时显示技能名）
+const SKILL_TITLES: Record<string, string> = {
+  'delivery-quality': '交付质量与验证',
+  'cn-data-cleaning': '中文数据清洗',
+  'cn-formula-writing': '中文用户的公式写入',
+  'cn-financial-reconciliation': '财务报表勾稽核对',
+}
+
 export const TOOL_LABELS: Record<string, Label> = {
   // 读
   read_workbook: () => '读取工作簿结构',
@@ -136,6 +144,7 @@ export const TOOL_LABELS: Record<string, Label> = {
   clarify_intent: () => '向你确认需求',
   todo_write: () => '更新计划',
   update_workbook_notes: () => '更新工作簿记忆',
+  load_skill: a => `查阅知识「${SKILL_TITLES[s(a.name)] || s(a.name)}」`,
   screenshot_excel: () => '截取 Excel 窗口',
   send_keys: a => at('发送按键', a.keys),
 }

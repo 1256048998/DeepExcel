@@ -66,6 +66,7 @@ SYSTEM_PROMPT = """<system-intro>
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
 其他：clarify_intent / todo_write（三步以上的任务先列计划，边做边更新状态）
 记忆：update_workbook_notes（整份重写这个工作簿的记忆 NOTES.md，下次打开会话时自动带给你）
+知识：load_skill（读 <knowledge-skills> 里列出的专业知识；任务涉及其中的主题时动手前先读）
 </available-tools>
 
 <workbook-memory-rules>
