@@ -2326,6 +2326,267 @@ namespace DeepExcel.AddIn.Bridge
             return _workbookAnalyzer.Analyze();
         }
 
+        private const int MaxFindScanPerSheet = 5000;
+        private const int MaxListEntries = 200;
+
+        private static string ClipText(object value, int max = 120)
+        {
+            var text = Convert.ToString(value) ?? "";
+            return text.Length > max ? text.Substring(0, max) + "…" : text;
+        }
+
+        public object FindCells(string query, bool inFormulas, IList<string> sheets, bool wholeCell, int maxResults)
+        {
+            try
+            {
+                var wb = ExcelTarget.Workbook(_app);
+                if (wb == null) return new { error = "没有打开的工作簿" };
+                var matches = new List<object>();
+                var perSheet = new List<object>();
+                var truncated = false;
+                var total = 0;
+                var searched = new List<string>();
+                foreach (Worksheet ws in wb.Worksheets)
+                {
+                    if (sheets != null && sheets.Count > 0 &&
+                        !sheets.Any(s => string.Equals(s, ws.Name, StringComparison.OrdinalIgnoreCase))) continue;
+                    searched.Add(ws.Name);
+                    Range used;
+                    try { used = ws.UsedRange; } catch { continue; }
+
+                    Range first = null;
+                    try
+                    {
+                        first = used.Find(What: query,
+                            LookIn: inFormulas ? XlFindLookIn.xlFormulas : XlFindLookIn.xlValues,
+                            LookAt: wholeCell ? XlLookAt.xlWhole : XlLookAt.xlPart,
+                            SearchOrder: XlSearchOrder.xlByRows, SearchDirection: XlSearchDirection.xlNext,
+                            MatchCase: false);
+                    }
+                    catch { }
+                    if (first == null) continue;
+
+                    var firstAddress = first.Address;
+                    var count = 0;
+                    var complete = true;
+                    var cell = first;
+                    do
+                    {
+                        count++;
+                        if (matches.Count < maxResults)
+                        {
+                            var hasFormula = cell.HasFormula is bool b && b;
+                            matches.Add(new
+                            {
+                                sheet = ws.Name,
+                                address = cell.Address[false, false],
+                                value = ClipText(cell.Text),
+                                formula = hasFormula ? ClipText(cell.Formula, 200) : null,
+                            });
+                        }
+                        else
+                        {
+                            truncated = true;
+                        }
+                        if (count >= MaxFindScanPerSheet) { complete = false; truncated = true; break; }
+                        cell = used.FindNext(cell);
+                    } while (cell != null && cell.Address != firstAddress);
+
+                    total += count;
+                    perSheet.Add(new { sheet = ws.Name, count, complete });
+                }
+
+                if (sheets != null && sheets.Count > 0 && searched.Count == 0)
+                {
+                    return new { error = "找不到指定的工作表：" + string.Join("、", sheets), suggestion = "先用 list(kind=sheets) 看有哪些表" };
+                }
+                string hint = null;
+                if (total == 0) hint = inFormulas ? "公式里没有找到。要找显示值请用 scope=values" : "没有找到。筛选隐藏的行里的值搜不到；要搜公式文本请用 scope=formulas";
+                else if (truncated) hint = $"共找到 {total} 处，只列出了前 {matches.Count} 处；缩小 sheets 范围或换更具体的 query";
+                return new
+                {
+                    query,
+                    scope = inFormulas ? "formulas" : "values",
+                    total,
+                    returned = matches.Count,
+                    truncated,
+                    matches,
+                    per_sheet = perSheet,
+                    hint,
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { error = ex.Message };
+            }
+        }
+
+        public object ListObjects(string kind)
+        {
+            try
+            {
+                var wb = ExcelTarget.Workbook(_app);
+                if (wb == null) return new { error = "没有打开的工作簿" };
+                var items = new List<object>();
+                var k = (kind ?? "sheets").Trim().ToLowerInvariant();
+                switch (k)
+                {
+                    case "sheets":
+                        foreach (Worksheet ws in wb.Worksheets)
+                        {
+                            string used = null; int rows = 0, cols = 0;
+                            try { var u = ws.UsedRange; used = u.Address[false, false]; rows = u.Rows.Count; cols = u.Columns.Count; } catch { }
+                            var visibility = ws.Visible == XlSheetVisibility.xlSheetVisible ? "visible"
+                                : ws.Visible == XlSheetVisibility.xlSheetVeryHidden ? "very_hidden" : "hidden";
+                            bool isProtected = false;
+                            try { isProtected = ws.ProtectContents; } catch { }
+                            items.Add(new { name = ws.Name, index = ws.Index, visibility, used_range = used, rows, columns = cols, @protected = isProtected });
+                        }
+                        foreach (Chart chartSheet in wb.Charts)
+                        {
+                            items.Add(new { name = chartSheet.Name, index = chartSheet.Index, visibility = "visible", kind = "chart_sheet" });
+                        }
+                        break;
+                    case "names":
+                        foreach (Name n in wb.Names)
+                        {
+                            string refersTo = null, scope = "workbook";
+                            try { refersTo = Convert.ToString(n.RefersTo); } catch { }
+                            try { if (n.Parent is Worksheet parentSheet) scope = parentSheet.Name; } catch { }
+                            bool visible = true;
+                            try { visible = n.Visible; } catch { }
+                            items.Add(new { name = n.Name, refers_to = ClipText(refersTo, 200), scope, visible, broken = refersTo != null && refersTo.Contains("#REF!") });
+                            if (items.Count >= MaxListEntries) break;
+                        }
+                        break;
+                    case "tables":
+                        foreach (Worksheet ws in wb.Worksheets)
+                        {
+                            foreach (ListObject t in ws.ListObjects)
+                            {
+                                var headers = new List<string>();
+                                try { foreach (ListColumn c in t.ListColumns) { headers.Add(c.Name); if (headers.Count >= 30) break; } } catch { }
+                                int dataRows = 0;
+                                try { dataRows = t.ListRows.Count; } catch { }
+                                items.Add(new { name = t.Name, sheet = ws.Name, range = t.Range.Address[false, false], rows = dataRows, columns = headers });
+                                if (items.Count >= MaxListEntries) break;
+                            }
+                        }
+                        break;
+                    case "pivots":
+                        foreach (Worksheet ws in wb.Worksheets)
+                        {
+                            PivotTables pivots;
+                            try { pivots = (PivotTables)ws.PivotTables(); } catch { continue; }
+                            for (var i = 1; i <= pivots.Count; i++)
+                            {
+                                var p = pivots.Item(i);
+                                string location = null, source = null;
+                                try { location = p.TableRange1.Address[false, false]; } catch { }
+                                try { source = Convert.ToString(p.SourceData); } catch { }
+                                items.Add(new { name = p.Name, sheet = ws.Name, location, source = ClipText(source, 200) });
+                            }
+                        }
+                        break;
+                    case "charts":
+                        foreach (Worksheet ws in wb.Worksheets)
+                        {
+                            ChartObjects charts;
+                            try { charts = (ChartObjects)ws.ChartObjects(); } catch { continue; }
+                            for (var i = 1; i <= charts.Count; i++)
+                            {
+                                var co = (ChartObject)charts.Item(i);
+                                string title = null, type = null, anchor = null;
+                                try { if (co.Chart.HasTitle) title = co.Chart.ChartTitle.Text; } catch { }
+                                try { type = co.Chart.ChartType.ToString(); } catch { }
+                                try { anchor = co.TopLeftCell.Address[false, false]; } catch { }
+                                items.Add(new { name = co.Name, sheet = ws.Name, type, title, top_left = anchor, chart_sheet = false });
+                            }
+                        }
+                        foreach (Chart chartSheet in wb.Charts)
+                        {
+                            string title = null;
+                            try { if (chartSheet.HasTitle) title = chartSheet.ChartTitle.Text; } catch { }
+                            items.Add(new { name = chartSheet.Name, sheet = (string)null, type = chartSheet.ChartType.ToString(), title, top_left = (string)null, chart_sheet = true });
+                        }
+                        break;
+                    default:
+                        return new { error = "kind 只能是 sheets / names / tables / pivots / charts", suggestion = "例如 list(kind=tables)" };
+                }
+                return new
+                {
+                    kind = k,
+                    count = items.Count,
+                    truncated = items.Count >= MaxListEntries,
+                    items,
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { error = ex.Message };
+            }
+        }
+
+        public object ReadRangePage(string address, int offset, int? limit)
+        {
+            try
+            {
+                var range = TryResolveRange(address, "read_range", out string error, out string suggestion);
+                if (range == null) return new { error, suggestion };
+                if (range.Areas.Count > 1) range = range.Areas[1];
+
+                var ws = range.Worksheet;
+                var requestedBox = new SheetBox(range.Row, range.Column,
+                    range.Row + range.Rows.Count - 1, range.Column + range.Columns.Count - 1);
+                var used = ws.UsedRange;
+                var usedBox = new SheetBox(used.Row, used.Column,
+                    used.Row + used.Rows.Count - 1, used.Column + used.Columns.Count - 1);
+                var requested = DeepExcel.AddIn.Sidecar.ErrorCell.QualifiedAddress(ws.Name, range.Address[false, false]);
+
+                var clip = RangePaging.Clip(requestedBox, usedBox);
+                if (clip == null)
+                {
+                    return new RangePage
+                    {
+                        Address = range.Address,
+                        WorksheetName = ws.Name,
+                        Values = new object[0, 0],
+                        Paging = new PagingInfo { Requested = requested, ClippedToUsedRange = true },
+                        Hint = "这个区域在工作表的已用范围之外，全是空白。",
+                    };
+                }
+
+                var box = clip.Value;
+                var plan = RangePaging.Plan(box.Rows, box.Columns, offset, limit);
+                if (plan.Error != null)
+                {
+                    return new { error = plan.Error, suggestion = "从 offset=0 开始读，或换一个地址" };
+                }
+
+                var first = (Range)ws.Cells[box.Row1 + plan.Offset, box.Col1];
+                var last = (Range)ws.Cells[box.Row1 + plan.Offset + plan.Rows - 1, box.Col1 + plan.Columns - 1];
+                var page = RangePage.From(_rangeAnalyzer.Analyze(ws.Range[first, last]));
+                page.Paging = new PagingInfo
+                {
+                    Requested = requested,
+                    TotalRows = box.Rows,
+                    TotalColumns = box.Columns,
+                    Offset = plan.Offset,
+                    ReturnedRows = plan.Rows,
+                    NextOffset = plan.NextOffset,
+                    ColumnsTruncated = plan.ColumnsTruncated,
+                    ClippedToUsedRange = box.Rows != requestedBox.Rows || box.Columns != requestedBox.Columns
+                        || box.Row1 != requestedBox.Row1 || box.Col1 != requestedBox.Col1,
+                };
+                page.Hint = RangePaging.Hint(requested, box.Rows, box.Columns, plan);
+                return page;
+            }
+            catch (Exception ex)
+            {
+                return new { error = ex.Message };
+            }
+        }
+
         public object ReadWorksheet(string name)
         {
             try

@@ -86,6 +86,15 @@ namespace DeepExcel.AddIn.Bridge
         /// 找不到返回 null。
         /// </summary>
         IDisposable UseTargetWorkbook(string workbookKey);
+        /// <summary>
+        /// read_range 的一页：先裁到已用区域，再从第 offset 行起最多读 limit 行（见 RangePaging）。
+        /// 失败返回带 error / suggestion 的对象。
+        /// </summary>
+        object ReadRangePage(string address, int offset, int? limit);
+        /// <summary>find：在目标工作簿里按值或公式搜索（Range.Find），返回命中位置和每表计数</summary>
+        object FindCells(string query, bool inFormulas, IList<string> sheets, bool wholeCell, int maxResults);
+        /// <summary>list：列出 sheets / names / tables / pivots / charts</summary>
+        object ListObjects(string kind);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

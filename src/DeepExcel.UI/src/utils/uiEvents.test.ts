@@ -124,6 +124,11 @@ describe('toolCatalog', () => {
 
   it('describes common calls in plain Chinese', () => {
     expect(toolLabel('mcp__excel__read_range', { address: 'Sheet1!A1:D20' })).toBe('读取 Sheet1!A1:D20')
+    expect(toolLabel('mcp__excel__read_range', { address: 'A:C', offset: 200 })).toBe('读取 A:C（从第 201 行起）')
+    expect(toolLabel('mcp__excel__find', { query: '应收', sheets: ['Data'] })).toBe('查找「应收」（Data）')
+    expect(toolLabel('mcp__excel__find', { query: 'Sheet2!', scope: 'formulas' })).toBe('查找公式里的「Sheet2!」')
+    expect(toolLabel('mcp__excel__list', { kind: 'tables' })).toBe('列出表格')
+    expect(toolLabel('mcp__excel__list', {})).toBe('列出工作表')
     expect(toolLabel('write_range', { address: 'A1', values: { __shape: [500, 3], head: [] } })).toBe('批量写入 A1 500 行 × 3 列')
     expect(toolLabel('execute_vba', { code: 'Sub A()\nEnd Sub' })).toBe('运行 VBA（2 行）')
     expect(toolLabel('unknown_tool')).toBe('unknown_tool')

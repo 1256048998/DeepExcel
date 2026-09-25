@@ -15,6 +15,7 @@ using ExcelTarget = DeepExcel.AddIn.Executor.ExcelTarget;
 using SnapshotAttempt = DeepExcel.AddIn.Executor.SnapshotAttempt;
 using SnapshotManager = DeepExcel.AddIn.Executor.SnapshotManager;
 using Stopwatch = System.Diagnostics.Stopwatch;
+using RangePaging = DeepExcel.AddIn.Perception.RangePaging;
 using WorkbookIdentity = DeepExcel.AddIn.Executor.WorkbookIdentity;
 using DeepExcel.AddIn.Tools;
 using Microsoft.Office.Interop.Excel;
@@ -566,12 +567,11 @@ namespace DeepExcel.AddIn.Sidecar
                     // 注：每个 case 的执行结果（含 success/error）在 switch 结束后统一记录
                     case "read_range":
                         var address = GetArg<string>(args, "address");
-                        var rangeData = _excel.ReadRange(address);
-                        // ★ Claude Agent SDK 内部消息缓冲区限制 1MB（1048576 bytes），
-                        // read_range 返回的 Values/Formulas 二维数组序列化后可能超过此限制，
-                        // 导致 SDK 抛 "JSON message exceeded maximum buffer size" 崩溃。
-                        // 解决：对超过 MaxRows 的数据截断，并附加 truncated 标志告知模型。
-                        var truncatedData = TruncateRangeData(rangeData, MaxReadRangeRows);
+                        // 分页读取（先裁到已用区域，每页有格数上限，见 RangePaging）：
+                        // 以前整块读完再截到 200 行，A:A 这样的地址会把 104 万行全读出来
+                        var rangeData = _excel.ReadRangePage(address, OptionalInt(args, "offset") ?? 0, OptionalInt(args, "limit"));
+                        // 兜底：宿主没有分页时（旧实现 / 测试替身）仍按行数截断，避免超过 SDK 的 1MB 消息上限
+                        var truncatedData = TruncateRangeData(rangeData, RangePaging.MaxRows);
                         return new ToolResult
                         {
                             Name = toolName,
@@ -580,6 +580,21 @@ namespace DeepExcel.AddIn.Sidecar
                             Suggestion = GenerateRangeSuggestion(rangeData),
                             Context = BuildExcelSnapshot(),
                         };
+
+                    case "find":
+                    {
+                        var query = GetArg<string>(args, "query");
+                        if (string.IsNullOrEmpty(query))
+                            return new ToolResult { Name = toolName, Success = false, Error = "query 不能为空" };
+                        var sheets = GetStringList(args, "sheets");
+                        var inFormulas = string.Equals(GetArg<string>(args, "scope"), "formulas", StringComparison.OrdinalIgnoreCase);
+                        var wholeCell = string.Equals(GetArg<string>(args, "match"), "exact", StringComparison.OrdinalIgnoreCase);
+                        var max = Math.Max(1, Math.Min(OptionalInt(args, "max_results") ?? 50, 200));
+                        return WrapReadResult(toolName, _excel.FindCells(query, inFormulas, sheets, wholeCell, max));
+                    }
+
+                    case "list":
+                        return WrapReadResult(toolName, _excel.ListObjects(GetArg<string>(args, "kind") ?? "sheets"));
 
                     case "write_formula":
                         var cellAddress = GetArg<string>(args, "address");
@@ -1758,6 +1773,78 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         // ============= 参数提取（从 Orchestrator 移植）=============
+
+        /// <summary>宿主返回 { error, suggestion } 时算失败，其余原样作为 data。</summary>
+        private static ToolResult WrapReadResult(string toolName, object data)
+        {
+            var error = data?.GetType().GetProperty("error")?.GetValue(data) as string;
+            if (!string.IsNullOrEmpty(error))
+            {
+                return new ToolResult
+                {
+                    Name = toolName,
+                    Success = false,
+                    Error = error,
+                    Suggestion = data.GetType().GetProperty("suggestion")?.GetValue(data) as string,
+                };
+            }
+            return new ToolResult { Name = toolName, Success = true, Data = data };
+        }
+
+        /// <summary>字符串数组参数（["Sheet1","汇总"]）；也接受逗号分隔的字符串。</summary>
+        internal static List<string> GetStringList(Dictionary<string, object> args, string key)
+        {
+            var list = new List<string>();
+            if (args == null || !args.TryGetValue(key, out var raw) || raw == null) return list;
+            if (raw is JsonElement je)
+            {
+                if (je.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in je.EnumerateArray())
+                    {
+                        if (item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString())) list.Add(item.GetString().Trim());
+                    }
+                    return list;
+                }
+                if (je.ValueKind == JsonValueKind.String) raw = je.GetString();
+                else return list;
+            }
+            if (raw is string text)
+            {
+                list.AddRange(text.Split(new[] { ',', '，' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).Where(s => s.Length > 0));
+            }
+            else if (raw is IEnumerable<object> items)
+            {
+                list.AddRange(items.Select(i => i?.ToString()).Where(s => !string.IsNullOrWhiteSpace(s)));
+            }
+            return list;
+        }
+
+        /// <summary>可选的整数参数：没传、null 或不是数字都返回 null。</summary>
+        internal static int? OptionalInt(Dictionary<string, object> args, string key)
+        {
+            if (args == null || !args.TryGetValue(key, out var raw) || raw == null) return null;
+            try
+            {
+                switch (raw)
+                {
+                    case JsonElement je when je.ValueKind == JsonValueKind.Number:
+                        return (int)Math.Round(je.GetDouble());
+                    case JsonElement je when je.ValueKind == JsonValueKind.String:
+                        return int.TryParse(je.GetString(), out var fromText) ? fromText : (int?)null;
+                    case JsonElement _:
+                        return null;
+                    case string text:
+                        return int.TryParse(text, out var parsed) ? parsed : (int?)null;
+                    default:
+                        return Convert.ToInt32(raw);
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
 
         protected internal T GetArg<T>(Dictionary<string, object> args, string key)
         {

@@ -205,6 +205,36 @@ namespace DeepExcel.Tests
 
         public object[,] ReadFormulas(string address, int maxCells) => ReadFormulasFn(address);
 
+        public List<(string Query, bool InFormulas, IList<string> Sheets, bool WholeCell, int Max)> FindCalls { get; }
+            = new List<(string, bool, IList<string>, bool, int)>();
+        public Func<string, object> FindCellsFn { get; set; } = q => new { query = q, total = 0, matches = new object[0] };
+
+        public object FindCells(string query, bool inFormulas, IList<string> sheets, bool wholeCell, int maxResults)
+        {
+            FindCalls.Add((query, inFormulas, sheets, wholeCell, maxResults));
+            return FindCellsFn(query);
+        }
+
+        public List<string> ListCalls { get; } = new List<string>();
+        public Func<string, object> ListObjectsFn { get; set; } = k => new { kind = k, count = 0, items = new object[0] };
+
+        public object ListObjects(string kind)
+        {
+            ListCalls.Add(kind);
+            return ListObjectsFn(kind);
+        }
+
+        public List<(string Address, int Offset, int? Limit)> ReadPageCalls { get; } = new List<(string, int, int?)>();
+
+        /// <summary>默认沿用 ReadRangeFn（不关心分页的测试不受影响）</summary>
+        public Func<string, int, int?, object> ReadRangePageFn { get; set; }
+
+        public object ReadRangePage(string address, int offset, int? limit)
+        {
+            ReadPageCalls.Add((address, offset, limit));
+            return ReadRangePageFn != null ? ReadRangePageFn(address, offset, limit) : ReadRangeFn(address);
+        }
+
         public IDisposable UseTargetWorkbook(string workbookKey)
         {
             TargetCalls.Add(workbookKey);

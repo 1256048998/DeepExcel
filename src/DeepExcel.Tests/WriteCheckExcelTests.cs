@@ -29,7 +29,8 @@ namespace DeepExcel.Tests
             ((Worksheet)wb.Worksheets[1]).Name = "Data";
             ((Worksheet)wb.Worksheets[2]).Name = "Sum";
             ((Worksheet)wb.Worksheets[1]).Activate();
-            return new ExcelActionsImpl(_app, null, null, null, null, null);
+            return new ExcelActionsImpl(_app, new DeepExcel.AddIn.Perception.WorkbookAnalyzer(_app),
+                new DeepExcel.AddIn.Perception.RangeAnalyzer(), null, null, null);
         }
 
         public void Dispose()
@@ -123,6 +124,30 @@ namespace DeepExcel.Tests
             Assert.Equal("=B2*2", single[0, 0]);
 
             Assert.Null(actions.ReadFormulas("Data!A1:Z100", 100));  // 超过上限不读
+        }
+
+        [ExcelFact]
+        public void Reading_a_whole_column_reads_one_page_of_the_used_range()
+        {
+            var actions = Actions(out var wb);
+            var data = (Worksheet)wb.Worksheets["Data"];
+            data.Range["A1:C450"].Formula = "=ROW()";
+
+            var first = Assert.IsType<DeepExcel.AddIn.Perception.RangePage>(actions.ReadRangePage("Data!A:C", 0, null));
+            Assert.Equal(200, first.RowCount);
+            Assert.Equal(450, first.Paging.TotalRows);
+            Assert.Equal(200, first.Paging.NextOffset);
+            Assert.True(first.Paging.ClippedToUsedRange);
+            Assert.Contains("offset=200", first.Hint);
+
+            var last = Assert.IsType<DeepExcel.AddIn.Perception.RangePage>(actions.ReadRangePage("Data!A:C", 400, null));
+            Assert.Equal(50, last.RowCount);
+            Assert.Null(last.Paging.NextOffset);
+            Assert.Equal("$A$401:$C$450", last.Address);
+            Assert.Equal(401.0, System.Convert.ToDouble(last.Values[1, 1]));
+
+            var empty = Assert.IsType<DeepExcel.AddIn.Perception.RangePage>(actions.ReadRangePage("Data!X900:Z950", 0, null));
+            Assert.Contains("全是空白", empty.Hint);
         }
 
         [ExcelFact]

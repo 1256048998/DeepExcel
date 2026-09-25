@@ -16,6 +16,7 @@ namespace DeepExcel.AddIn.Sidecar
         public static readonly HashSet<string> ReadOnlyTools = new HashSet<string>(StringComparer.Ordinal)
         {
             "read_range", "read_workbook", "read_selection", "read_attachment",
+            "find", "list",
             "screenshot_excel",
             // 导出图表只写图片文件，不改工作簿
             "export_chart",

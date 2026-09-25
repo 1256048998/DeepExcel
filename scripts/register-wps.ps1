@@ -108,7 +108,7 @@ if ($Unregister) {
     }
 
     # 复制所有 JS 加载项文件（main.js, ribbon.xml, taskpane.html, web/ 等）
-    $filesToCopy = @("main.js", "ribbon.xml", "jsplugins.xml", "taskpane.html", "package.json", "sidecar-host.js", "tool-dispatcher.js", "wps-actions.js", "jsa-executor.js", "config-store.js", "credential-store.js", "model-service.js", "dpapi-cli.py", "conversation-store.js", "attachment-store.js")
+    $filesToCopy = @("main.js", "ribbon.xml", "jsplugins.xml", "taskpane.html", "package.json", "sidecar-host.js", "tool-dispatcher.js", "wps-actions.js", "range-paging.js", "jsa-executor.js", "config-store.js", "credential-store.js", "model-service.js", "dpapi-cli.py", "conversation-store.js", "attachment-store.js")
     foreach ($file in $filesToCopy) {
         $src = Join-Path $wpsAddinDir $file
         if (Test-Path $src) {

@@ -40,11 +40,27 @@ function codeLines(v: unknown): string {
   return `（${n} 行）`
 }
 
+const LIST_KINDS: Record<string, string> = {
+  sheets: '工作表',
+  names: '定义的名称',
+  tables: '表格',
+  pivots: '数据透视表',
+  charts: '图表',
+}
+
 export const TOOL_LABELS: Record<string, Label> = {
   // 读
   read_workbook: () => '读取工作簿结构',
   read_selection: () => '读取当前选区',
-  read_range: a => at('读取', a.address),
+  read_range: a => {
+    const offset = Number(a.offset)
+    return offset > 0 ? `读取 ${s(a.address)}（从第 ${offset + 1} 行起）` : at('读取', a.address)
+  },
+  find: a => {
+    const where = Array.isArray(a.sheets) && a.sheets.length ? `（${a.sheets.map(s).join('、')}）` : ''
+    return `查找${a.scope === 'formulas' ? '公式里的' : ''}「${clip(s(a.query), 20)}」${where}`
+  },
+  list: a => `列出${LIST_KINDS[s(a.kind)] || '工作表'}`,
   read_attachment: a => at('读取附件', a.file_name),
 
   // 写

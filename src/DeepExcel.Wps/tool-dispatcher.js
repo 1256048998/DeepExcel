@@ -9,9 +9,6 @@
 const WpsActions = require('./wps-actions')
 const JsaExecutor = require('./jsa-executor')
 
-// ★ read_range 返回的最大行数限制（与 C# 端 MaxReadRangeRows=200 一致）
-const MAX_READ_RANGE_ROWS = 200
-
 class ToolDispatcher {
   constructor() {
     this.jsaExecutor = new JsaExecutor()
@@ -28,12 +25,24 @@ class ToolDispatcher {
     try {
       switch (toolName) {
         case 'read_range': {
+          // ★ 分页读取：先裁到已用区域、一次只读一页（与 C# 端 ReadRangePage 一致）
           const address = this._getArg(args, 'address', '')
-          const rangeData = WpsActions.readRange(address)
-          // ★ 截断超过 MAX_READ_RANGE_ROWS 的数据（与 C# 端一致）
-          const truncated = this._truncateRangeData(rangeData, MAX_READ_RANGE_ROWS)
-          return { success: true, data: truncated, suggestion: this._generateRangeSuggestion(rangeData), error: '' }
+          const page = WpsActions.readRangePage(address, this._getInt(args, 'offset') || 0, this._getInt(args, 'limit'))
+          if (page && page.error) return { success: false, data: null, error: page.error, suggestion: page.suggestion || '' }
+          return { success: true, data: page, suggestion: this._generateRangeSuggestion(page), error: '' }
         }
+
+        case 'find': {
+          const query = String(this._getArg(args, 'query', '') || '')
+          if (!query) return { success: false, data: null, error: 'find 需要 query（要找的文本）', suggestion: '例如 find(query="应收账款")' }
+          const inFormulas = String(this._getArg(args, 'scope', 'values')).toLowerCase() === 'formulas'
+          const wholeCell = String(this._getArg(args, 'match', 'contains')).toLowerCase() === 'exact'
+          const max = Math.min(200, Math.max(1, this._getInt(args, 'max_results') || 50))
+          return this._wrapRead(WpsActions.findCells(query, inFormulas, this._getStringList(args, 'sheets'), wholeCell, max))
+        }
+
+        case 'list':
+          return this._wrapRead(WpsActions.listObjects(this._getArg(args, 'kind', 'sheets')))
 
         case 'write_formula': {
           const addr = this._getArg(args, 'address', '')
@@ -230,41 +239,34 @@ class ToolDispatcher {
     return args[key]
   }
 
-  /**
-   * 截断超过 maxRows 的范围数据（与 C# 端逻辑一致）
-   */
-  _truncateRangeData(rangeData, maxRows) {
-    if (!rangeData || !rangeData.values) return rangeData
-    const rowCount = rangeData.rowCount || 0
-    if (rowCount <= maxRows) return rangeData
+  /** 可选整数参数：没传、空串、不是数字都返回 null */
+  _getInt(args, key) {
+    const value = this._getArg(args, key, null)
+    if (value === null || value === '') return null
+    const n = parseInt(value, 10)
+    return Number.isNaN(n) ? null : n
+  }
 
-    const truncatedValues = rangeData.values.slice(0, maxRows)
-    const truncatedFormulas = rangeData.formulas ? rangeData.formulas.slice(0, maxRows) : null
-    const truncatedFormats = rangeData.numberFormats ? rangeData.numberFormats.slice(0, maxRows) : null
+  /** 字符串列表参数：数组，或逗号（含全角逗号）分隔的文本 */
+  _getStringList(args, key) {
+    const value = this._getArg(args, key, null)
+    const list = Array.isArray(value) ? value : (typeof value === 'string' ? value.split(/[,，]/) : [])
+    return list.map(v => String(v).trim()).filter(Boolean)
+  }
 
-    return {
-      ...rangeData,
-      values: truncatedValues,
-      formulas: truncatedFormulas,
-      numberFormats: truncatedFormats,
-      rowCount: maxRows,
-      truncated: true,
-      original_row_count: rowCount,
-      truncation_hint: `数据超过 ${maxRows} 行已截断，请用 read_range 指定更小范围查看剩余数据`,
-    }
+  /** 读取类结果：宿主返回 { error } 时算失败（与 C# WrapReadResult 一致） */
+  _wrapRead(data) {
+    if (data && data.error) return { success: false, data: null, error: data.error, suggestion: data.suggestion || '' }
+    return { success: true, data, error: '' }
   }
 
   /**
    * 生成范围建议（用于 AI 后续推理）
    */
-  _generateRangeSuggestion(rangeData) {
-    if (!rangeData) return ''
-    const rowCount = rangeData.rowCount || 0
-    const colCount = rangeData.columnCount || 0
-    if (rowCount > 100) {
-      return `数据范围 ${rowCount} 行 × ${colCount} 列，已截断显示前 ${MAX_READ_RANGE_ROWS} 行。如需查看全部数据请分段读取。`
-    }
-    return `数据范围 ${rowCount} 行 × ${colCount} 列`
+  _generateRangeSuggestion(page) {
+    if (!page) return ''
+    if (page.hint) return page.hint
+    return `数据范围 ${page.rowCount || 0} 行 × ${page.columnCount || 0} 列`
   }
 }
 

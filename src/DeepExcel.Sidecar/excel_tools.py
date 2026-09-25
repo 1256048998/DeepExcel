@@ -19,9 +19,86 @@ def _wrap_result(csharp_result: dict) -> dict:
     }
 
 
-@tool("read_range", "读取指定范围的单元格数据", {"address": str})
+def _optional_int(args: dict, key: str):
+    value = args.get(key)
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@tool(
+    "read_range",
+    "读取指定范围的单元格数据。整列/整行（A:A、1:1）会自动收到已用区域；一次最多 200 行（limit 可放大到 500），"
+    "结果里 paging.next_offset 不为空就说明还有下一页，用同一个 address 加 offset 继续读。"
+    "找东西在哪用 find，看有哪些表/名称/图表用 list，不要为了找数据把整张表读一遍。",
+    {
+        "type": "object",
+        "properties": {
+            "address": {"type": "string", "description": "区域地址，如 A1:D50、Sheet2!A:C、命名区域"},
+            "offset": {"type": "integer", "description": "从区域第几行（0 起）开始读，翻页用"},
+            "limit": {"type": "integer", "description": "本页最多读几行，默认 200，上限 500"},
+        },
+        "required": ["address"],
+    },
+)
 async def read_range(args):
-    result = await call_csharp("read_range", {"address": args["address"]})
+    payload = {"address": args["address"]}
+    for key in ("offset", "limit"):
+        value = _optional_int(args, key)
+        if value is not None:
+            payload[key] = value
+    result = await call_csharp("read_range", payload)
+    return _wrap_result(result)
+
+
+@tool(
+    "find",
+    "在工作簿里搜索文本（相当于 Ctrl+F 的「查找全部」）：返回每个匹配的工作表、地址、值和公式。"
+    "定位某个科目/客户/关键字、查哪些公式引用了某张表时先用它，比逐页 read_range 快得多。"
+    "total 是真实命中数，truncated=true 表示只列出了前 max_results 个。",
+    {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "要找的文本（不区分大小写）"},
+            "scope": {"type": "string", "enum": ["values", "formulas"], "description": "values 搜显示的值（默认）；formulas 搜公式文本，如搜 Sheet2! 找跨表引用"},
+            "match": {"type": "string", "enum": ["contains", "exact"], "description": "contains 包含即算（默认）；exact 整个单元格等于 query"},
+            "sheets": {"type": "array", "items": {"type": "string"}, "description": "只搜这些工作表；不传搜全部"},
+            "max_results": {"type": "integer", "description": "最多列出几个匹配，默认 50，上限 200"},
+        },
+        "required": ["query"],
+    },
+)
+async def find(args):
+    payload = {"query": args.get("query", "")}
+    for key in ("scope", "match"):
+        if args.get(key):
+            payload[key] = args[key]
+    if args.get("sheets"):
+        payload["sheets"] = args["sheets"]
+    max_results = _optional_int(args, "max_results")
+    if max_results is not None:
+        payload["max_results"] = max_results
+    result = await call_csharp("find", payload)
+    return _wrap_result(result)
+
+
+@tool(
+    "list",
+    "列出工作簿里的对象：sheets（工作表、可见性、已用区域）、names（定义的名称及引用）、tables（表格及列名）、"
+    "pivots（数据透视表及数据源）、charts（图表及所在表）。弄清工作簿结构、找表名/名称时用它。",
+    {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "enum": ["sheets", "names", "tables", "pivots", "charts"], "description": "列哪一类，默认 sheets"},
+        },
+        "required": [],
+    },
+)
+async def list_objects(args):
+    result = await call_csharp("list", {"kind": args.get("kind") or "sheets"})
     return _wrap_result(result)
 
 
@@ -580,7 +657,7 @@ _HOST_ONLY_TOOLS = {
 # 调用永远拿到「WPS 端暂未实现」，白白浪费一轮还让用户以为功能坏了。所以 WPS 会话
 # 只注册这里列出的工具。tests/test_host_tools.py 逐条比对 JS 源码，两边不一致就变红。
 WPS_HOST_TOOLS = frozenset({
-    "read_range", "write_formula", "write_value", "write_range",
+    "read_range", "find", "list", "write_formula", "write_value", "write_range",
     "read_workbook", "read_selection", "sort_data", "filter_data",
     "merge_cells", "unmerge_cells", "add_sheet", "delete_sheet", "rename_sheet",
     "set_number_format", "set_column_width", "freeze_panes", "fill_formula_down",
@@ -607,7 +684,7 @@ def register_all_tools(host: str = "excel") -> list:
     system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
     """
     tools = [
-        read_workbook, read_selection, read_range, read_attachment,
+        read_workbook, read_selection, read_range, find, list_objects, read_attachment,
         write_formula, write_value, write_range, fill_formula_down, replace_formula,
         clean_data,
         delete_blank_rows, split_text_to_columns, fill_blank_cells,

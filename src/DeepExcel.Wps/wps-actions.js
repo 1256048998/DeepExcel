@@ -16,6 +16,18 @@
 // 2. Value2 返回的是 JS 数组而非 2D 数组对象（WPS 自动转换）
 // 3. 枚举值用数字常量（xlSortColumns=1 等）
 
+const Paging = require('./range-paging')
+
+// Find 的枚举值（WPS JS API 用数字常量）
+const XL_VALUES = -4163
+const XL_FORMULAS = -4123
+const XL_WHOLE = 1
+const XL_PART = 2
+const XL_BY_ROWS = 1
+const XL_NEXT = 1
+// list 每类最多列这么多个，和 C# 端 MaxListEntries 一致
+const MAX_LIST_ENTRIES = 200
+
 const WpsActions = {
   // ============= 读取类 =============
 
@@ -35,6 +47,203 @@ const WpsActions = {
       columnCount: range.Columns.Count,
       numberFormats: this._getNumberFormats(range),
     }
+  },
+
+  /**
+   * 分页读取（对应 C# ReadRangePage）：先裁到已用区域，再只读一页。
+   * 以前 read_range("A:A") 会逐格读 104 万行的数字格式，WPS 直接卡死。
+   */
+  readRangePage(address, offset, limit) {
+    let range = this._getRange(address)
+    try { if (range.Areas.Count > 1) range = range.Areas(1) } catch (e) { /* 单块区域 */ }
+    const ws = range.Worksheet
+    const requestedBox = {
+      row1: range.Row, col1: range.Column,
+      row2: range.Row + range.Rows.Count - 1, col2: range.Column + range.Columns.Count - 1,
+    }
+    const used = ws.UsedRange
+    const usedBox = {
+      row1: used.Row, col1: used.Column,
+      row2: used.Row + used.Rows.Count - 1, col2: used.Column + used.Columns.Count - 1,
+    }
+    const requested = Paging.qualifiedAddress(ws.Name, this._address(range, true))
+
+    const box = Paging.clip(requestedBox, usedBox)
+    if (!box) {
+      return {
+        address: this._address(range, false), values: [], formulas: [], rowCount: 0, columnCount: 0,
+        paging: { requested, total_rows: 0, total_columns: 0, offset: 0, returned_rows: 0, next_offset: null, columns_truncated: false, clipped_to_used_range: true },
+        hint: '这个区域在工作表的已用范围之外，全是空白。',
+      }
+    }
+
+    const totalRows = Paging.boxRows(box)
+    const totalColumns = Paging.boxColumns(box)
+    const plan = Paging.plan(totalRows, totalColumns, offset, limit)
+    if (plan.error) return { error: plan.error, suggestion: '从 offset=0 开始读，或换一个地址' }
+
+    const first = ws.Cells(box.row1 + plan.offset, box.col1)
+    const last = ws.Cells(box.row1 + plan.offset + plan.rows - 1, box.col1 + plan.columns - 1)
+    const page = ws.Range(first, last)
+    return {
+      address: this._address(page, false),
+      values: this._as2d(page.Value2),
+      formulas: this._as2d(page.Formula),
+      rowCount: plan.rows,
+      columnCount: plan.columns,
+      numberFormats: this._getNumberFormats(page),
+      paging: {
+        requested,
+        total_rows: totalRows,
+        total_columns: totalColumns,
+        offset: plan.offset,
+        returned_rows: plan.rows,
+        next_offset: plan.nextOffset,
+        columns_truncated: plan.columnsTruncated,
+        clipped_to_used_range: box.row1 !== requestedBox.row1 || box.col1 !== requestedBox.col1 ||
+          box.row2 !== requestedBox.row2 || box.col2 !== requestedBox.col2,
+      },
+      hint: Paging.hint(requested, totalRows, totalColumns, plan),
+    }
+  },
+
+  /**
+   * 全工作簿查找（对应 C# FindCells）：UsedRange.Find + FindNext 转一圈。
+   */
+  findCells(query, inFormulas, sheets, wholeCell, maxResults) {
+    const wb = wps.Application.ActiveWorkbook
+    if (!wb) return { error: '没有打开的工作簿' }
+    const wanted = (sheets || []).map(s => String(s).toLowerCase())
+    const state = { matches: [], total: 0, truncated: false, maxResults }
+    const perSheet = []
+    let searched = 0
+    for (let i = 1; i <= wb.Worksheets.Count; i++) {
+      const ws = wb.Worksheets(i)
+      if (wanted.length && wanted.indexOf(String(ws.Name).toLowerCase()) < 0) continue
+      searched++
+      let used
+      try { used = ws.UsedRange } catch (e) { continue }
+      let first = null
+      try {
+        // Find(What, After, LookIn, LookAt, SearchOrder, SearchDirection, MatchCase)
+        first = used.Find(query, undefined,
+          inFormulas ? XL_FORMULAS : XL_VALUES, wholeCell ? XL_WHOLE : XL_PART,
+          XL_BY_ROWS, XL_NEXT, false)
+      } catch (e) { first = null }
+      if (!first) continue
+      const counted = Paging.collectMatches(
+        first,
+        cell => { try { return used.FindNext(cell) } catch (e) { return null } },
+        cell => this._address(cell, false),
+        cell => ({
+          sheet: ws.Name,
+          address: this._address(cell, true),
+          value: Paging.clipText(cell.Text),
+          formula: cell.HasFormula ? Paging.clipText(cell.Formula, 200) : null,
+        }),
+        state,
+      )
+      perSheet.push({ sheet: ws.Name, count: counted.count, complete: counted.complete })
+    }
+    if (wanted.length && searched === 0) {
+      return { error: '找不到指定的工作表：' + sheets.join('、'), suggestion: '先用 list(kind=sheets) 看有哪些表' }
+    }
+    return {
+      query,
+      scope: inFormulas ? 'formulas' : 'values',
+      total: state.total,
+      returned: state.matches.length,
+      truncated: state.truncated,
+      matches: state.matches,
+      per_sheet: perSheet,
+      hint: Paging.findHint(state.total, state.matches.length, state.truncated, inFormulas),
+    }
+  },
+
+  /**
+   * 列出工作簿对象（对应 C# ListObjects）：sheets / names / tables / pivots / charts
+   */
+  listObjects(kind) {
+    const wb = wps.Application.ActiveWorkbook
+    if (!wb) return { error: '没有打开的工作簿' }
+    const k = String(kind || 'sheets').trim().toLowerCase()
+    const items = []
+    const full = () => items.length >= MAX_LIST_ENTRIES
+    const each = (collection, fn) => {
+      let count = 0
+      try { count = collection.Count } catch (e) { return }
+      for (let i = 1; i <= count && !full(); i++) {
+        try { fn(collection.Item(i)) } catch (e) { /* 单个对象读不到就跳过 */ }
+      }
+    }
+    const sheetsOf = () => {
+      const list = []
+      for (let i = 1; i <= wb.Worksheets.Count; i++) list.push(wb.Worksheets(i))
+      return list
+    }
+
+    switch (k) {
+      case 'sheets':
+        for (const ws of sheetsOf()) {
+          let usedRange = null; let rows = 0; let columns = 0
+          try { const u = ws.UsedRange; usedRange = this._address(u, true); rows = u.Rows.Count; columns = u.Columns.Count } catch (e) { /* 空表 */ }
+          let isProtected = false
+          try { isProtected = !!ws.ProtectContents } catch (e) { /* 读不到按未保护 */ }
+          items.push({ name: ws.Name, index: ws.Index, visibility: this._visibility(ws.Visible), used_range: usedRange, rows, columns, protected: isProtected })
+        }
+        break
+      case 'names':
+        each(wb.Names, n => {
+          let refersTo = null
+          try { refersTo = String(n.RefersTo) } catch (e) { /* 读不到 */ }
+          let scope = 'workbook'
+          try { if (n.Parent && n.Parent.Name !== wb.Name) scope = n.Parent.Name } catch (e) { /* 工作簿级 */ }
+          let visible = true
+          try { visible = n.Visible !== false } catch (e) { /* 默认可见 */ }
+          items.push({ name: n.Name, refers_to: refersTo == null ? null : Paging.clipText(refersTo, 200), scope, visible, broken: !!refersTo && refersTo.indexOf('#REF!') >= 0 })
+        })
+        break
+      case 'tables':
+        for (const ws of sheetsOf()) {
+          each(ws.ListObjects, t => {
+            const headers = []
+            each(t.ListColumns, c => { if (headers.length < 30) headers.push(c.Name) })
+            let rows = 0
+            try { rows = t.ListRows.Count } catch (e) { /* 空表格 */ }
+            items.push({ name: t.Name, sheet: ws.Name, range: this._address(t.Range, true), rows, columns: headers })
+          })
+        }
+        break
+      case 'pivots':
+        for (const ws of sheetsOf()) {
+          let pivots
+          try { pivots = ws.PivotTables() } catch (e) { continue }
+          each(pivots, p => {
+            let location = null; let source = null
+            try { location = this._address(p.TableRange1, true) } catch (e) { /* 读不到 */ }
+            try { source = Paging.clipText(p.SourceData, 200) } catch (e) { /* 读不到 */ }
+            items.push({ name: p.Name, sheet: ws.Name, location, source })
+          })
+        }
+        break
+      case 'charts':
+        for (const ws of sheetsOf()) {
+          let charts
+          try { charts = ws.ChartObjects() } catch (e) { continue }
+          each(charts, co => {
+            let title = null; let anchor = null
+            try { if (co.Chart.HasTitle) title = co.Chart.ChartTitle.Text } catch (e) { /* 无标题 */ }
+            try { anchor = this._address(co.TopLeftCell, true) } catch (e) { /* 读不到 */ }
+            let type = null
+            try { type = String(co.Chart.ChartType) } catch (e) { /* 读不到 */ }
+            items.push({ name: co.Name, sheet: ws.Name, type, title, top_left: anchor, chart_sheet: false })
+          })
+        }
+        break
+      default:
+        return { error: 'kind 只能是 sheets / names / tables / pivots / charts', suggestion: '例如 list(kind=tables)' }
+    }
+    return { kind: k, count: items.length, truncated: full(), items }
   },
 
   /**
@@ -279,33 +488,74 @@ const WpsActions = {
    */
   _getRange(address) {
     const app = wps.Application
-    if (address.includes('!')) {
-      const [sheetName, rangeAddr] = address.split('!')
+    const bang = address.lastIndexOf('!')
+    if (bang > 0) {
+      // 'Q1 销售'!A1 这种带引号的表名：去掉外层引号，'' 还原成 '
+      let sheetName = address.slice(0, bang).trim()
+      if (sheetName.length >= 2 && sheetName[0] === "'" && sheetName[sheetName.length - 1] === "'") {
+        sheetName = sheetName.slice(1, -1).replace(/''/g, "'")
+      }
       const ws = app.ActiveWorkbook.Worksheets(sheetName)
-      return ws.Range(rangeAddr)
+      return ws.Range(address.slice(bang + 1))
     }
     return app.Range(address)
   },
 
   /**
-   * 获取范围的所有 NumberFormat（2D 数组）
+   * 获取范围的所有 NumberFormat（2D 数组）。
+   * 整块格式一致时 range.NumberFormat 直接是字符串；不一致时是 null，再按列取，
+   * 只有列内也混用格式时才逐格读——一页 1 万格逐格跨 COM 读要好几秒。
    */
   _getNumberFormats(range) {
     try {
       const rowCount = range.Rows.Count
       const colCount = range.Columns.Count
-      const formats = []
-      for (let r = 1; r <= rowCount; r++) {
-        const row = []
-        for (let c = 1; c <= colCount; c++) {
-          row.push(range.Cells(r, c).NumberFormat)
+      const uniform = range.NumberFormat
+      const columns = []
+      for (let c = 1; c <= colCount; c++) {
+        let column = typeof uniform === 'string' ? uniform : null
+        if (column == null) {
+          try { column = range.Columns(c).NumberFormat } catch (e) { column = null }
         }
-        formats.push(row)
+        if (typeof column === 'string') {
+          columns.push(new Array(rowCount).fill(column))
+        } else {
+          const cells = []
+          for (let r = 1; r <= rowCount; r++) cells.push(range.Cells(r, c).NumberFormat)
+          columns.push(cells)
+        }
       }
+      const formats = []
+      for (let r = 0; r < rowCount; r++) formats.push(columns.map(col => col[r]))
       return formats
     } catch (e) {
       return null
     }
+  },
+
+  /** 地址文本：relative=true 去掉 $（WPS 的 Address 有时是属性、有时可带参调用，两种都兼容） */
+  _address(range, relative) {
+    let text
+    try {
+      text = typeof range.Address === 'function' ? range.Address(!relative, !relative) : range.Address
+    } catch (e) {
+      text = range.Address
+    }
+    text = String(text == null ? '' : text)
+    return relative ? text.replace(/\$/g, '') : text
+  },
+
+  /** Value2 / Formula 单格时是标量，多格时是二维数组；统一成二维数组 */
+  _as2d(value) {
+    if (Array.isArray(value)) return value.map(row => (Array.isArray(row) ? row : [row]))
+    return [[value]]
+  },
+
+  /** Worksheet.Visible：-1/true 可见，0/false 隐藏，2 深度隐藏 */
+  _visibility(visible) {
+    if (visible === -1 || visible === true) return 'visible'
+    if (visible === 2) return 'very_hidden'
+    return 'hidden'
   },
 
   /**
