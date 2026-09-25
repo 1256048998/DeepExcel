@@ -113,6 +113,7 @@ export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
         durationMs: event.duration_ms,
         check: event.check,
         checkpointId: event.checkpoint_id,
+        changes: event.changes,
       })
     case 'compaction':
       return [...messages, {

@@ -176,6 +176,7 @@ namespace DeepExcel.AddIn.Sidecar
             }
 
             var healthBefore = WriteCheck.NeedsCheck(toolName) ? SafeCaptureHealth() : null;
+            var diffBefore = hasTarget && WriteCheck.NeedsCheck(toolName) ? SafeReadFormulas(target) : null;
             var result = ExecuteCore(toolName, args);
             if (result != null && backupId != null) result.BackupSnapshotId = backupId;
             if (result != null && result.Success && checkpointId != null) result.CheckpointId = checkpointId;
@@ -184,7 +185,22 @@ namespace DeepExcel.AddIn.Sidecar
             {
                 result.Verification = RunWriteCheck(toolName, args, healthBefore, hasTarget, target);
             }
+            if (diffBefore != null && result != null && result.Success)
+            {
+                result.Changes = CellDiff.Compare(target, diffBefore, SafeReadFormulas(target));
+            }
             return result;
+        }
+
+        /// <summary>内联 diff 用：目标区域的公式 / 值（一次 COM 调用）；区域太大或读不了返回 null。</summary>
+        private object[,] SafeReadFormulas(CellRect target)
+        {
+            try { return _excel.ReadFormulas(target.ToA1(), CellDiff.MaxCells); }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ToolDispatcher", "diff read failed: " + ex.Message);
+                return null;
+            }
         }
 
         private const int MaxHealthErrorsCollected = 200;

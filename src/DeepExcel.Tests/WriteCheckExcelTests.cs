@@ -107,6 +107,25 @@ namespace DeepExcel.Tests
         }
 
         [ExcelFact]
+        public void Reads_formulas_zero_based_for_the_diff()
+        {
+            var actions = Actions(out var wb);
+            var data = (Worksheet)wb.Worksheets["Data"];
+            data.Range["B2"].Value2 = 5;
+            data.Range["C3"].Formula = "=B2*2";
+
+            var block = actions.ReadFormulas("Data!B2:C3", 100);
+            Assert.Equal(2, block.GetLength(0));
+            Assert.Equal("5", System.Convert.ToString(block[0, 0]));
+            Assert.Equal("=B2*2", block[1, 1]);
+
+            var single = actions.ReadFormulas("Data!C3", 100);
+            Assert.Equal("=B2*2", single[0, 0]);
+
+            Assert.Null(actions.ReadFormulas("Data!A1:Z100", 100));  // 超过上限不读
+        }
+
+        [ExcelFact]
         public void Samples_the_computed_values_of_a_filled_column()
         {
             var actions = Actions(out var wb);

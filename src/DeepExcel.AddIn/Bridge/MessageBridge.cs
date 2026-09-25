@@ -2651,6 +2651,34 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        public object[,] ReadFormulas(string address, int maxCells)
+        {
+            try
+            {
+                var range = TryResolveRange(address, "read_formulas", out _, out _);
+                if (range == null) return null;
+                if (Convert.ToDouble(range.CountLarge) > maxCells) return null;
+                var raw = range.Formula;
+                if (raw is object[,] arr)
+                {
+                    // COM 数组是 1 起始的
+                    int r0 = arr.GetLowerBound(0), c0 = arr.GetLowerBound(1);
+                    int rows = arr.GetLength(0), cols = arr.GetLength(1);
+                    var copy = new object[rows, cols];
+                    for (var r = 0; r < rows; r++)
+                        for (var c = 0; c < cols; c++)
+                            copy[r, c] = arr[r0 + r, c0 + c];
+                    return copy;
+                }
+                return new object[,] { { raw } };
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("ExcelActions", "ReadFormulas failed: " + ex.Message);
+                return null;
+            }
+        }
+
         public List<CellSample> SampleCells(string address, int max)
         {
             var samples = new List<CellSample>();

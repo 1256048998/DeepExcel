@@ -254,3 +254,17 @@ def test_checkpoint_id_is_passed_to_the_panel():
     assert out["checkpoint_id"] == "abc"
     failed = ui_events.parse_tool_result(json.dumps({"success": False, "error": "x", "checkpoint_id": "abc"}), False)
     assert "checkpoint_id" not in failed
+
+
+def test_changes_are_passed_to_the_panel():
+    content = json.dumps({"success": True, "data": {}, "changes": {
+        "changed": 3, "cells": 4, "sheet": "Sheet1",
+        "samples": [{"address": "B2", "before": "旧", "after": "新"}]}}, ensure_ascii=False)
+    out = ui_events.parse_tool_result(content, False)
+    assert out["changes"] == {"changed": 3, "sheet": "Sheet1",
+                              "samples": [{"address": "B2", "before": "旧", "after": "新"}]}
+
+
+def test_a_write_that_changed_nothing_has_no_diff():
+    content = json.dumps({"success": True, "changes": {"changed": 0, "cells": 4, "samples": []}})
+    assert "changes" not in ui_events.parse_tool_result(content, False)

@@ -42,6 +42,8 @@ namespace DeepExcel.Tests
         public Func<string, int, List<DeepExcel.AddIn.Sidecar.CellSample>> SampleCellsFn { get; set; }
             = (_, __) => new List<DeepExcel.AddIn.Sidecar.CellSample>();
         public List<string> SampleCellsCalls { get; } = new List<string>();
+        /// <summary>默认 null：不做内联 diff</summary>
+        public Func<string, object[,]> ReadFormulasFn { get; set; } = _ => null;
         public Func<List<DeepExcel.AddIn.Executor.SnapshotMeta>> ListSnapshotsFn { get; set; }
             = () => new List<DeepExcel.AddIn.Executor.SnapshotMeta>();
         public Func<string, bool> DeleteSnapshotFn { get; set; } = _ => true;
@@ -197,6 +199,8 @@ namespace DeepExcel.Tests
         public bool RangeHasContent(string address) => RangeHasContentFn(address);
 
         public DeepExcel.AddIn.Sidecar.HealthSnapshot CaptureHealth(int maxCollected) => CaptureHealthFn();
+
+        public object[,] ReadFormulas(string address, int maxCells) => ReadFormulasFn(address);
 
         public List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max)
         {

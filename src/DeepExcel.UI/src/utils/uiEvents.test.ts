@@ -50,6 +50,12 @@ describe('applyUiEvent', () => {
     expect(out[0].toolSteps![0].checkpointId).toBe('cp-1')
   })
 
+  it('keeps the inline diff of a write step', () => {
+    const changes = { changed: 2, sheet: 'Sheet1', samples: [{ address: 'B2', before: '旧', after: '新' }] }
+    const out = run([start('a', 'write_range', { address: 'B2' }), end('a', true, { changes })])
+    expect(out[0].toolSteps![0].changes).toEqual(changes)
+  })
+
   it('keeps the error message and hint of a failed step', () => {
     const out = run([
       start('a', 'write_value', { address: 'A1', value: 1 }),

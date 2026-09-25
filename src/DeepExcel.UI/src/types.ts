@@ -42,15 +42,20 @@ export type ToolStep = {
   check?: ToolStepCheck
   // 这一步执行前单独存的检查点：有它才显示「回到这一步之前」
   checkpointId?: string
+  // 内联 diff：这一步实际改了哪些格
+  changes?: ToolStepChanges
 }
 
 export type ToolStepCheck = { ok: boolean; summary: string }
+
+export type CellChange = { address: string; before: string; after: string }
+export type ToolStepChanges = { changed: number; sheet?: string; samples: CellChange[] }
 
 // 侧车 ui_event 信封里的 event（docs/ui-event-protocol.md）
 export type UiEvent =
   | { v: number; kind: 'tool_start'; id: string; name: string; args?: Record<string, unknown>; ts?: number }
   | { v: number; kind: 'tool_end'; id: string; name: string; ok: boolean; duration_ms?: number;
-      summary?: string; error?: ToolStepError; check?: ToolStepCheck; checkpoint_id?: string; ts?: number }
+      summary?: string; error?: ToolStepError; check?: ToolStepCheck; checkpoint_id?: string; changes?: ToolStepChanges; ts?: number }
   | { v: number; kind: 'status'; text: string; tool?: string; ts?: number }
   | { v: number; kind: 'tool_gen'; id: string; name: string; chars: number; lines?: number;
       preview?: string; ts?: number }

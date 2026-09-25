@@ -79,6 +79,8 @@ namespace DeepExcel.AddIn.Bridge
         DeepExcel.AddIn.Sidecar.HealthSnapshot CaptureHealth(int maxCollected);
         /// <summary>写后体检：回读区域里的几个单元格（前几个 + 最后一个）的显示值和公式</summary>
         List<DeepExcel.AddIn.Sidecar.CellSample> SampleCells(string address, int max);
+        /// <summary>内联 diff：区域的 Formula（0 起始 [行, 列]）；超过 maxCells 格或地址无效返回 null</summary>
+        object[,] ReadFormulas(string address, int maxCells);
 
         // ★ 新增：历史版本管理（供前端 UI 调用）
         System.Collections.Generic.List<DeepExcel.AddIn.Executor.SnapshotMeta> ListSnapshots();

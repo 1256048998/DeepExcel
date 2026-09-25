@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import type { Message, ToolStep } from '../types'
+import type { Message, ToolStep, ToolStepChanges } from '../types'
 import { formatDuration } from '../utils/uiEvents'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
@@ -339,6 +339,7 @@ function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl
       {step.status === 'ok' && step.summary && (
         <div className="tool-step-result"><span aria-hidden="true">⎿</span> {step.summary}</div>
       )}
+      {step.status === 'ok' && step.changes && <ChangesTable changes={step.changes} />}
       {step.status === 'ok' && step.check && !step.check.ok && (
         <div className="tool-step-result check-failed">
           <span aria-hidden="true">⎿</span> {step.check.summary}
@@ -351,6 +352,33 @@ function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl
         </div>
       )}
     </div>
+  )
+}
+
+// 内联 diff：默认折叠成「改了 N 格」，点开是原值 → 新值的小表
+function ChangesTable({ changes }: { changes: ToolStepChanges }) {
+  const more = changes.changed - changes.samples.length
+  return (
+    <details className="tool-step-diff">
+      <summary>改了 {changes.changed} 格</summary>
+      {changes.samples.length > 0 && (
+        <table>
+          <thead>
+            <tr><th>单元格</th><th>原值</th><th>新值</th></tr>
+          </thead>
+          <tbody>
+            {changes.samples.map(change => (
+              <tr key={change.address}>
+                <td className="addr">{change.address}</td>
+                <td className={change.before ? '' : 'empty'}>{change.before || '（空）'}</td>
+                <td className={change.after ? '' : 'empty'}>{change.after || '（空）'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {more > 0 && <div className="tool-step-diff-more">另有 {more} 格未列出</div>}
+    </details>
   )
 }
 

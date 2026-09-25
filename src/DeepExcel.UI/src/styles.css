@@ -2851,6 +2851,53 @@ body {
   cursor: default;
 }
 
+/* 内联 diff */
+.tool-step-diff {
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.tool-step-diff summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.tool-step-diff table {
+  margin-top: 2px;
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.tool-step-diff th,
+.tool-step-diff td {
+  padding: 1px 6px 1px 0;
+  text-align: left;
+  font-weight: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-step-diff th {
+  color: #9ca3af;
+}
+
+.tool-step-diff th:first-child,
+.tool-step-diff td.addr {
+  width: 56px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-step-diff td.empty {
+  color: #9ca3af;
+}
+
+.tool-step-diff-more {
+  color: #9ca3af;
+}
+
 /* 写入成功但体检发现问题（新增公式错误 / 外部链接）：不是失败，但要看见 */
 .tool-step-result.check-failed {
   color: #b45309;

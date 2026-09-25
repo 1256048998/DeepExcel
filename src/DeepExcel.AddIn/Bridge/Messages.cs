@@ -68,6 +68,10 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>这一步执行前单独存的检查点（面板上「回到这一步之前」用）；和回合备份不同，每步一份</summary>
         [JsonPropertyName("checkpoint_id")]
         public string CheckpointId { get; set; }
+
+        /// <summary>内联 diff：这一步实际改了哪些格（改动数 + 前几处原值→新值）；没比较为 null</summary>
+        [JsonPropertyName("changes")]
+        public object Changes { get; set; }
     }
 
     /// <summary>
