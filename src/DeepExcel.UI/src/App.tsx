@@ -379,6 +379,12 @@ export default function App() {
         // 从输入框上方 slide-up 显示抽屉，不阻塞 Excel UI 线程
         const { request_id, tool, args, preview } = data.payload
         setPermission({ visible: true, requestId: request_id, tool, args, preview })
+      } else if (data.type === 'permission_preview_stale') {
+        // 副本试跑之后用户改到了试跑涉及的格：面板上标出过期，给「重新试跑」
+        const { request_id, message } = data.payload || {}
+        setPermission(prev => (prev.requestId === request_id && prev.preview?.trial)
+          ? { ...prev, preview: { ...prev.preview, trial: { ...prev.preview.trial, stale: true, stale_message: message } } }
+          : prev)
       } else if (data.type === 'compacted') {
         // ★ autocompact 触发：插入压缩提示卡，让用户知道发生了上下文压缩
         setMessages(prev => [...prev, {
@@ -516,6 +522,13 @@ export default function App() {
       })
     }
     setPermission({ visible: false })
+  }
+  // 重新试跑：面板先收起，新的试跑结果到了会再弹出来（同一个 request_id）
+  const handleRerunTrial = () => {
+    if (permission.requestId) {
+      sendToHost({ type: 'rerun_trial', payload: { request_id: permission.requestId } })
+    }
+    setPermission(prev => ({ ...prev, visible: false }))
   }
   const handlePermissionDeny = () => {
     if (permission.requestId) {
@@ -775,6 +788,7 @@ export default function App() {
         preview={permission.preview}
         onAllow={handlePermissionAllow}
         onDeny={handlePermissionDeny}
+        onRerunTrial={handleRerunTrial}
       />
 
       <PlanPill items={plan} />

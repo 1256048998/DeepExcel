@@ -3274,6 +3274,44 @@ body {
   font-size: var(--de-fs-xs);
 }
 
+/* 副本试跑：比「无法预览」可信，但不是精确预告，用青色与 exact 的品牌蓝区分 */
+.preview-trial        { border-left-color: var(--de-success); }
+.preview-trial-failed { border-left-color: var(--de-danger); }
+.preview-badge-trial  { background: var(--de-success); }
+.preview-trial-failed .preview-badge-trial { background: var(--de-danger-solid); }
+
+.preview-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0 6px;
+  padding: 4px 6px;
+  border-radius: var(--de-radius-sm);
+  background: var(--de-danger-soft);
+  color: var(--de-danger);
+  font-size: var(--de-fs-xs);
+}
+.preview-rerun {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid var(--de-danger-border);
+  border-radius: var(--de-radius-sm);
+  background: transparent;
+  color: var(--de-danger);
+  font-size: var(--de-fs-xs);
+  cursor: pointer;
+}
+.preview-rerun:hover { background: color-mix(in srgb, var(--de-danger-solid) 10%, transparent); }
+
+.preview-caveats {
+  margin-top: 6px;
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-secondary);
+}
+.preview-caveats-title { font-weight: 600; }
+.preview-caveats ul { margin: 2px 0 0; padding-left: 16px; }
+
 /* ===== 技能库 ===== */
 .skill-candidate {
   border-left: 3px solid var(--de-brand);

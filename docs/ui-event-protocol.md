@@ -91,6 +91,16 @@ stdout 一行一个 JSON：
 - `plan`：只读工具、`clarify_intent`、`todo_write`、`load_skill`、`update_workbook_notes`、`present_plan` 之外一律在 PreToolUse 拒绝，`tool_end.error.code = "denied"`。
 - 模式不写进任何配置；面板重开回到 `default`。
 
+## 副本试跑（Excel）
+
+`execute_vba` 要确认时，宿主先 SaveCopyAs 出副本，在隐藏的另一个 Excel 进程（DCOM 新实例，核对 PID）里跑同一段代码，再弹确认。代码见 `src/DeepExcel.AddIn/Executor/LabRunner.cs`、`src/DeepExcel.AddIn/Bridge/LabTrialHandlers.cs`。
+
+- 试跑期间发 `ui_event {kind: status, text: "正在工作簿副本上试跑这段代码…"}`，出结果后发空 `text` 清掉。
+- `permission_request.preview.trial`：`success`、`error`、`timed_out`、`duration_ms`、`errors_before` / `errors_after`（公式错误格数）、`note`（执行器提示，含自动点掉的弹窗）、`not_representative[]`（外部链接、数据连接、自带宏时事件被关、代码读路径 / 其他工作簿 / 时间随机数）、`stale`。`changes` 是副本前后的公式文本差异。没能试跑（副本起不来、csv 等格式）时没有 `trial`，`previewable=false`，`reason` 带上原因。
+- 用户之后改到的格和试跑改动的区域相交：宿主发 `permission_preview_stale {request_id, message}`，面板标出过期并给「重新试跑」，点了发 `rerun_trial {request_id}`；宿主重新存副本再跑，用同一个 `request_id` 再发一次 `permission_request`。
+- 允许后在真实工作簿上执行的是同一段代码（照常快照），副本从不拷回。超时 20 秒结束副本进程；副本进程按 PID + 创建时间登记在 `%LOCALAPPDATA%\DeepExcel\lab\processes.json`，主人进程不在了就在下次启动或试跑前回收。副本实例里插件保持被动（`ThisAddIn.IsAutomationInstance`：UserControl=false 且不可见），不建面板、不起侧车。
+- WPS 的 `execute_jsa` 没有副本试跑。
+
 ## 与旧消息的关系
 
 - `tool_use` 仍然发：C# 用它记对话历史和任务轨迹，WPS 用它记对话历史。面板不再渲染它。

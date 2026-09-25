@@ -221,6 +221,39 @@ const mockMemory = {
   historyCount: 12,
 }
 
+function emitMockTrial(requestId: string, thenStale: boolean) {
+  const send = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
+  send('ui_event', { v: 1, kind: 'status', text: '正在工作簿副本上试跑这段代码…', tool: 'execute_vba' })
+  setTimeout(() => {
+    send('ui_event', { v: 1, kind: 'status', text: '', tool: 'execute_vba' })
+    send('permission_request', {
+      request_id: requestId,
+      tool: 'execute_vba',
+      args: { code: 'Sub AddTax()\n  Range("C1").Value = "税额"\n  Range("C2:C3").Formula = "=B2*0.1"\nEnd Sub' },
+      preview: {
+        previewable: true, reason: null, summary: '将修改 3 个单元格', affected_cells: 3, truncated: false,
+        structural: false, formulas_overwritten: 0, deleted_rows: [], deleted_columns: [],
+        warnings: ['公式错误从 0 个增加到 1 个'],
+        changes: [
+          { address: '工资!C1', before: '', after: '税额', kind: 'add', overwrites_formula: false },
+          { address: '工资!C2', before: '', after: '=B2*0.1', kind: 'add', overwrites_formula: false },
+          { address: '工资!C3', before: '', after: '=B3*0.1', kind: 'add', overwrites_formula: false },
+        ],
+        trial: {
+          success: true, error: null, timed_out: false, duration_ms: 420, errors_before: 0, errors_after: 1,
+          note: null, not_representative: ['工作簿自带宏；试跑时关闭了事件，Worksheet_Change 之类的事件宏没有触发'],
+          stale: false,
+        },
+      },
+    })
+    if (thenStale) {
+      setTimeout(() => send('permission_preview_stale', {
+        request_id: requestId, message: '你改动了 工资!C2，和试跑改动的区域重叠，试跑结果可能已不准确',
+      }), 1500)
+    }
+  }, 700)
+}
+
 function mockHostResponse(message: HostMessage) {
   const emit = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
 
@@ -284,6 +317,9 @@ function mockHostResponse(message: HostMessage) {
     case 'rollback_snapshot':
       emit('rollback_result', { success: true, snapshot_id: message.payload?.snapshot_id, restored_sheets: ['Sheet1'] })
       return
+    case 'rerun_trial':
+      emitMockTrial(message.payload?.request_id, false)
+      return
   }
 
   if (devHost?.silent) return
@@ -302,6 +338,12 @@ function mockHostResponse(message: HostMessage) {
           }
         }))
       }, 500)
+      return
+    }
+
+    // 模拟副本试跑：VBA 先在副本上跑，确认面板带试跑结果；1.5 秒后模拟用户改到了涉及的格
+    if (content.includes('试跑')) {
+      emitMockTrial('dev-trial-1', true)
       return
     }
 

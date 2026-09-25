@@ -9,6 +9,7 @@ interface PermissionDrawerProps {
   preview?: ChangePreviewData | null
   onAllow: () => void
   onDeny: () => void
+  onRerunTrial?: () => void
 }
 
 // 高风险工具的中文描述（简洁版，去掉"AI 想执行"前缀，更自然）
@@ -38,7 +39,7 @@ function formatValue(v: any): string {
   return s.length > 240 ? s.slice(0, 240) + '\n…' : s
 }
 
-export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny }: PermissionDrawerProps) {
+export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny, onRerunTrial }: PermissionDrawerProps) {
   const desc = TOOL_DESC[tool] || `执行 ${tool}`
 
   // 筛选要显示的参数（最多 5 个，跳过 null/undefined）
@@ -66,7 +67,7 @@ export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny
         </div>
 
         {/* 变更预览优先于原始参数：决定该基于"会发生什么"，而不是"传了什么参数" */}
-        {preview && <ChangePreview preview={preview} />}
+        {preview && <ChangePreview preview={preview} onRerunTrial={onRerunTrial} />}
 
         {/* 参数预览：代码/参数用深色背景 monospace */}
         {argEntries.length > 0 && (
@@ -83,9 +84,11 @@ export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny
         {/* 底部：操作按钮 */}
         <div className="permission-actions">
           <span className="permission-hint">
-            {preview && preview.previewable
-              ? '确认后立即执行'
-              : '本次会话内允许后不再询问'}
+            {preview?.trial
+              ? '允许后在真实工作簿上执行'
+              : preview && preview.previewable
+                ? '确认后立即执行'
+                : '本次会话内允许后不再询问'}
           </span>
           <div className="permission-btns">
             <button className="perm-btn perm-deny" onClick={onDeny} type="button">

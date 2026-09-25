@@ -533,6 +533,35 @@ namespace DeepExcel.AddIn
         public void OnStartupComplete(ref Array custom)
         {
             Log("OnStartupComplete called");
+            // 程序拉起的 Excel（试跑副本、测试、别的软件的自动化）不是给人用的：不连服务端、不检查更新、
+            // 不报遥测、不预热侧车、不改 VBA 安全设置。有人在这个实例里点了「打开面板」再初始化。
+            if (IsAutomationInstance(_excelApp))
+            {
+                Log("Automation instance (UserControl=false, hidden): staying passive");
+                return;
+            }
+            InitializeBridge();
+        }
+
+        /// <summary>
+        /// CreateObject / DCOM 拉起的 Excel：UserControl=false 且不可见。副本试跑用的隐藏实例就是这种，
+        /// DCOM 启动的进程拿不到我们的环境变量，这是它能认出自己的唯一可靠信号。
+        /// </summary>
+        internal static bool IsAutomationInstance(Microsoft.Office.Interop.Excel.Application app)
+        {
+            try
+            {
+                return app != null && !app.UserControl && !app.Visible;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        private void InitializeBridge()
+        {
+            if (_bridge != null) return;
             try
             {
                 _sidecarUiControl = new Form();
@@ -682,6 +711,9 @@ namespace DeepExcel.AddIn
             Log("OnTogglePanel called");
             try
             {
+                // 启动时按自动化实例保持被动的，有人点了按钮就补上初始化
+                if (_bridge == null) InitializeBridge();
+
                 // ★ 按钮仅用于"打开面板"，不切换可见性。
                 // 关闭面板仅通过面板右上角的关闭按钮（CustomTaskPane 的 X）。
                 // ★ SDI 多窗口支持：Excel 2013+ 每个 workbook 是独立窗口，

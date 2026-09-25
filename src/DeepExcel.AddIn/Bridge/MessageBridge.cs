@@ -95,6 +95,9 @@ namespace DeepExcel.AddIn.Bridge
             var securityManager = SecurityManager.Instance;
             _securityGateway = new SecurityGateway(securityManager);
             _toolDispatcher = new ToolDispatcher(_excelActions, _excelApp);
+
+            // 上次崩溃留下的副本 Excel：主人已经不在了，结束它们
+            System.Threading.Tasks.Task.Run(() => LabProcessRegistry.Reap());
         }
 
         /// <summary>
@@ -414,6 +417,9 @@ namespace DeepExcel.AddIn.Bridge
                     // ★ AI Native 权限确认：前端抽屉用户点击"允许"/"拒绝"后回传
                     case "permission_response":
                         return HandlePermissionResponse(session, msg);
+                    // 副本试跑结果过期后，面板上点「重新试跑」
+                    case "rerun_trial":
+                        return HandleRerunTrial(session, msg);
                     // ★ 附件管理
                     case "list_attachments":
                         return MakeResponse("attachments", new { list = session.GetAttachmentList() });
@@ -1487,6 +1493,7 @@ namespace DeepExcel.AddIn.Bridge
                 var requestId = payload.GetProperty("request_id").GetString();
                 var decision = payload.GetProperty("decision").GetString();
                 Logger.Instance.Info("MessageBridge", $"HandlePermissionResponse: req_id={requestId}, decision={decision}, workbook={session.WorkbookName}");
+                _labTrials.Remove(requestId);
                 session.Sidecar.SendPermissionResponse(requestId, decision);
                 return MakeResponse("ack", new { received = true });
             }
@@ -1889,6 +1896,12 @@ namespace DeepExcel.AddIn.Bridge
             {
                 Logger.Instance.Info("MessageBridge", $"OnPermissionRequest: tool={tool}, req_id={requestId}, workbookKey={session.WorkbookKey}");
 
+                // VBA 先在工作簿副本上试跑，确认面板等试跑结果出来再弹（见 LabTrialHandlers）
+                if (TryStartLabTrial(session, sender, requestId, tool, args))
+                {
+                    return;
+                }
+
                 // Compute what the operation will actually do, before it does
                 // it. Null means "no preview policy for this tool"; a preview
                 // with Previewable=false means "we cannot know", which the
@@ -2138,6 +2151,7 @@ namespace DeepExcel.AddIn.Bridge
                     if (CellRect.TryParse(part, sheetName, out var rect))
                     {
                         dispatcher.Ledger.RecordUserEdit(rect);
+                        CheckLabTrialsStale(workbookKey, rect);
                     }
                 }
             }
@@ -2168,6 +2182,7 @@ namespace DeepExcel.AddIn.Bridge
                     }
                     session.Dispose();
                     _sessions.Remove(workbookKey);
+                    _labTrials.RemoveWorkbook(workbookKey);
                     Logger.Instance.Info("MessageBridge", $"Session closed (workbook closed): {workbookKey}");
                 }
             }
@@ -2232,6 +2247,7 @@ namespace DeepExcel.AddIn.Bridge
                     $"LRU evicting idle session: {oldestKey} (last used {oldestTime})");
                 oldestIdle.Dispose();
                 _sessions.Remove(oldestKey);
+                _labTrials.RemoveWorkbook(oldestKey);
             }
         }
 
