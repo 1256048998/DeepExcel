@@ -320,6 +320,22 @@ function mockHostResponse(message: HostMessage) {
     case 'rerun_trial':
       emitMockTrial(message.payload?.request_id, false)
       return
+    // 首次使用：默认给一个空工作簿；?starter=data 时给一张带脏数据的销售表
+    case 'get_starter': {
+      const withData = typeof location !== 'undefined' && location.search.includes('starter=data')
+      emit('starter', {
+        workbook_name: withData ? '三季度销售.xlsx' : '工作簿1',
+        sheets: withData
+          ? [{ name: '销售', rows: 5, columns: 3, date_columns: [true, false, false], grid: [
+              ['下单日期', '区域', '金额'], [45474, '华东', 100], [45480, '华南', '200'], [45490, '华东 ', 50], [45500, '华北', 80],
+            ] }]
+          : [{ name: 'Sheet1', rows: 1, columns: 1, grid: [[null]] }],
+      })
+      return
+    }
+    case 'insert_sample':
+      emit('sample_inserted', { sheet: message.payload?.sheet_name || '示例-销售明细' })
+      return
   }
 
   if (devHost?.silent) return

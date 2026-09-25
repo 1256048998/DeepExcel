@@ -439,6 +439,11 @@ namespace DeepExcel.AddIn.Bridge
                     case "delete_conversation":
                         return HandleDeleteConversation(session, msg);
                     // ★ 工作簿记忆（侧车维护的 NOTES.md）：面板查看 / 修改 / 清除
+                    // 首次使用：工作簿结构（推荐在面板里算）/ 插入示例数据到新表
+                    case "get_starter":
+                        return HandleGetStarter();
+                    case "insert_sample":
+                        return HandleInsertSample(msg);
                     case "memory_get":
                         return MakeResponse("memory", Collaboration.WorkbookMemoryStore.Describe(session.WorkbookKey, session.WorkbookName));
                     case "memory_save":

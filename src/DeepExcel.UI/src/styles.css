@@ -3312,6 +3312,43 @@ body {
 .preview-caveats-title { font-weight: 600; }
 .preview-caveats ul { margin: 2px 0 0; padding-left: 16px; }
 
+/* ===== 首次使用卡片（欢迎语下方） ===== */
+.starter-message .message-content { margin-bottom: 8px; }
+.starter-card {
+  padding: 8px 10px;
+  border-radius: var(--de-radius-md);
+  border: 1px solid var(--de-border);
+  background: var(--de-bg-subtle);
+  font-size: var(--de-fs-sm);
+}
+.starter-loading { color: var(--de-text-secondary); }
+.starter-title { font-weight: 600; margin-bottom: 6px; }
+.starter-note { margin: 0 0 8px; color: var(--de-text-secondary); font-size: var(--de-fs-xs); line-height: 1.5; }
+.starter-sample-btn {
+  padding: 4px 12px;
+  border: none;
+  border-radius: var(--de-radius-sm);
+  background: var(--de-brand);
+  color: var(--de-on-brand);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+}
+.starter-sample-btn:disabled { opacity: 0.6; cursor: default; }
+.starter-error { margin-top: 6px; color: var(--de-danger); font-size: var(--de-fs-xs); }
+.starter-list { display: flex; flex-direction: column; gap: 4px; }
+.starter-item {
+  text-align: left;
+  padding: 5px 8px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-sm);
+  background: var(--de-bg);
+  color: var(--de-text);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+}
+.starter-item:hover:not(:disabled) { border-color: var(--de-brand); color: var(--de-brand); }
+.starter-item:disabled { opacity: 0.6; cursor: default; }
+
 /* ===== 技能库 ===== */
 .skill-candidate {
   border-left: 3px solid var(--de-brand);

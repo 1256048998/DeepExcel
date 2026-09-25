@@ -5,6 +5,8 @@ import { useStickToBottom } from '../utils/useStickToBottom'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { CopyButton } from './CopyButton'
 import { StreamingChoices } from './StreamingChoices'
+import { StarterCard } from './StarterCard'
+import type { StarterView } from './StarterCard'
 
 interface Props {
   messages: Message[]
@@ -19,6 +21,10 @@ interface Props {
   rewind?: RewindControl
   // 方案卡片：批准（按哪种模式执行）或继续修改
   onPlanDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
+  // 首次使用卡片：点推荐问题直接发送；空工作簿可插入示例数据
+  starter?: StarterView
+  onStarterPick?: (prompt: string) => void
+  onInsertSample?: () => void
 }
 
 export type RewindControl = {
@@ -47,7 +53,7 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind, onPlanDecision }: Props) {
+export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind, onPlanDecision, starter, onStarterPick, onInsertSample }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
 
@@ -81,7 +87,19 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
     <div className="messages-wrap">
       <div className="messages" ref={containerRef}>
         <div className="messages-content" ref={contentRef}>
-          {messages.map((msg, idx) => (
+          {messages.map((msg, idx) => msg.type === 'starter' ? (
+            <div key={idx} className="message assistant starter-message">
+              <div className="message-content"><span>{msg.content}</span></div>
+              {starter && (
+                <StarterCard
+                  starter={starter}
+                  busy={loading}
+                  onPick={prompt => onStarterPick?.(prompt)}
+                  onInsertSample={() => onInsertSample?.()}
+                />
+              )}
+            </div>
+          ) : (
             <MessageItem
               key={idx}
               message={msg}

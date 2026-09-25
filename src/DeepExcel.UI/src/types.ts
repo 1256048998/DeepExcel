@@ -4,7 +4,8 @@ export type Message = {
   streaming?: boolean
   toolName?: string
   result?: string
-  type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice' | 'plan_proposal'
+  // starter：欢迎语，下面带「首次使用」卡片（示例数据 / 为你的文件推荐）
+  type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice' | 'plan_proposal' | 'starter'
   options?: string[]
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并

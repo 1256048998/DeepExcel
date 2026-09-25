@@ -602,6 +602,23 @@ function _handleSessionMessage(type, payload) {
   }
 }
 
+// ★ 首次使用：工作簿结构（推荐在面板里算）/ 插入示例数据到新表。不需要 sidecar
+function _handleStarterMessage(type, payload) {
+  if (type !== 'get_starter' && type !== 'insert_sample') return false
+  try {
+    var starter = require('./starter-host')
+    if (type === 'get_starter') {
+      _respond('starter', starter.describe(_application()))
+    } else {
+      _respond('sample_inserted', { sheet: starter.insertSample(_application(), payload) })
+    }
+  } catch (error) {
+    var prefix = type === 'get_starter' ? '读取工作簿结构失败：' : '插入示例失败：'
+    _respond('error', { message: prefix + String((error && error.message) || error) })
+  }
+  return true
+}
+
 function _handleFrontendMessage(message) {
   if (!message || !message.type) return
 
@@ -609,6 +626,7 @@ function _handleFrontendMessage(message) {
   if (_handleConfigMessage(message.type, message.payload || {})) return
   // ★ 再处理对话历史 / 附件消息
   if (_handleSessionMessage(message.type, message.payload || {})) return
+  if (_handleStarterMessage(message.type, message.payload || {})) return
 
   if (!_ensureSidecar()) {
     _forwardToTaskpane({

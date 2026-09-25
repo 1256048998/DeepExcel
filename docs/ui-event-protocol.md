@@ -101,6 +101,14 @@ stdout 一行一个 JSON：
 - 允许后在真实工作簿上执行的是同一段代码（照常快照），副本从不拷回。超时 20 秒结束副本进程；副本进程按 PID + 创建时间登记在 `%LOCALAPPDATA%\DeepExcel\lab\processes.json`，主人进程不在了就在下次启动或试跑前回收。副本实例里插件保持被动（`ThisAddIn.IsAutomationInstance`：UserControl=false 且不可见），不建面板、不起侧车。
 - WPS 的 `execute_jsa` 没有副本试跑。
 
+## 首次使用
+
+面板 ↔ 宿主，不经过侧车、不花模型调用。
+
+- `get_starter` → `starter {workbook_name, sheets[{name, rows, columns, grid, date_columns}]}`：每张可见表最多 12 张、前 51 行 × 30 列原样交出（错误值是 `#N/A` 这样的文本，日期是序列号，靠 `date_columns` 区分）。列类型判断和推荐在 `src/DeepExcel.UI/src/utils/starter.ts`（有测试），Excel 和 WPS 共用。
+- 工作簿全空：卡片给「插入示例数据」。`insert_sample {sheet_name, rows, number_formats}` → `sample_inserted {sheet}`；宿主把示例写进最后一张表之后的新表（重名加 `(2)`），以 `=` 开头的文本加撇号不当公式。示例数据在 `starter.ts` 里按固定种子生成，故意埋了文本金额、带空格的名字、一行重复、一个空区域。
+- 宿主实现：`src/DeepExcel.AddIn/Bridge/StarterHandlers.cs`、`src/DeepExcel.Wps/starter-host.js`。宿主不认识 `get_starter`（老版本）时面板退回三条通用示例。
+
 ## 与旧消息的关系
 
 - `tool_use` 仍然发：C# 用它记对话历史和任务轨迹，WPS 用它记对话历史。面板不再渲染它。

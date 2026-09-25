@@ -105,6 +105,8 @@ WPS_ITEMS = [
     # 工作簿记忆的面板入口（与 Excel 端共用 workbooks/<hash>/NOTES.md）
     "workbook-memory-store.js",
     "jsa-executor.js",
+    # 首次使用：工作簿结构 / 插入示例数据
+    "starter-host.js",
     # 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
     "config-store.js",
     "credential-store.js",

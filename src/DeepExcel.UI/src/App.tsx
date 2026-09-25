@@ -24,6 +24,10 @@ import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
+import { GENERIC_STARTERS } from './components/StarterCard'
+import type { StarterView } from './components/StarterCard'
+import { recommendStarters, sampleQuestions, sampleRows, SAMPLE_NUMBER_FORMATS, SAMPLE_SHEET_NAME } from './utils/starter'
+import type { WorkbookOutline } from './utils/starter'
 
 // ★ AI Native 权限确认抽屉状态（PreToolUse hook 触发，从输入框上方 slide-up）
 interface PermissionState {
@@ -43,9 +47,14 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: '你好！我是 DeepExcel AI Agent，可以帮你执行Excel任务。\n\n试试说：\n• "在A1写入=SUM(B1:B10)"\n• "把Sheet1的A列数据清洗一下"\n• "根据Sheet1数据创建柱状图"'
+      type: 'starter',
+      content: '你好！我是 DeepExcel，可以直接在你的工作簿里读数据、写公式、清洗和汇总。'
     }
   ])
+  // 首次使用卡片：宿主给工作簿结构（get_starter），推荐在面板里算，不花模型调用
+  const [starter, setStarter] = useState<StarterView>({ loading: true, mode: 'unknown', suggestions: [] })
+  const loadStarterRef = useRef<() => void>(() => {})
+  useEffect(() => { loadStarterRef.current() }, [])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   // 侧车 status 事件（「等待你确认」等），显示在加载指示旁；工具开始/结束或本轮结束时清掉
@@ -401,6 +410,7 @@ export default function App() {
         ])
         setLoading(false)
       } else if (data.type === 'connection_ok') {
+        loadStarterRef.current()
         // ★ 自动加载历史：开关开启时，连接建立后恢复最近一次对话
         if (autoLoadHistory && !hasAutoLoadedRef.current) {
           hasAutoLoadedRef.current = true
@@ -417,6 +427,36 @@ export default function App() {
     setPermissionMode(mode)
     // 任务进行中切换：立即告诉侧车，下一次工具调用就按新模式判断
     if (loading) sendToHost({ type: 'set_permission_mode', payload: { mode } }).catch(() => {})
+  }
+
+  const loadStarter = async () => {
+    const resp = await sendToHostWithResponse({ type: 'get_starter', payload: {} }, 'starter', 4000)
+    if (resp?.type !== 'starter' || !resp.payload) {
+      // 宿主不支持或读结构失败：退回通用示例，不让卡片一直转圈
+      setStarter({ loading: false, mode: 'unknown', suggestions: GENERIC_STARTERS })
+      return
+    }
+    const outline = resp.payload as WorkbookOutline
+    const plan = recommendStarters(outline)
+    setStarter(prev => prev.mode === 'sample' && prev.sampleSheet
+      ? { ...prev, loading: false }
+      : { loading: false, mode: plan.mode, suggestions: plan.suggestions, workbookName: outline.workbook_name })
+  }
+  loadStarterRef.current = loadStarter
+
+  const handleInsertSample = async () => {
+    setStarter(prev => ({ ...prev, inserting: true, error: undefined }))
+    const resp = await sendToHostWithResponse({
+      type: 'insert_sample',
+      payload: { sheet_name: SAMPLE_SHEET_NAME, rows: sampleRows(), number_formats: SAMPLE_NUMBER_FORMATS },
+    }, 'sample_inserted', 10000)
+    const sheet = resp?.type === 'sample_inserted' ? resp.payload?.sheet : null
+    if (!sheet) {
+      const reason = resp?.type === 'error' ? resp.payload?.message : null
+      setStarter(prev => ({ ...prev, inserting: false, error: reason || '插入示例失败，请确认工作簿没有处于编辑状态或受保护' }))
+      return
+    }
+    setStarter({ loading: false, mode: 'sample', sampleSheet: sheet, suggestions: sampleQuestions(sheet) })
   }
 
   const sendMessage = async (text?: string, modeOverride?: PermissionMode) => {
@@ -602,8 +642,11 @@ export default function App() {
       // 重置前端状态
       setMessages([{
         role: 'assistant',
+        type: 'starter',
         content: '新对话已开始，请告诉我你需要做什么。'
       }])
+      setStarter({ loading: true, mode: 'unknown', suggestions: [] })
+      loadStarter()
       setInput('')
       setLoading(false)
       setIsClarifying(false)
@@ -769,6 +812,9 @@ export default function App() {
       {setupNeeded && <SetupNotice onConfigure={() => setModelConfigOpen(true)} />}
 
       <MessageList
+        starter={starter}
+        onStarterPick={prompt => sendMessage(prompt)}
+        onInsertSample={handleInsertSample}
         messages={messages}
         loading={loading}
         statusText={statusText}
