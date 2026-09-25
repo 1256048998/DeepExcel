@@ -12,6 +12,7 @@ reason streaming exists.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 import uuid
@@ -21,7 +22,7 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -36,6 +37,7 @@ from ..models import (
 )
 from ..security import ACCESS_AUDIENCE_PROXY, decode_access_token
 from .metering import StreamUsageCollector, Usage, estimate_cost_usd, usage_from_payload
+from .tasks import TASK_WINDOW, clean_trace_id, starts_new_user_turn, strip_window_suffix
 from .upstream import load_upstreams, select as select_upstreams
 
 router = APIRouter(prefix="/v1", tags=["proxy"])
@@ -53,6 +55,8 @@ _STRIPPED_REQUEST_HEADERS = {
     "host", "authorization", "x-api-key", "content-length",
     "connection", "keep-alive", "transfer-encoding", "upgrade",
     "accept-encoding",
+    # Ours, not the provider's: it groups calls into tasks for metering.
+    "x-trace-id",
 }
 _STRIPPED_RESPONSE_HEADERS = {
     "content-length", "content-encoding", "connection",
@@ -117,11 +121,58 @@ def _check_quota(db: Session, user: User) -> Entitlement:
     return entitlement
 
 
+def _trace_window_start() -> dt.datetime:
+    return utcnow() - TASK_WINDOW
+
+
+def _task_already_counted(db: Session, user_id: int, trace_id: str) -> bool:
+    return db.scalar(
+        select(func.count()).select_from(UsageRecord).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.trace_id == trace_id,
+            UsageRecord.counted_as_task.is_(True),
+            UsageRecord.created_at >= _trace_window_start(),
+        )
+    ) > 0
+
+
+def _calls_in_task(db: Session, user_id: int, trace_id: str) -> int:
+    return db.scalar(
+        select(func.count()).select_from(UsageRecord).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.trace_id == trace_id,
+            UsageRecord.created_at >= _trace_window_start(),
+        )
+    )
+
+
+def _check_task_budget(db: Session, user_id: int, trace_id: str | None) -> None:
+    """Refuses a call that would push one task past its call budget.
+
+    Checked before forwarding so a runaway loop stops costing money at the
+    limit rather than one call after it.
+    """
+    if trace_id is None:
+        return
+    limit = get_settings().max_calls_per_task
+    if _calls_in_task(db, user_id, trace_id) >= limit:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "reason": "task_call_limit",
+                "limit": limit,
+                "message": "这个任务调用模型的次数已达上限，请拆成更小的任务或开始新对话。",
+            },
+        )
+
+
 def _record_usage(
     user_id: int, model: str, upstream_name: str, usage: Usage,
     status_code: int, duration_ms: int,
+    trace_id: str | None = None, new_user_turn: bool = True,
 ) -> None:
-    """Writes the usage row on its own session.
+    """Writes the usage row on its own session, and consumes a task if this call
+    starts one (see proxy/tasks.py).
 
     Separate from the request session because it runs after the response has
     been streamed, by which time the request's session is gone. Failures here
@@ -130,6 +181,12 @@ def _record_usage(
     """
     try:
         with get_session_factory()() as db:
+            counts = False
+            if status_code < 400:
+                if trace_id is not None:
+                    counts = not _task_already_counted(db, user_id, trace_id)
+                else:
+                    counts = new_user_turn
             db.add(
                 UsageRecord(
                     user_id=user_id,
@@ -142,10 +199,11 @@ def _record_usage(
                     cost_usd=estimate_cost_usd(model, usage),
                     status_code=status_code,
                     duration_ms=duration_ms,
+                    trace_id=trace_id,
+                    counted_as_task=counts,
                 )
             )
-            if status_code < 400:
-                # One successful call counts as one task against the quota.
+            if counts:
                 entitlement = db.scalar(select(Entitlement).where(Entitlement.user_id == user_id))
                 if entitlement is not None:
                     entitlement.tasks_used += 1
@@ -188,6 +246,16 @@ async def messages(
     model = str(payload.get("model") or "")
     if not model:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="model is required")
+    bare_model = strip_window_suffix(model)
+    if bare_model != model:
+        # A context-window suffix is a CLI-side hint; no provider knows it.
+        model = bare_model
+        payload["model"] = model
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    trace_id = clean_trace_id(request.headers.get("x-trace-id"))
+    new_user_turn = starts_new_user_turn(payload)
+    _check_task_budget(db, user.id, trace_id)
 
     candidates = select_upstreams(load_upstreams(), model)
     if not candidates:
@@ -250,6 +318,7 @@ async def messages(
                     _record_usage(
                         user_id, model, upstream.name, collector.usage,
                         response.status_code, int((time.monotonic() - started) * 1000),
+                        trace_id=trace_id, new_user_turn=new_user_turn,
                     )
 
             return StreamingResponse(
@@ -271,6 +340,7 @@ async def messages(
         _record_usage(
             user_id, model, upstream.name, usage,
             response.status_code, int((time.monotonic() - started) * 1000),
+            trace_id=trace_id, new_user_turn=new_user_turn,
         )
 
         from fastapi.responses import Response
@@ -290,26 +360,37 @@ async def messages(
 
 @router.get("/usage")
 def my_usage(
+    trace_id: str | None = None,
     user: User = Depends(proxy_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Lets a client show its own consumption without the account token."""
-    import datetime as dt
-    from sqlalchemy import func
+    """Lets a client show its own consumption without the account token.
 
-    since = utcnow() - dt.timedelta(days=30)
+    With ``trace_id`` the totals cover that one task, which is what the panel
+    shows on the line under a finished answer. The client displays these
+    numbers; it never computes them.
+    """
+    conditions = [UsageRecord.user_id == user.id]
+    task_id = clean_trace_id(trace_id)
+    if trace_id is not None and task_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid trace_id")
+    if task_id is not None:
+        conditions += [UsageRecord.trace_id == task_id, UsageRecord.created_at >= _trace_window_start()]
+    else:
+        conditions.append(UsageRecord.created_at >= utcnow() - dt.timedelta(days=30))
     row = db.execute(
         select(
             func.count(),
             func.coalesce(func.sum(UsageRecord.input_tokens), 0),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0),
             func.coalesce(func.sum(UsageRecord.cost_usd), 0.0),
-        ).where(UsageRecord.user_id == user.id, UsageRecord.created_at >= since)
+        ).where(*conditions)
     ).one()
 
     entitlement = db.scalar(select(Entitlement).where(Entitlement.user_id == user.id))
     return {
-        "period_days": 30,
+        "period_days": None if task_id else 30,
+        "trace_id": task_id,
         "calls": row[0],
         "input_tokens": int(row[1]),
         "output_tokens": int(row[2]),

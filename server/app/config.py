@@ -73,6 +73,12 @@ class Settings:
     endpoint_config_ttl_seconds: int = field(
         default_factory=lambda: _env_int("ENDPOINT_CONFIG_TTL_SECONDS", 15 * 60)
     )
+    # Upper bound on model calls one task (one x-trace-id) may make. A real task
+    # is bounded by the client's MaxTurns (at most 50); this bound is what stops
+    # a client from reusing one id to turn unlimited traffic into "one task".
+    max_calls_per_task: int = field(
+        default_factory=lambda: _env_int("MAX_CALLS_PER_TASK", 150)
+    )
 
     # First admin is created from the environment on startup, never through a
     # public endpoint.

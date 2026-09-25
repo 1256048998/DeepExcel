@@ -251,10 +251,16 @@ class UsageRecord(Base):
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
     status_code: Mapped[int] = mapped_column(Integer, default=200)
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    # Random per-task id sent by the client (x-trace-id); groups the calls of
+    # one task. Validated as an identifier before storage, never free text.
+    trace_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    # True on the one call that consumed a task from the quota.
+    counted_as_task: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (
         Index("ix_usage_user_time", "user_id", "created_at"),
+        Index("ix_usage_user_trace", "user_id", "trace_id"),
     )
 
 
