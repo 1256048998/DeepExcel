@@ -170,6 +170,9 @@ if ($LASTEXITCODE -ne 0) { throw 'WPS workbook memory store test failed' }
 & node (Join-Path $scriptDir 'test-wps-starter.js')
 if ($LASTEXITCODE -ne 0) { throw 'WPS starter test failed' }
 
+& node (Join-Path $scriptDir 'test-wps-tools.js')
+if ($LASTEXITCODE -ne 0) { throw 'WPS tool dispatch test failed' }
+
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "Build successful!" -ForegroundColor Green

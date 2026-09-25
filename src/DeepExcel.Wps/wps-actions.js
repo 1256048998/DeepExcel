@@ -433,15 +433,17 @@ const WpsActions = {
   },
 
   /**
-   * 写入表格数据（带表头）
+   * 把区域转换成表格（ListObject，自带筛选和样式），与 C# 端 write_table 一致。
+   * 以前这里是「写入表头 + 行」，和侧车的定义对不上，模型传来的只有 address / table_name。
    */
-  writeTable(address, headers, rows) {
+  createTable(address, tableName) {
     const range = this._getRange(address)
-    const data = [headers, ...rows]
-    range.Value2 = data
-    // 表头加粗
-    const headerRange = range.Resize(1, headers.length)
-    headerRange.Font.Bold = true
+    const ws = range.Worksheet
+    const table = ws.ListObjects.Add(1 /* xlSrcRange */, range, undefined, 1 /* xlYes：首行是表头 */)
+    if (tableName) {
+      try { table.Name = tableName } catch (e) { /* 重名或不合法时保留默认名 */ }
+    }
+    return { name: table.Name, address: this._address(table.Range, true) }
   },
 
   // ============= Sheet 操作 =============
@@ -478,8 +480,10 @@ const WpsActions = {
     this._getRange(address).NumberFormat = format
   },
 
-  setColumnWidth(address, width) {
-    this._getRange(address).ColumnWidth = width
+  setColumnWidth(address, width, autoFit) {
+    const range = this._getRange(address)
+    if (autoFit) range.EntireColumn.AutoFit()
+    else range.ColumnWidth = width
   },
 
   setCellStyle(address, style) {
@@ -489,9 +493,14 @@ const WpsActions = {
     if (style.fontSize !== undefined) range.Font.Size = style.fontSize
     if (style.fontColor !== undefined) range.Font.Color = this._parseColor(style.fontColor)
     if (style.bgColor !== undefined) range.Interior.Color = this._parseColor(style.bgColor)
+    if (style.fontName !== undefined) range.Font.Name = style.fontName
     if (style.horizontalAlignment !== undefined) {
       range.HorizontalAlignment = this._parseHAlign(style.horizontalAlignment)
     }
+    if (style.verticalAlignment !== undefined) {
+      range.VerticalAlignment = this._parseVAlign(style.verticalAlignment)
+    }
+    if (style.wrapText !== undefined) range.WrapText = style.wrapText
   },
 
   // ============= 数据操作类 =============
@@ -506,15 +515,18 @@ const WpsActions = {
   sortData(rangeAddress, sortColumn, descending, hasHeader) {
     const range = this._getRange(rangeAddress)
     // ★ 排序 Key 指向数据行（hasHeader=true 时用第2行），与 C# 端逻辑一致
-    const colIdx = typeof sortColumn === 'string'
-      ? this._columnLetterToIndex(sortColumn)
-      : sortColumn
+    // 侧车允许列字母（'B'）或列序号（'2'），与 C# 端一致
+    const text = String(sortColumn).trim()
+    const colIdx = /^\d+$/.test(text) ? parseInt(text, 10) : this._columnLetterToIndex(text.toUpperCase())
     const keyRange = hasHeader
       ? range.Cells(2, colIdx)
       : range.Cells(1, colIdx)
-    // ★ Header=xlNo(0) 让所有行参与排序（xlYes=1 会跳过首行）
-    // ★ SortMethod=xlPinYin(1) 拼音排序
-    range.Sort(keyRange, descending ? 2 : 1, null, null, null, null, null, hasHeader ? 0 : 0, 1, 1, 1)
+    // ★ Header 与 C# 端一致：有表头传 xlYes(1)、没有传 xlNo(2)。以前固定传 0（xlGuess），
+    //   让 WPS 自己猜，猜错时表头会被排进数据里
+    // ★ 参数位置：Key1, Order1, Key2, Type, Order2, Key3, Order3, Header, OrderCustom, MatchCase,
+    //   Orientation=xlSortColumns(1，重排行而不是列), SortMethod=xlPinYin(1)
+    range.Sort(keyRange, descending ? 2 : 1, undefined, undefined, undefined, undefined, undefined,
+      hasHeader ? 1 : 2, 1, false, 1, 1)
   },
 
   /**
@@ -539,38 +551,46 @@ const WpsActions = {
     src.Copy(dest)
   },
 
-  clearRange(address) {
-    this._getRange(address).Clear()
+  /** clear_type：all（默认）/ contents / formats，与 C# 端一致 */
+  clearRange(address, clearType) {
+    const range = this._getRange(address)
+    const type = String(clearType || 'all').toLowerCase()
+    if (type === 'contents') range.ClearContents()
+    else if (type === 'formats') range.ClearFormats()
+    else range.Clear()
   },
 
   // ============= 行列操作 =============
+  // 侧车传的是行号 / 列号 + 数量（与 C# 端一致），作用在活动工作表上，一次插删一整块
 
-  insertRows(address, count) {
-    const range = this._getRange(address)
-    for (let i = 0; i < count; i++) {
-      range.Insert(-4121) // xlDown
-    }
+  _rowBlock(row, count) {
+    const ws = wps.Application.ActiveSheet
+    const first = Math.max(1, parseInt(row, 10) || 1)
+    const n = Math.max(1, parseInt(count, 10) || 1)
+    return ws.Range(ws.Cells(first, 1), ws.Cells(first + n - 1, 1)).EntireRow
   },
 
-  deleteRows(address, count) {
-    const range = this._getRange(address)
-    for (let i = 0; i < count; i++) {
-      range.EntireRow.Delete()
-    }
+  _columnBlock(column, count) {
+    const ws = wps.Application.ActiveSheet
+    const first = Math.max(1, parseInt(column, 10) || 1)
+    const n = Math.max(1, parseInt(count, 10) || 1)
+    return ws.Range(ws.Cells(1, first), ws.Cells(1, first + n - 1)).EntireColumn
   },
 
-  insertColumns(address, count) {
-    const range = this._getRange(address)
-    for (let i = 0; i < count; i++) {
-      range.Insert(-4159) // xlToRight
-    }
+  insertRows(row, count) {
+    this._rowBlock(row, count).Insert(-4121) // xlDown
   },
 
-  deleteColumns(address, count) {
-    const range = this._getRange(address)
-    for (let i = 0; i < count; i++) {
-      range.EntireColumn.Delete()
-    }
+  deleteRows(row, count) {
+    this._rowBlock(row, count).Delete()
+  },
+
+  insertColumns(column, count) {
+    this._columnBlock(column, count).Insert(-4161) // xlToRight
+  },
+
+  deleteColumns(column, count) {
+    this._columnBlock(column, count).Delete()
   },
 
   freezePanes(address) {
@@ -582,10 +602,11 @@ const WpsActions = {
 
   // ============= 公式填充 =============
 
-  fillFormulaDown(fromAddress, toAddress) {
-    const app = wps.Application
-    const fromRange = app.Range(fromAddress)
-    const toRange = app.Range(toAddress)
+  /** 从 fromAddress 向下填充 rowCount 行（目标 = 起始行 + rowCount 行，与 C# 端一致） */
+  fillFormulaDown(fromAddress, rowCount) {
+    const fromRange = this._getRange(fromAddress)
+    const rows = Math.max(1, parseInt(rowCount, 10) || 1)
+    const toRange = fromRange.Resize(rows + 1, fromRange.Columns.Count)
     fromRange.AutoFill(toRange, 0) // xlFillDefault=0
   },
 
@@ -683,6 +704,12 @@ const WpsActions = {
    */
   _parseColor(color) {
     if (typeof color === 'number') return color
+    // 侧车的说明允许颜色名（red / blue / green）；以前这些全变成了黑色
+    const named = { black: 0, white: 16777215, red: 255, green: 32768, blue: 16711680, yellow: 65535,
+      orange: 42495, gray: 8421504, grey: 8421504, purple: 8388736 }
+    if (typeof color === 'string' && Object.prototype.hasOwnProperty.call(named, color.trim().toLowerCase())) {
+      return named[color.trim().toLowerCase()]
+    }
     if (typeof color === 'string' && color.startsWith('#')) {
       const hex = color.slice(1)
       const r = parseInt(hex.slice(0, 2), 16)
@@ -704,6 +731,16 @@ const WpsActions = {
       'general': 1,     // xlGeneral
     }
     return map[align] || 1
+  },
+
+  /** 垂直对齐字符串转枚举值 */
+  _parseVAlign(align) {
+    const map = {
+      'top': -4160,     // xlTop
+      'center': -4108,  // xlCenter
+      'bottom': -4107,  // xlBottom
+    }
+    return map[align] || -4107
   },
 }
 

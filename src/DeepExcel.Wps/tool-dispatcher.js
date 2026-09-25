@@ -76,7 +76,7 @@ class ToolDispatcher {
           return { success: true, data: WpsActions.getSelection(), error: '' }
 
         case 'sort_data': {
-          const rangeAddr = this._getArg(args, 'address', '')
+          const rangeAddr = this._getArg(args, 'range_address', '')
           const sortColumn = this._getArg(args, 'sort_column', 'A')
           const descending = this._getArg(args, 'descending', false)
           const hasHeader = this._getArg(args, 'has_header', true)
@@ -85,10 +85,10 @@ class ToolDispatcher {
         }
 
         case 'filter_data': {
-          const rangeAddr = this._getArg(args, 'address', '')
-          const field = this._getArg(args, 'field', 1)
-          const criteria1 = this._getArg(args, 'criteria1', '')
-          WpsActions.filterData(rangeAddr, field, criteria1)
+          const rangeAddr = this._getArg(args, 'range_address', '')
+          const field = this._getInt(args, 'column_index') || 1
+          const criteria = this._getArg(args, 'criteria', '')
+          WpsActions.filterData(rangeAddr, field, criteria)
           return { success: true, data: { filtered: true }, error: '' }
         }
 
@@ -124,7 +124,8 @@ class ToolDispatcher {
         }
 
         case 'set_column_width': {
-          WpsActions.setColumnWidth(this._getArg(args, 'address', ''), this._getArg(args, 'width', 10))
+          WpsActions.setColumnWidth(this._getArg(args, 'address', ''), this._getArg(args, 'width', 10),
+            !!this._getArg(args, 'auto_fit', false))
           return { success: true, data: { set: true }, error: '' }
         }
 
@@ -134,37 +135,37 @@ class ToolDispatcher {
         }
 
         case 'fill_formula_down': {
-          WpsActions.fillFormulaDown(this._getArg(args, 'from', ''), this._getArg(args, 'to', ''))
+          WpsActions.fillFormulaDown(this._getArg(args, 'from_address', ''), this._getInt(args, 'row_count') || 1)
           return { success: true, data: { filled: true }, error: '' }
         }
 
         case 'copy_range': {
-          WpsActions.copyRange(this._getArg(args, 'source', ''), this._getArg(args, 'destination', ''))
+          WpsActions.copyRange(this._getArg(args, 'source_address', ''), this._getArg(args, 'dest_address', ''))
           return { success: true, data: { copied: true }, error: '' }
         }
 
         case 'clear_range': {
-          WpsActions.clearRange(this._getArg(args, 'address', ''))
+          WpsActions.clearRange(this._getArg(args, 'address', ''), this._getArg(args, 'clear_type', 'all'))
           return { success: true, data: { cleared: true }, error: '' }
         }
 
         case 'insert_rows': {
-          WpsActions.insertRows(this._getArg(args, 'address', ''), this._getArg(args, 'count', 1))
+          WpsActions.insertRows(this._getInt(args, 'row'), this._getInt(args, 'count') || 1)
           return { success: true, data: { inserted: true }, error: '' }
         }
 
         case 'delete_rows': {
-          WpsActions.deleteRows(this._getArg(args, 'address', ''), this._getArg(args, 'count', 1))
+          WpsActions.deleteRows(this._getInt(args, 'row'), this._getInt(args, 'count') || 1)
           return { success: true, data: { deleted: true }, error: '' }
         }
 
         case 'insert_columns': {
-          WpsActions.insertColumns(this._getArg(args, 'address', ''), this._getArg(args, 'count', 1))
+          WpsActions.insertColumns(this._getInt(args, 'column'), this._getInt(args, 'count') || 1)
           return { success: true, data: { inserted: true }, error: '' }
         }
 
         case 'delete_columns': {
-          WpsActions.deleteColumns(this._getArg(args, 'address', ''), this._getArg(args, 'count', 1))
+          WpsActions.deleteColumns(this._getInt(args, 'column'), this._getInt(args, 'count') || 1)
           return { success: true, data: { deleted: true }, error: '' }
         }
 
@@ -175,18 +176,17 @@ class ToolDispatcher {
             fontSize: this._getArg(args, 'font_size', undefined),
             fontColor: this._getArg(args, 'font_color', undefined),
             bgColor: this._getArg(args, 'bg_color', undefined),
-            horizontalAlignment: this._getArg(args, 'horizontal_alignment', undefined),
+            fontName: this._getArg(args, 'font_name', undefined),
+            horizontalAlignment: this._getArg(args, 'h_align', undefined),
+            verticalAlignment: this._getArg(args, 'v_align', undefined),
+            wrapText: this._getArg(args, 'wrap_text', undefined),
           })
           return { success: true, data: { styled: true }, error: '' }
         }
 
         case 'write_table': {
-          WpsActions.writeTable(
-            this._getArg(args, 'address', ''),
-            this._getArg(args, 'headers', []),
-            this._getArg(args, 'rows', [])
-          )
-          return { success: true, data: { written: true }, error: '' }
+          const table = WpsActions.createTable(this._getArg(args, 'address', ''), this._getArg(args, 'table_name', ''))
+          return { success: true, data: table, error: '' }
         }
 
         // ★ JSA 宏执行（WPS 替代 VBA）
