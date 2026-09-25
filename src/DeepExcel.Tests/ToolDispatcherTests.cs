@@ -50,19 +50,6 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
-        public void Execute_Echo_ReturnsInputText()
-        {
-            var fake = new FakeExcelActions();
-            var dispatcher = new ToolDispatcher(fake, null);
-            var args = new Dictionary<string, object> { { "text", "hello" } };
-
-            var result = dispatcher.Execute("echo", args);
-
-            Assert.True(result.Success);
-            Assert.NotNull(result.Data);
-        }
-
-        [Fact]
         public void Execute_UnknownTool_ReturnsError()
         {
             var fake = new FakeExcelActions();

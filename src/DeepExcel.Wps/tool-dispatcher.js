@@ -27,9 +27,6 @@ class ToolDispatcher {
     console.log(`[ToolDispatcher] Execute: ${toolName}, args keys=${Object.keys(args || {}).join(',')}`)
     try {
       switch (toolName) {
-        case 'echo':
-          return { success: true, data: { echo: this._getArg(args, 'text', '') } }
-
         case 'read_range': {
           const address = this._getArg(args, 'address', '')
           const rangeData = WpsActions.readRange(address)

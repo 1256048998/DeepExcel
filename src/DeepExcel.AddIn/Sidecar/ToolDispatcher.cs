@@ -176,14 +176,6 @@ namespace DeepExcel.AddIn.Sidecar
                 switch (toolName)
                 {
                     // 注：每个 case 的执行结果（含 success/error）在 switch 结束后统一记录
-                    case "echo":
-                        return new ToolResult
-                        {
-                            Name = toolName,
-                            Success = true,
-                            Data = new { echo = GetArg<string>(args, "text") },
-                        };
-
                     case "read_range":
                         var address = GetArg<string>(args, "address");
                         var rangeData = _excel.ReadRange(address);

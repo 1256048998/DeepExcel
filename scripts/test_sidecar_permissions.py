@@ -76,7 +76,7 @@ def main():
     print("=== sidecar permission gate ===")
 
     # ---- coverage --------------------------------------------------------
-    for tool in ["execute_vba", "execute_python", "delete_rows", "delete_columns",
+    for tool in ["execute_vba", "execute_jsa", "execute_python", "delete_rows", "delete_columns",
                  "clear_range", "write_range", "remove_duplicates", "clean_data",
                  "replace_formula", "merge_cells"]:
         check(f"{tool} requires confirmation", tool in high_risk)
@@ -92,7 +92,7 @@ def main():
 
     # The core rule: capability grants can be remembered, per-operation
     # approvals cannot, because each call has a different blast radius.
-    for tool in ["execute_vba", "execute_python"]:
+    for tool in ["execute_vba", "execute_jsa", "execute_python"]:
         check(f"{tool} can be remembered", tool in rememberable)
 
     for tool in ["delete_rows", "delete_columns", "clear_range", "write_range",
@@ -129,6 +129,14 @@ def main():
           tools_kw is not None
           and isinstance(tools_kw.value, ast.List) and not tools_kw.value.elts,
           "otherwise Read/Glob/Grep can read the user's disk without a prompt")
+
+    # A hand-written allowed_tools list drifted from the registered tools and
+    # silently lost 20 of them. It must be derived from the registration.
+    allowed_kw = next((kw for kw in options_call.keywords if kw.arg == "allowed_tools"), None)
+    check("allowed_tools is derived from the registered tools, not hand-written",
+          allowed_kw is not None and isinstance(allowed_kw.value, ast.ListComp)
+          and "host_tools" in ast.unparse(allowed_kw.value),
+          "a literal list goes stale the moment a tool is added")
 
     # Defence in depth: a non-excel tool reaching the hook must be denied,
     # never passed through.

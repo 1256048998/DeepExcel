@@ -27,19 +27,6 @@ async def test_write_formula_tool_calls_csharp_and_returns_content():
 
 
 @pytest.mark.asyncio
-async def test_echo_tool_returns_input_as_text():
-    from excel_tools import echo
-    fn = getattr(echo, 'handler', None) or getattr(echo, 'fn', None) or echo
-    if hasattr(fn, '__wrapped__'):
-        fn = fn.__wrapped__
-    result = await fn({"text": "hello"})
-    # echo 实现逐字使用 _wrap_result（与 write_formula 一致），返回 JSON 字符串
-    parsed = json.loads(result["content"][0]["text"])
-    assert parsed["success"] is True
-    assert parsed["data"]["echo"] == "hello"
-
-
-@pytest.mark.asyncio
 async def test_clarify_intent_calls_csharp_clarify():
     from excel_tools import clarify_intent
     fn = getattr(clarify_intent, 'handler', None) or getattr(clarify_intent, 'fn', None) or clarify_intent
@@ -62,7 +49,7 @@ def test_register_all_tools_returns_list_with_expected_names():
             fn = getattr(t, 'handler', None) or getattr(t, 'fn', None)
             n = getattr(fn, '__name__', None) if fn else None
         names.append(n)
-    assert "echo" in names
+    assert "read_range" in names
     assert "write_formula" in names
     assert "clarify_intent" in names
 
@@ -100,10 +87,10 @@ async def test_clean_data_passes_operations_list():
         assert call_args[1]["operations"] == ["trim_spaces", "remove_duplicates"]
 
 
-def _registered_tool_names():
+def _registered_tool_names(host="excel"):
     from excel_tools import register_all_tools
     names = []
-    for t in register_all_tools():
+    for t in register_all_tools(host):
         n = getattr(t, 'name', None) or getattr(t, '__name__', None)
         if n is None:
             fn = getattr(t, 'handler', None) or getattr(t, 'fn', None)
@@ -134,7 +121,36 @@ def test_every_host_call_has_a_csharp_handler():
     assert missing == [], f"这些工具在 C# 侧没有实现，调用必然失败：{missing}"
 
 
-def test_auto_analyze_is_not_offered_to_the_model():
+@pytest.mark.parametrize("name", ["auto_analyze", "echo", "quick_summary", "create_plan", "update_plan"])
+def test_placeholder_tools_are_not_offered_to_the_model(name):
+    """这些工具要么宿主没实现，要么只是在 Python 里回显参数，没有任何作用，
+    却每轮占用模型的上下文，还会诱导模型去调用。"""
     import sidecar
-    assert "auto_analyze" not in _registered_tool_names()
-    assert '"auto_analyze"' not in open(sidecar.__file__, encoding="utf-8").read()
+    assert name not in _registered_tool_names("excel")
+    assert name not in _registered_tool_names("wps")
+    assert f'"{name}"' not in open(sidecar.__file__, encoding="utf-8").read()
+
+
+def test_wps_only_tools_are_registered_only_for_wps():
+    assert "execute_jsa" not in _registered_tool_names("excel")
+    assert "execute_jsa" in _registered_tool_names("wps")
+    assert set(_registered_tool_names("excel")) <= set(_registered_tool_names("wps"))
+
+
+def test_system_prompt_tool_list_matches_what_is_registered():
+    """<available-tools> 必须与实际注册的工具一致。
+
+    曾经清单里写着根本不存在的 remove_duplicates（它是 clean_data 的一个操作），
+    又漏掉了 20 个已注册的图表、透视、清洗工具，模型不知道有这些能力。
+    """
+    import re
+    from system_prompt import SYSTEM_PROMPT
+    block = SYSTEM_PROMPT.split("<available-tools>")[1].split("</available-tools>")[0]
+    # 只看每行冒号后面、括号外的工具名；括号里是说明文字
+    listed = set()
+    for line in block.strip().splitlines():
+        body = re.sub(r"（[^）]*）", "", line.split("：", 1)[-1])
+        listed |= set(re.findall(r"\b[a-z]+(?:_[a-z]+)*\b", body))
+    registered = set(_registered_tool_names("excel")) | set(_registered_tool_names("wps"))
+    assert sorted(listed - registered) == [], "清单里有不存在的工具"
+    assert sorted(registered - listed) == [], "已注册的工具没写进清单"

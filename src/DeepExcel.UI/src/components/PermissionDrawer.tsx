@@ -14,6 +14,7 @@ interface PermissionDrawerProps {
 // 高风险工具的中文描述（简洁版，去掉"AI 想执行"前缀，更自然）
 const TOOL_DESC: Record<string, string> = {
   execute_vba: '执行 VBA 代码',
+  execute_jsa: '执行 JSA 宏代码',
   execute_python: '执行 Python 代码',
   rollback: '回滚工作簿到快照',
   clean_data: '清洗数据（会修改单元格）',

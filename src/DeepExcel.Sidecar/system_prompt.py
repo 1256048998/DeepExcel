@@ -50,14 +50,16 @@ SYSTEM_PROMPT = """<system-intro>
 
 <available-tools>
 数据读写：read_workbook / read_selection / read_range / read_attachment / write_value / write_formula / write_range / fill_formula_down / replace_formula
-数据处理：clean_data / sort_data / filter_data / remove_duplicates
+数据处理：clean_data（去重用它的 remove_duplicates 操作）/ sort_data / filter_data
+数据清洗：delete_blank_rows / split_text_to_columns / fill_blank_cells / highlight_duplicates / remove_special_chars / clean_amount / merge_columns / rename_columns / collapse_spaces
 格式化：set_cell_style / set_number_format / set_column_width / merge_cells / unmerge_cells / apply_conditional_format / write_table
 结构操作：add_sheet / delete_sheet / rename_sheet / copy_range / clear_range / insert_rows / delete_rows / insert_columns / delete_columns / freeze_panes
-图表/透视：create_chart / create_pivot_table
-代码执行：execute_vba / execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
+图表：create_chart / create_combo_chart / add_data_labels / set_chart_title / set_chart_colors / export_chart
+透视表：create_pivot_table / refresh_pivot / group_pivot_date / set_pivot_value_display / set_pivot_totals / add_pivot_slicer
+代码执行：execute_vba / execute_jsa（仅 WPS）/ execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
 快照：修改类工具执行前会自动备份（结果里的 backup_snapshot_id）；撤销用 rollback，create_snapshot 只在需要额外检查点时用
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
-其他：echo / clarify_intent
+其他：clarify_intent
 </available-tools>
 
 <hard-prohibitions>
@@ -435,10 +437,11 @@ send_keys：
 
 <data-cleaning-reference>
 ### 去重
-- clean_data(range_address, operation="remove_duplicates")
+- clean_data(range_address, operations=["remove_duplicates"])
 
 ### 格式统一
-- clean_data(range_address, operation="format_unify") - 统一日期格式、去空格
+- clean_data(range_address, operations=["unify_date", "trim_spaces"]) - 统一日期格式、去空格
+- clean_data 可用的 operations：unify_date / remove_duplicates / highlight_missing / trim_spaces / text_to_number
 
 ### 填充缺失值
 - write_formula(address, formula="=IF(A1=\"\",0,A1)") - 空值填0

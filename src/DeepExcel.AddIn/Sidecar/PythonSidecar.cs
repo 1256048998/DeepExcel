@@ -303,9 +303,19 @@ namespace DeepExcel.AddIn.Sidecar
         }
 
         public void SendToolResult(string callId, bool success, object data, string error, string suggestion, object context,
-            string backupSnapshotId = null)
+            string backupSnapshotId = null, string warning = null)
         {
-            // backup_snapshot_id 原样进入模型看到的工具结果，模型据此可调 rollback 撤销本回合修改
+            WriteLine(BuildToolResultJson(callId, success, data, error, suggestion, context, backupSnapshotId, warning));
+        }
+
+        /// <summary>
+        /// tool_result 消息的 JSON。sidecar 把整条消息原样交给模型，所以这里的每个字段模型都看得到：
+        /// backup_snapshot_id 让模型能 rollback 本回合修改；warning 是"成功但做了自动纠正"之类的提示
+        /// （以前 ToolResult.Warning 从不发出，例如 sort_data 自动改用 has_header=true 模型并不知道）。
+        /// </summary>
+        internal static string BuildToolResultJson(string callId, bool success, object data, string error, string suggestion,
+            object context, string backupSnapshotId, string warning)
+        {
             var msg = new
             {
                 type = SidecarProtocol.TypeToolResult,
@@ -316,6 +326,7 @@ namespace DeepExcel.AddIn.Sidecar
                 suggestion,
                 context,
                 backup_snapshot_id = backupSnapshotId,
+                warning,
             };
             string json;
             try
@@ -339,10 +350,11 @@ namespace DeepExcel.AddIn.Sidecar
                     suggestion,
                     context = (object)new { },
                     backup_snapshot_id = backupSnapshotId,
+                    warning,
                 };
                 json = JsonSerializer.Serialize(safeMsg, _jsonOptions);
             }
-            WriteLine(json);
+            return json;
         }
 
         // ============= 接收消息（Python → C#）=============
@@ -591,7 +603,8 @@ namespace DeepExcel.AddIn.Sidecar
                         error: result.Error,
                         suggestion: result.Suggestion,
                         context: context,
-                        backupSnapshotId: result.BackupSnapshotId);
+                        backupSnapshotId: result.BackupSnapshotId,
+                        warning: result.Warning);
                     Logger.Instance.Info("PythonSidecar", $"HandleToolCall END: tool={toolName}");
                 }
                 catch (Exception sendEx)

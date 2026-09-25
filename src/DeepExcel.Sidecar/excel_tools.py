@@ -19,11 +19,6 @@ def _wrap_result(csharp_result: dict) -> dict:
     }
 
 
-@tool("echo", "回声测试工具，原样返回输入文本（用于验证 sidecar 管线）", {"text": str})
-async def echo(args):
-    return _wrap_result({"success": True, "data": {"echo": args["text"]}})
-
-
 @tool("read_range", "读取指定范围的单元格数据", {"address": str})
 async def read_range(args):
     result = await call_csharp("read_range", {"address": args["address"]})
@@ -514,81 +509,9 @@ async def add_pivot_slicer(args):
 # tests/test_excel_tools.py 的守卫会拦住下一个只在这里注册、C# 侧没有实现的工具。
 
 
-@tool("quick_summary", "快速生成数据摘要：读取指定范围，计算基础统计（求和、平均、最大、最小、计数），并返回一句话摘要。address 为数据区域地址。", {"address": str})
-async def quick_summary(args):
-    result = await call_csharp("read_range", {"address": args["address"]})
-    if not isinstance(result, dict) or result.get("success") is not True:
-        return _wrap_result(result)
-    data = result.get("data") or result.get("values") or []
-    if not data or not isinstance(data, list) or len(data) == 0:
-        return _wrap_result({"success": True, "data": {"summary": "数据为空", "stats": {}}})
-    nums = []
-    for row in data:
-        if isinstance(row, list):
-            for cell in row:
-                try:
-                    nums.append(float(cell))
-                except (ValueError, TypeError):
-                    pass
-    if len(nums) == 0:
-        return _wrap_result({"success": True, "data": {"summary": "无数字数据", "stats": {"count": 0}}})
-    total = sum(nums)
-    avg = total / len(nums)
-    max_val = max(nums)
-    min_val = min(nums)
-    summary = f"共 {len(nums)} 个数字，总和 {total:.2f}，平均 {avg:.2f}，最大 {max_val:.2f}，最小 {min_val:.2f}"
-    return _wrap_result({
-        "success": True,
-        "data": {
-            "summary": summary,
-            "stats": {
-                "count": len(nums),
-                "sum": total,
-                "average": avg,
-                "max": max_val,
-                "min": min_val,
-            }
-        }
-    })
-
-
 # ★ smart_chart 已移除：宿主端没有对应实现（调用必然失败），
 # 且"自动选图表类型"本就该由 agent 结合数据自己判断，不需要宿主用规则替它决定。
 # agent 用 create_chart 显式传 chart_type 即可。
-
-
-@tool("create_plan", "创建执行计划，用于复杂任务的分步执行。tasks 为任务列表（字符串数组），按顺序排列。description 为计划描述（可选）。", {"tasks": list, "description": str})
-async def create_plan(args):
-    tasks = args.get("tasks", [])
-    description = args.get("description", "")
-    plan_id = f"plan_{abs(hash(str(tasks) + description)) % 1000000}"
-    return _wrap_result({
-        "success": True,
-        "data": {
-            "plan_id": plan_id,
-            "tasks": tasks,
-            "description": description,
-            "total": len(tasks),
-            "completed": 0,
-            "current": 0,
-        }
-    })
-
-
-@tool("update_plan", "更新执行计划进度。plan_id 为计划 ID，task_index 为完成的任务索引（从 0 开始），status 为状态（completed/failed）。", {"plan_id": str, "task_index": int, "status": str})
-async def update_plan(args):
-    plan_id = args.get("plan_id", "")
-    task_index = args.get("task_index", 0)
-    status = args.get("status", "completed")
-    return _wrap_result({
-        "success": True,
-        "data": {
-            "plan_id": plan_id,
-            "task_index": task_index,
-            "status": status,
-            "message": f"任务 {task_index + 1} 已{status}",
-        }
-    })
 
 
 # ============================ Computer Use 工具 ============================
@@ -605,10 +528,19 @@ async def send_keys(args):
     return _wrap_result(result)
 
 
-def register_all_tools() -> list:
-    """返回所有 @tool 装饰后的工具对象列表"""
-    return [
-        echo,
+# 只在某个宿主实现的工具。另一个宿主注册它，模型调用就必然拿到"未知工具"。
+_HOST_ONLY_TOOLS = {
+    "execute_jsa": "wps",
+}
+
+
+def register_all_tools(host: str = "excel") -> list:
+    """返回当前宿主可用的 @tool 工具对象列表。
+
+    这份列表同时决定 MCP 注册和 allowed_tools，是工具清单的唯一来源；
+    system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
+    """
+    tools = [
         read_workbook, read_selection, read_range, read_attachment,
         write_formula, write_value, write_range, fill_formula_down, replace_formula,
         clean_data,
@@ -631,8 +563,7 @@ def register_all_tools() -> list:
         freeze_panes,
         apply_conditional_format, write_table,
         clarify_intent,
-        quick_summary,
-        create_plan, update_plan,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]
+    return [t for t in tools if _HOST_ONLY_TOOLS.get(t.name, host) == host]

@@ -116,6 +116,7 @@ def _load_wps_local_config():
 _HIGH_RISK_TOOLS = {
     # 任意代码：无法预演，只能快照 + 明确告知
     "execute_vba",
+    "execute_jsa",
     "execute_python",
     "send_keys",
     # 破坏性结构操作
@@ -139,6 +140,7 @@ _HIGH_RISK_TOOLS = {
 # 只有 VBA/Python 这类"我信任它能跑代码"的授权适合记住。
 _REMEMBERABLE_TOOLS = {
     "execute_vba",
+    "execute_jsa",
     "execute_python",
     "send_keys",
 }
@@ -203,9 +205,19 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                     "reason": "Computer Use 工具需要用户明确要求才可调用",
                 }
 
-        # 低风险工具直接放行
+        # 低风险工具必须显式 allow，不能 continue_。
+        # continue_ 等于"钩子不表态"，交给 CLI 的权限系统：不在 allowed_tools 里的
+        # 工具会被直接拒掉（"Claude requested permissions to use ..., but you haven't
+        # granted it yet"），无交互模式下没人能批准。2026-09-24 用发布包同款 SDK 0.2.109
+        # 实测；当时 allowed_tools 是手写的，漏了 11 个低风险工具，它们每次调用都失败。
         if bare_name not in _HIGH_RISK_TOOLS:
-            return {"continue_": True}
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "低风险工具",
+                }
+            }
 
         # ★ "允许并记住"：仅限能力型授权，逐次操作每次都要看变更集
         if bare_name in _allowed_tools_session and bare_name in _REMEMBERABLE_TOOLS:
@@ -244,8 +256,22 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                 "reason": "用户拒绝了 " + bare_name + " 的执行",
             }
     except Exception as e:
-        sys.stderr.write(f"[sidecar] PreToolUse hook error: {e}\n")
-        # hook 出错时安全起见放行（避免阻塞正常流程），但记录错误
+        try:
+            failed_tool = str(input_data.get("tool_name", "")).replace("mcp__excel__", "")
+        except Exception:
+            failed_tool = ""
+        sys.stderr.write(f"[sidecar] PreToolUse hook error: {failed_tool}: {e}\n")
+        sys.stderr.flush()
+        # 高风险工具：确认流程坏了就不能当作用户已同意
+        if failed_tool in _HIGH_RISK_TOOLS:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "确认流程出错，为安全起见未执行。请告诉用户重试。",
+                },
+                "reason": "权限确认出错",
+            }
         return {"continue_": True}
 
 
@@ -1039,8 +1065,9 @@ async def main():
         # 真正的优化在于扩展系统提示词长度，系统提示词占总 token 的比例越大，
         # KV Cache 命中率越高。当前 SYSTEM_PROMPT 约 1000 tokens，建议扩展到 5000+。
 
-        # 注册工具到 MCP server
-        server = create_sdk_mcp_server(name="excel", tools=register_all_tools())
+        # 注册工具到 MCP server。按宿主注册：WPS 专用的 execute_jsa 不出现在 Excel 会话里
+        host_tools = register_all_tools("wps" if os.environ.get("DEEPEXCEL_HOST") == "wps" else "excel")
+        server = create_sdk_mcp_server(name="excel", tools=host_tools)
 
         options = ClaudeAgentOptions(
             model=model,
@@ -1051,27 +1078,9 @@ async def main():
             # allowed_tools 只是"免确认"名单，不限制可见工具，所以必须用 tools。
             tools=[],
             mcp_servers={"excel": server},
-            allowed_tools=[f"mcp__excel__{t}" for t in [
-                "echo",
-                "read_workbook", "read_selection", "read_range", "read_attachment",
-                "write_formula", "write_value", "write_range", "fill_formula_down", "replace_formula",
-                "clean_data", "create_chart", "create_pivot_table",
-                "execute_vba", "execute_python",
-                "create_snapshot", "rollback",
-                "add_sheet", "delete_sheet", "rename_sheet",
-                "set_number_format", "set_column_width",
-                "sort_data", "filter_data",
-                "merge_cells", "unmerge_cells",
-                "set_cell_style", "copy_range", "clear_range",
-                "insert_rows", "delete_rows", "insert_columns", "delete_columns",
-                "freeze_panes",
-                "apply_conditional_format", "write_table",
-                "clarify_intent",
-                "quick_summary",
-                "create_plan", "update_plan",
-                # ★ Computer Use 工具
-                "screenshot_excel", "send_keys",
-            ]],
+            # 免确认名单从注册表生成，不再手写（手写版本曾漏掉 20 个工具）。
+            # 真正的放行/确认由 PreToolUse 钩子决定，这里只是兜底。
+            allowed_tools=[f"mcp__excel__{t.name}" for t in host_tools],
             system_prompt=SYSTEM_PROMPT,
             max_turns=max_turns,  # ★ 来自设置 MaxTurns，见 resolve_max_turns
             env=env_config,  # ★ DeepSeek 配置必须在这里传
