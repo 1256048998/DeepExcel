@@ -657,6 +657,8 @@ function _buildContext() {
       workbook: workbook ? workbook.Name : '',
       path: workbook ? workbook.FullName : '',
       activeSheet: workbook && workbook.ActiveSheet ? workbook.ActiveSheet.Name : '',
+      // 工作簿记忆按它找目录（与 Excel 端同一口径，同一个文件两边共用一份记忆）
+      workbookKey: _workbookIdentity().key,
       attachments: attachments,
     }
   } catch (error) {

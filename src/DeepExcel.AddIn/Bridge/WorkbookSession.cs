@@ -313,6 +313,8 @@ namespace DeepExcel.AddIn.Bridge
                 return new
                 {
                     workbookName = WorkbookName,
+                    // 工作簿记忆按它找目录（与 WPS 端同一口径）
+                    workbookKey = WorkbookKey,
                     workbook = workbookLite,
                     selection = selectionLite,
                     attachments = attachmentList,

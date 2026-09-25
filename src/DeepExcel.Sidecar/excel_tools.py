@@ -332,6 +332,35 @@ async def todo_write(args):
     return _wrap_result({"success": True, "data": {"message": f"计划已更新（{done}/{len(items)} 完成）"}})
 
 
+@tool(
+    "update_workbook_notes",
+    "整份重写这个工作簿的记忆（NOTES.md，只存在用户电脑上，下次会话自动带给你）。"
+    "保留四个小节：## 结构怪癖 / ## 用户偏好 / ## 做过的改动 / ## 禁区。禁区每行一个「- 表名」或「- 表名!A1:D20」，"
+    "只能加不能删。notes 是完整的新内容（Markdown），不是增量",
+    {"notes": str},
+)
+async def update_workbook_notes(args):
+    import workbook_memory
+    memory = workbook_memory.current()
+    if memory is None:
+        return _wrap_result({"success": False,
+                             "error": "这个工作簿还没保存过，没有地方存记忆",
+                             "suggestion": "告诉用户先保存工作簿；这次要记的内容可以直接在回复里说明"})
+    notes = args.get("notes")
+    if not isinstance(notes, str) or not notes.strip():
+        return _wrap_result({"success": False, "error": "notes 不能为空",
+                             "suggestion": "传入完整的记忆内容（保留四个小节）"})
+    refusal = memory.save_notes(notes, by_agent=True)
+    if refusal:
+        return _wrap_result({"success": False, "error": refusal})
+    workbook_memory.mark_seen(memory)
+    zones = workbook_memory.protected_zones(memory.notes())
+    message = f"已更新「{memory.name}」的记忆（{len(memory.notes())} 字）"
+    if zones:
+        message += "；禁区：" + "；".join(z.text for z in zones)
+    return _wrap_result({"success": True, "data": {"message": message}})
+
+
 @tool("read_workbook", "读取当前工作簿的结构信息", {})
 async def read_workbook(args):
     result = await call_csharp("read_workbook", {})
@@ -829,7 +858,7 @@ WPS_HOST_TOOLS = frozenset({
 })
 
 # 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
-SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write"})
+SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes"})
 
 # 宿主原语：宿主分发器里有这个分支，但不注册给模型，只由侧车工具调用
 WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
@@ -882,7 +911,7 @@ def register_all_tools(host: str = "excel") -> list:
         insert_rows, delete_rows, insert_columns, delete_columns,
         freeze_panes,
         apply_conditional_format, write_table,
-        clarify_intent, todo_write,
+        clarify_intent, todo_write, update_workbook_notes,
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]

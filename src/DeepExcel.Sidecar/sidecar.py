@@ -78,6 +78,7 @@ from claude_agent_sdk.types import (
 
 import explorer
 import selfcheck
+import workbook_memory
 import ui_events
 from excel_tools import host_tool_note, register_all_tools
 from model_windows import apply_context_window
@@ -217,6 +218,22 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                         "permissionDecisionReason": "screenshot_excel/send_keys 仅在用户主动要求截图或 computer use 时可用。当前用户消息未包含相关请求，请依靠工具返回值判断结果，不要主动截图验证。",
                     },
                     "reason": "Computer Use 工具需要用户明确要求才可调用",
+                }
+
+        # ★ 禁区（工作簿记忆里用户标记的表 / 区域）：代码层直接拒绝，不靠提示词，也不弹确认让人误点
+        memory = workbook_memory.current()
+        if memory is not None:
+            refusal = workbook_memory.check_write(
+                bare_name, input_data.get("tool_input") or {}, memory.notes(), workbook_memory.active_sheet())
+            if refusal:
+                sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} denied (protected zone)\n")
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": refusal,
+                    },
+                    "reason": "禁区",
                 }
 
         # 低风险工具必须显式 allow，不能 continue_。
@@ -840,12 +857,34 @@ def _usage_tokens(usage) -> tuple:
     return 0, 0
 
 
+# ★ 工作簿记忆：tool_use_id → 参数（tool_end 时写 history.jsonl 要知道写到了哪里）
+_tool_args: dict = {}
+# 上下文被压缩过：之前注入的记忆可能被压缩掉了，下一轮重新注入
+_memory_reinject = False
+
+
+def _mark_memory_stale() -> None:
+    global _memory_reinject
+    _memory_reinject = True
+
+
+def _record_history(tool_use_id: str, name: str, result: dict) -> None:
+    args = _tool_args.pop(tool_use_id, None) or {}
+    memory = workbook_memory.current()
+    if memory is None:
+        return
+    entry = workbook_memory.history_entry(name, args, result)
+    if entry:
+        memory.append_history(entry)
+
+
 async def _emit_tool_start(block) -> None:
     global _tool_calls_in_turn
     _tool_calls_in_turn += 1
     name = ui_events.bare_tool_name(block.name)
     args = block.input if isinstance(block.input, dict) else {}
     _run.start(block.id, name)
+    _tool_args[block.id] = args
     # 旧消息：C# / WPS 用它记对话历史和任务轨迹
     await write_message({"type": "tool_use", "tool": block.name, "args": args})
     await write_message(ui_events.envelope(
@@ -857,6 +896,7 @@ async def _emit_tool_end(block) -> None:
     result = ui_events.parse_tool_result(block.content, block.is_error)
     if not result["ok"]:
         _run.failed_calls += 1
+    _record_history(block.tool_use_id, name, result)
     await write_message(ui_events.envelope(
         "tool_end", id=block.tool_use_id, name=name, duration_ms=duration_ms, **result))
 
@@ -932,6 +972,7 @@ async def handle_sdk_message(response, client=None):
         if response.subtype == "compact_boundary":
             meta = (response.data or {}).get("compact_metadata") or {}
             _run.compacted = True
+            _mark_memory_stale()
             await write_message(ui_events.envelope(
                 "compaction", trigger=meta.get("trigger") or "auto", pre_tokens=meta.get("pre_tokens")))
     elif isinstance(response, ResultMessage):
@@ -960,6 +1001,7 @@ async def handle_sdk_message(response, client=None):
                     curr_pct = getattr(context_usage, "percentage", 0)
                 if (not _run.compacted and _prev_context_percentage is not None
                         and curr_pct < _prev_context_percentage * 0.6):
+                    _mark_memory_stale()
                     await write_message(ui_events.envelope(
                         "compaction", trigger="detected",
                         prev_pct=_prev_context_percentage, curr_pct=curr_pct))
@@ -1080,6 +1122,16 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
         if excel_ctx:
             final_text = excel_ctx + "\n" + final_text
             sys.stderr.write(f"[sidecar] excel context lite injected\n")
+            sys.stderr.flush()
+
+        # ★ 工作簿记忆（CLAUDE.md 的工作簿版）：本会话第一次、用户在面板里改过、或上下文压缩过后注入
+        global _memory_reinject
+        memory_text = workbook_memory.injection_for_turn(
+            workbook_memory.use_context(context), force=_memory_reinject)
+        _memory_reinject = False
+        if memory_text:
+            final_text = memory_text + "\n\n" + final_text
+            sys.stderr.write(f"[sidecar] workbook memory injected ({len(memory_text)} chars)\n")
             sys.stderr.flush()
 
         # ★ 历史上下文注入：如果 C# 发了 restore_history，把历史对话摘要拼到首条用户消息前。

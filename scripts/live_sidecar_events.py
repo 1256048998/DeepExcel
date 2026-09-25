@@ -15,6 +15,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --inspect    # 陌生的表先 inspect_sheet，能转述异常候选
     python scripts/live_sidecar_events.py --postwrite  # 写后体检报公式模式异常，模型自己修掉
     python scripts/live_sidecar_events.py --explore    # 大工作簿派只读子 agent 分头摸底，只交回结论
+    python scripts/live_sidecar_events.py --memory     # 工作簿记忆：记下偏好和禁区，新会话里模型已经知道
 """
 
 from __future__ import annotations
@@ -590,7 +591,107 @@ def explore_scenario() -> int:
     return 1 if problems else 0
 
 
+def _one_turn(text: str, context: dict, answer, env: dict, timeout: float = 240) -> tuple[list, str]:
+    """起一个新的侧车进程（= 一次新会话）跑一轮，返回（工具调用 [(名字, 参数)]、回复文本）"""
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    send({"type": "user_message", "text": text, "context": context})
+    tools, chunks, t0 = [], [], time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > timeout:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "tool_call":
+            send({"type": "tool_result", "call_id": msg["call_id"], "context": {},
+                  **answer(msg["tool"], msg.get("args") or {})})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "ui_event" and msg["event"]["kind"] == "tool_start":
+            ev = msg["event"]
+            tools.append((ev["name"], ev.get("args") or {}))
+            print("tool   ", ev["name"], json.dumps(ev.get("args") or {}, ensure_ascii=False)[:200])
+        elif kind == "ui_event" and msg["event"]["kind"] == "tool_end" and not msg["event"].get("ok"):
+            print("failed ", msg["event"].get("name"), json.dumps(msg["event"].get("error"), ensure_ascii=False)[:200])
+        elif kind == "stream_delta":
+            chunks.append(msg.get("text", ""))
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    return tools, "".join(chunks)
+
+
+def memory_scenario() -> int:
+    """工作簿记忆：第一次会话让模型记住偏好和禁区；新开一个会话（新进程），模型应当已经知道。"""
+    import tempfile
+    sys.stdout.reconfigure(encoding="utf-8")
+    memory_dir = tempfile.mkdtemp(prefix="deepexcel-memory-")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8", DEEPEXCEL_MEMORY_DIR=memory_dir)
+    context = {"workbookKey": r"C:\测试\2026 经营分析.xlsx", "workbookName": "2026 经营分析.xlsx"}
+
+    def host(tool, args):
+        if tool == "list":
+            return {"success": True, "data": {"sheets": [{"name": "明细"}, {"name": "汇总"}]}}
+        return {"success": True, "data": {}}
+
+    print("=== 第一次会话 ===")
+    tools1, answer1 = _one_turn(
+        "记住两件事：这个工作簿里的金额一律用万元表示；「汇总」这张表以后不要动它。记下来就行，不用做别的。",
+        context, host, env)
+    print("--- 回复 ---\n" + answer1)
+    notes_files = [os.path.join(d, "NOTES.md") for d, _, files in os.walk(memory_dir) if "NOTES.md" in files]
+    notes = open(notes_files[0], encoding="utf-8").read() if notes_files else ""
+    print("--- NOTES.md ---\n" + notes)
+
+    print("=== 第二次会话（新进程）===")
+    tools2, answer2 = _one_turn("这个工作簿有什么我之前交代过、你要注意的？直接说，不用查表。", context, host, env)
+    print("--- 回复 ---\n" + answer2)
+
+    print("=== 第三次会话：往禁区里写 ===")
+    host_writes = []
+
+    def host_recording(tool, args):
+        if tool.startswith(("write", "execute", "clear", "fill", "copy")):
+            host_writes.append((tool, args))
+        return host(tool, args)
+
+    context3 = dict(context, activeSheet="明细")
+    tools3, answer3 = _one_turn("在「汇总」表的 B2 写上公式 =SUM(明细!B:B)。", context3, host_recording, env)
+    print("--- 回复 ---\n" + answer3)
+    print("host writes:", host_writes)
+
+    problems = []
+    if any("汇总" in json.dumps(args, ensure_ascii=False) for _, args in host_writes):
+        problems.append(f"a write reached the protected sheet: {host_writes}")
+    if "禁区" not in answer3:
+        problems.append("third session did not tell the user about the protected zone")
+    if not any(name == "update_workbook_notes" for name, _ in tools1):
+        problems.append("first session did not call update_workbook_notes")
+    if "万元" not in notes:
+        problems.append("NOTES.md does not record the unit preference")
+    sys.path.insert(0, os.path.dirname(SIDECAR))
+    import workbook_memory  # noqa: E402
+    zones = workbook_memory.protected_zones(notes)
+    if not any(z.sheet == "汇总" and z.rect is None for z in zones):
+        problems.append(f"汇总 is not a whole-sheet protected zone: {zones}")
+    for must in ("万元", "汇总"):
+        if must not in answer2:
+            problems.append(f"second session does not know about {must}")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--memory" in sys.argv:
+        sys.exit(memory_scenario())
     if "--explore" in sys.argv:
         sys.exit(explore_scenario())
     if "--postwrite" in sys.argv:
