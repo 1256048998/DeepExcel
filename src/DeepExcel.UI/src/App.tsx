@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import type { ReactNode } from 'react'
 import { sendToHost, sendToHostWithResponse, onHostMessage } from './bridge'
 import { MessageList } from './components/MessageList'
 import { InputArea, ModelOption } from './components/InputArea'
@@ -15,6 +16,8 @@ import { PromptManager } from './components/PromptManager'
 import { UpdateBanner } from './components/UpdateBanner'
 import { SetupNotice } from './components/SetupNotice'
 import { PlanPill } from './components/PlanPill'
+import { HeaderMenu } from './components/HeaderMenu'
+import type { HeaderMenuItem } from './components/HeaderMenu'
 import type { Message, ModelConfig, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
@@ -639,6 +642,38 @@ export default function App() {
     clearLoadingTimeout()
   }
 
+  const menuIcon = (children: ReactNode) => (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  )
+  const headerMenuItems: HeaderMenuItem[] = [
+    {
+      key: 'snapshots', label: '历史版本', onSelect: () => setHistoryOpen(true),
+      icon: menuIcon(<><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></>),
+    },
+    {
+      key: 'attachments', label: '附件', onSelect: openAttachments, badge: attachments.length,
+      icon: menuIcon(<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />),
+    },
+    {
+      key: 'prompts', label: '提示词与技能', onSelect: handleOpenPromptManager,
+      icon: menuIcon(<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>),
+    },
+    {
+      key: 'skills', label: '技能库', onSelect: () => setSkillsOpen(true),
+      icon: menuIcon(<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>),
+    },
+    {
+      key: 'models', label: '模型配置', onSelect: () => setModelConfigOpen(true),
+      icon: menuIcon(<><circle cx="12" cy="12" r="3"/><path d="M12 1v3M12 20v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M1 12h3M20 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></>),
+    },
+    {
+      key: 'autoload', label: '打开面板时恢复上次对话', onSelect: toggleAutoLoadHistory, checked: autoLoadHistory,
+      icon: menuIcon(<><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></>),
+    },
+  ]
+
   return (
     <div className="app">
       <header className="app-header">
@@ -671,57 +706,6 @@ export default function App() {
           </button>
         </div>
         <div className="app-header-actions right">
-          {/* 右侧：纯图标 + tooltip */}
-          {/* ★ 提示词/技能管理入口（用户级，跨工作簿保留） */}
-          <button
-            className="header-btn icon-only"
-            onClick={handleOpenPromptManager}
-            title="提示词与技能管理"
-            type="button"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>
-            </svg>
-          </button>
-          <button
-            className={`header-btn icon-only ${autoLoadHistory ? 'on' : ''}`}
-            onClick={toggleAutoLoadHistory}
-            title={autoLoadHistory ? '加载历史：开启（打开面板自动恢复上次对话）' : '加载历史：关闭（打开面板为新对话）'}
-            type="button"
-          >
-            {autoLoadHistory ? (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="1 4 1 10 7 10"/>
-                <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-              </svg>
-            ) : (
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" opacity="0.5">
-                <polyline points="23 4 23 10 17 10"/>
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-              </svg>
-            )}
-          </button>
-          <button
-            className="header-btn icon-only"
-            onClick={() => setHistoryOpen(true)}
-            title="历史版本"
-            type="button"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
-              <circle cx="12" cy="13" r="4"/>
-            </svg>
-          </button>
-          <button
-            className="header-btn icon-only"
-            onClick={() => setSkillsOpen(true)}
-            title="技能库"
-            type="button"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-            </svg>
-          </button>
           <button
             className="header-btn icon-only"
             onClick={() => setAccountOpen(true)}
@@ -737,30 +721,8 @@ export default function App() {
               <circle cx="12" cy="7" r="4"/>
             </svg>
           </button>
-          <button
-            className="header-btn icon-only"
-            onClick={() => setModelConfigOpen(true)}
-            title="模型配置"
-            type="button"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
-          <button
-            className="header-btn icon-only attach-btn"
-            onClick={openAttachments}
-            title="附件管理"
-            type="button"
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-            {attachments.length > 0 && (
-              <span className="attach-badge">{attachments.length}</span>
-            )}
-          </button>
+          {/* 窄侧栏里顶栏只留新建、历史、账户和「更多」，其余入口收进菜单 */}
+          <HeaderMenu items={headerMenuItems} />
         </div>
       </header>
 

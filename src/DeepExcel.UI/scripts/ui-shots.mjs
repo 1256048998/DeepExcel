@@ -102,6 +102,10 @@ const scenes = {
   },
 
   setup: { mock: 'nokey', run: async () => {} },
+
+  menu: async ({ page }) => {
+    await page.click('[aria-label="更多"]')
+  },
 }
 
 // ---------------- 执行 ----------------
@@ -121,7 +125,7 @@ async function runScene(page, scene) {
   }
   const emit = (type, payload) => page.evaluate(([t, p]) => window.__deepexcelDevHost.emit(t, p), [type, payload])
   // 场景函数在 Node 里跑，逐条把消息送进页面，和真实宿主一样是一条一条到达的
-  await scene.run({ emit: (t, p) => emit(t, p), send })
+  await scene.run({ emit: (t, p) => emit(t, p), send, page })
   await page.waitForTimeout(300)
 }
 

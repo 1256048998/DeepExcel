@@ -536,6 +536,92 @@ body {
   gap: 6px;
 }
 
+/* === 顶栏「更多」菜单 === */
+.header-menu {
+  position: relative;
+}
+
+.header-menu-dot {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--de-brand);
+}
+
+.header-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  min-width: 196px;
+  max-width: calc(100vw - 16px);
+  padding: var(--de-space-1);
+  background: var(--de-bg);
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-lg);
+  box-shadow: var(--de-shadow-md);
+}
+
+.header-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--de-space-2);
+  width: 100%;
+  padding: 6px var(--de-space-2);
+  background: none;
+  border: none;
+  border-radius: var(--de-radius-md);
+  color: var(--de-text);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.header-menu-item:hover,
+.header-menu-item:focus-visible {
+  background: var(--de-bg-muted);
+  outline: none;
+}
+
+.header-menu-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--de-text-secondary);
+}
+
+.header-menu-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.header-menu-badge {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--de-radius-pill);
+  background: var(--de-brand-soft);
+  color: var(--de-brand);
+  font-size: var(--de-fs-xs);
+  text-align: center;
+}
+
+.header-menu-check {
+  flex: none;
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-tertiary);
+}
+
+.header-menu-check.on {
+  color: var(--de-brand);
+}
+
 /* === 顶部统一文字按钮 === */
 .header-btn {
   position: relative;
