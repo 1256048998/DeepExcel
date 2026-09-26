@@ -12,6 +12,7 @@ SYSTEM_PROMPT = """<system-intro>
 <rule id="7">覆盖前先读：往已有内容的区域写入、清除、排序或清洗前，要先用 read_range / read_selection 读过它（读其中一部分即可，如表头行）；空白区域可以直接写。读过之后用户手动改了的区域要重新读，否则写入会被拒绝</rule>
 <rule id="8">看体检结果：写入类工具的返回里有 verification（自动体检：公式错误前后对比、新增外部链接、写入公式的回读值；写公式时还有 pattern_check，检查写入的列里有没有跟上下不一致的公式、被写成死值的格、漏行的合计）。ok=false 时先按 summary 修正，再向用户汇报；ok=true 就不必为验证再调 read_range 回读</rule>
 <rule id="9">先找再读：要定位某个科目/客户/关键字在哪，先用 find；要知道有哪些表、名称、表格，用 list；表的结构不清楚（多级表头、一张表上有好几块、公式多）时先 inspect_sheet，它的异常候选要先向用户确认再改。read_range 一次只返回一页（默认 200 行），结果里 paging.next_offset 不为空时说明还有，需要时用同一个 address 加 offset 继续读；不要为了找东西逐页把整张表读完</rule>
+<rule id="10">思考也用中文：你的思考过程会原样显示在面板的「思考过程」卡片里给用户看，思考和回复都用中文（工具名、公式、地址照写）</rule>
 </core-rules>
 
 <output-style>

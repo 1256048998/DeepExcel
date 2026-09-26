@@ -82,6 +82,8 @@ import knowledge_skills
 import permission_modes
 import workbook_memory
 import ui_events
+import sdk_compat
+sdk_compat.install()
 from excel_tools import host_tool_note, register_all_tools
 from model_windows import apply_context_window
 from ipc import _message_buffer, read_message, route_message, write_message
@@ -851,6 +853,8 @@ _collected_text = ""
 _run = ui_events.RunTracker()
 # ★ 正在生成参数的工具调用（代码边写边显示）
 _gen = ui_events.ToolGenTracker()
+# ★ 思考过程（思考卡片）
+_think = ui_events.ThinkingTracker()
 
 WATCHDOG_TICK_SECONDS = 5.0
 
@@ -947,6 +951,17 @@ async def _emit_run_summary(outcome: str, in_tok: int = 0, out_tok: int = 0, num
         num_turns=num_turns, input_tokens=in_tok, output_tokens=out_tok))
 
 
+THINKING_BUDGET_TOKENS = 8000
+THINKING_LANGUAGE_NOTE = "\n\n（请用中文思考。）"
+
+
+def thinking_config() -> dict:
+    """思考开关与预算。用 enabled + 预算而不是 adaptive：adaptive 要 CLI 认得这个模型。"""
+    if os.environ.get("DEEPEXCEL_THINKING", "").strip().lower() in ("0", "off", "false", "no"):
+        return {"type": "disabled"}
+    return {"type": "enabled", "budget_tokens": THINKING_BUDGET_TOKENS}
+
+
 async def handle_sdk_message(response, client=None):
     """处理 ClaudeSDKClient.receive_response() 产生的流式消息"""
     global _had_partial_text, _collected_text, _prev_context_percentage
@@ -958,11 +973,19 @@ async def handle_sdk_message(response, client=None):
             block = evt.get("content_block") or {}
             if block.get("type") == "tool_use":
                 _gen.start(evt.get("index", -1), block.get("id", ""), block.get("name", ""))
+            elif block.get("type") == "thinking":
+                await write_message(_think.start(evt.get("index", -1)))
         elif etype == "content_block_stop":
             _gen.stop(evt.get("index", -1))
+            for think_event in _think.stop(evt.get("index", -1)):
+                await write_message(think_event)
         elif etype == "content_block_delta":
             delta = evt.get("delta", {})
-            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+            if isinstance(delta, dict) and delta.get("type") == "thinking_delta":
+                think_event = _think.feed(evt.get("index", -1), delta.get("thinking", ""))
+                if think_event:
+                    await write_message(think_event)
+            elif isinstance(delta, dict) and delta.get("type") == "text_delta":
                 text = delta.get("text", "")
                 if text:
                     _had_partial_text = True
@@ -1112,12 +1135,13 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             _needs_drain = False
 
         # ★ 重置流式标志 + 本轮工具账本
-        global _had_partial_text, _tool_calls_in_turn, _collected_text, _run, _gen
+        global _had_partial_text, _tool_calls_in_turn, _collected_text, _run, _gen, _think
         _had_partial_text = False
         _tool_calls_in_turn = 0
         _collected_text = ""
         _run = ui_events.RunTracker()
         _gen = ui_events.ToolGenTracker()
+        _think = ui_events.ThinkingTracker()
 
         user_text = msg.get("text", "")
         context = msg.get("context") or {}
@@ -1160,6 +1184,11 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             final_text = memory_text + "\n\n" + final_text
             sys.stderr.write(f"[sidecar] workbook memory injected ({len(memory_text)} chars)\n")
             sys.stderr.flush()
+
+        # ★ 思考过程显示在面板里给用户看：放在消息末尾提醒用中文思考
+        # （2026-09-25 实测 DeepSeek：只写在系统提示词里，思考仍是英文）
+        if thinking_config()["type"] != "disabled":
+            final_text += THINKING_LANGUAGE_NOTE
 
         # ★ 权限模式（只出方案 / 自动应用写入）：每轮都说，模型不用记
         mode_note = permission_modes.turn_note()
@@ -1364,11 +1393,10 @@ async def main():
             # 导致我们传的 stepfun base_url/key 被 settings.json 里的 deepseek 配置覆盖。
             # 现象：os.environ 显示 stepfun，但实际请求打到 deepseek（400 错误）。
             setting_sources=[],
-            # ★ 禁用 thinking：DeepSeek anthropic 兼容端点不返回 thinking block 的 signature 字段，
-            # SDK 在 message_parser.py:104 硬编码 block["signature"] 会抛 MessageParseError，
-            # 导致 tool_use 后第二轮 API 响应解析崩溃，最终文本永不返回。
-            # 参考：https://github.com/anthropics/claude-agent-sdk-python/issues/949
-            thinking={"type": "disabled"},
+            # ★ 思考过程：打开，逐段转发给面板的思考卡片。
+            # 以前关掉它，是因为兼容端点的思考块可能不带 signature，SDK 解析会抛错；
+            # 现在 sdk_compat 在解析前补上缺省值。DEEPEXCEL_THINKING=off 可关。
+            thinking=thinking_config(),
             # ★ 启用 token 级流式：receive_response() 会产出 StreamEvent（含 content_block_delta），
             # 让 UI 逐 token 显示文本，而不是整段一次性出现
             include_partial_messages=True,

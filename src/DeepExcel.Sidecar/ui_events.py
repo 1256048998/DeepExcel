@@ -407,3 +407,53 @@ class ToolGenTracker:
                 fields["lines"] = code.count("\n") + 1
                 fields["preview"] = code[-_CODE_PREVIEW_CHARS:]
         return envelope("tool_gen", **fields)
+
+
+# 思考过程逐字转发会挤爆 WebView 的消息队列：攒够一小段或隔一小会儿才发一次
+THINKING_INTERVAL = 0.2
+THINKING_FLUSH_CHARS = 240
+
+
+class ThinkingTracker:
+    """按 content block index 跟踪思考块，产出 thinking_start / thinking_delta / thinking_end。
+
+    思考块没有自己的 id，这里按出现顺序编号（th-1、th-2…），面板用它把增量拼回同一张卡片。"""
+
+    def __init__(self) -> None:
+        self._blocks: dict[int, dict] = {}
+        self._count = 0
+
+    def start(self, index: int, now: float | None = None) -> dict:
+        self._count += 1
+        now = time.monotonic() if now is None else now
+        block = {"id": f"th-{self._count}", "pending": "", "chars": 0, "started": now, "last": now}
+        self._blocks[index] = block
+        return envelope("thinking_start", id=block["id"])
+
+    def feed(self, index: int, text: str, now: float | None = None) -> dict | None:
+        block = self._blocks.get(index)
+        if block is None or not text:
+            return None
+        block["pending"] += text
+        block["chars"] += len(text)
+        now = time.monotonic() if now is None else now
+        if len(block["pending"]) < THINKING_FLUSH_CHARS and now - block["last"] < THINKING_INTERVAL:
+            return None
+        return self._flush(block, now)
+
+    def stop(self, index: int, now: float | None = None) -> list[dict]:
+        block = self._blocks.pop(index, None)
+        if block is None:
+            return []
+        now = time.monotonic() if now is None else now
+        events = []
+        if block["pending"]:
+            events.append(self._flush(block, now))
+        events.append(envelope("thinking_end", id=block["id"], chars=block["chars"],
+                               duration_ms=int((now - block["started"]) * 1000)))
+        return events
+
+    @staticmethod
+    def _flush(block: dict, now: float) -> dict:
+        text, block["pending"], block["last"] = block["pending"], "", now
+        return envelope("thinking_delta", id=block["id"], text=text)

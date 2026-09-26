@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Message, PermissionMode, ToolStep, ToolStepChanges } from '../types'
 import { formatDuration } from '../utils/uiEvents'
 import { useStickToBottom } from '../utils/useStickToBottom'
@@ -164,6 +164,11 @@ const MessageItem = memo(function MessageItem({
   // 方案卡片（present_plan）：涉及的表和区域、每一步、风险点，下面是批准按钮
   if (message.type === 'plan_proposal' && message.plan) {
     return <PlanCard message={message} index={index} busy={!!busy} onDecision={onPlanDecision} />
+  }
+
+  // 思考过程：生成时展开，结束后收成「思考了 N 秒」
+  if (message.type === 'thinking') {
+    return <ThinkingCard message={message} />
   }
 
   // 本次会话实时收到的工具步骤：每步一行叙事（● 读取 A1:D20，下面一行写结果：20 行 × 4 列）
@@ -387,17 +392,6 @@ function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl
         <span className="tool-step-dot" aria-hidden="true" />
         <span className="tool-step-label" title={step.name}>{step.label}</span>
         {duration && <span className="tool-step-duration">{duration}</span>}
-        {rewind && step.status === 'ok' && step.checkpointId && (
-          <button
-            type="button"
-            className={`tool-step-rewind${rewind.pendingId === step.checkpointId ? ' pending' : ''}`}
-            title={REWIND_TOOLTIP}
-            disabled={rewind.disabled || rewind.pendingId !== null}
-            onClick={() => rewind.onRewind(step)}
-          >
-            {rewind.pendingId === step.checkpointId ? '回退中…' : '回到这一步之前'}
-          </button>
-        )}
       </div>
       {step.code && step.status === 'generating' && (
         <pre className="tool-step-code live">{lastLines(step.code, LIVE_CODE_LINES)}</pre>
@@ -415,11 +409,57 @@ function ToolStepLine({ step, rewind }: { step: ToolStep; rewind?: RewindControl
       {step.status === 'ok' && step.check && !step.check.ok && (
         <div className="tool-step-result check-failed">{step.check.summary}</div>
       )}
+      {/* 常驻在这一步下面：「放心让 AI 改表」的底气要看得见，不藏在悬停里 */}
+      {rewind && step.status === 'ok' && step.checkpointId && (
+        <button
+          type="button"
+          className={`tool-step-rewind${rewind.pendingId === step.checkpointId ? ' pending' : ''}`}
+          title={REWIND_TOOLTIP}
+          disabled={rewind.disabled || rewind.pendingId !== null}
+          onClick={() => rewind.onRewind(step)}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <polyline points="9 14 4 9 9 4" />
+            <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+          </svg>
+          {rewind.pendingId === step.checkpointId ? '回退中…' : '回到这一步之前'}
+        </button>
+      )}
       {step.status === 'error' && step.error && (
         <div className="tool-step-result error">
           {step.error.message}
           {step.error.hint && <div className="tool-step-hint">{step.error.hint}</div>}
         </div>
+      )}
+    </div>
+  )
+}
+
+function ThinkingCard({ message }: { message: Message }) {
+  const active = !!message.thinkingActive
+  // 没手动点过就跟着状态走：思考中展开，结束收起；点过以后听用户的
+  const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const open = userOpen ?? active
+  const bodyRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el && active) el.scrollTop = el.scrollHeight
+  }, [message.content, active])
+  if (!active && !message.content.trim()) return null
+  const seconds = message.thinkingMs ? Math.max(1, Math.round(message.thinkingMs / 1000)) : 0
+  return (
+    <div className={`message thinking-card${active ? ' active' : ''}`}>
+      <button type="button" className="thinking-header" onClick={() => setUserOpen(!open)} aria-expanded={open}>
+        <svg className="thinking-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M12 3c.4 3.6 1.9 5.1 5.5 5.5-3.6.4-5.1 1.9-5.5 5.5-.4-3.6-1.9-5.1-5.5-5.5C10.1 8.1 11.6 6.6 12 3z" />
+          <path d="M18.5 14c.2 1.8 1 2.6 2.8 2.8-1.8.2-2.6 1-2.8 2.8-.2-1.8-1-2.6-2.8-2.8 1.8-.2 2.6-1 2.8-2.8z" />
+        </svg>
+        <span className="thinking-title">{active ? '思考中…' : seconds ? `思考了 ${seconds} 秒` : '思考过程'}</span>
+        <Chevron open={open} />
+      </button>
+      {open && message.content && (
+        <div className="thinking-body" ref={bodyRef}>{message.content}</div>
       )}
     </div>
   )

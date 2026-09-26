@@ -38,6 +38,9 @@ stdout 一行一个 JSON：
 | `tool_start` | `id`, `name`, `args` | 模型发出一次工具调用。`id` 是 SDK 的 tool_use_id；`name` 不带 `mcp__excel__` 前缀；`args` 是显示用副本（长字符串截断到 4000 字，二维数组只留 `{__shape:[行,列], head:[前 3 行]}`） |
 | `tool_end` | `id`, `name`, `ok`, `duration_ms`, `summary?`, `error?`, `check?` | 与同 `id` 的 `tool_start` 配对。`summary` 是一句话结果（「20 行 × 4 列」）；`error` 是 `{code, message, hint?}`；`check` 是写后自动体检 `{ok, summary}`（新增公式错误、新增外部链接），面板只在 `ok: false` 时显示；`checkpoint_id` 是这一步执行前单独存的检查点，面板据此显示「回到这一步之前」（发 `rollback_snapshot`） |
 | `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_jsa / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
+| `thinking_start` | `id` | 模型开始一段思考（SDK 的 thinking 块）。块没有自己的 id，侧车按出现顺序编号 `th-1`、`th-2`… |
+| `thinking_delta` | `id`, `text` | 思考文字的增量，攒够 240 字或隔 200ms 才发一次。面板拼进同一张思考卡片，生成时展开 |
+| `thinking_end` | `id`, `chars`, `duration_ms` | 这段思考结束，面板收成「思考了 N 秒」。本轮 `stream_end` 时还没收到的，面板也一律收起 |
 | `status` | `text`, `tool?` | 当前在做什么：等待用户确认、正在停止、看门狗（20 秒没动静「仍在等待模型响应」；某一步执行超过 15 秒「这一步执行中」；超过 120 秒提示可能被 Excel 对话框挡住、可以停止）。等用户确认 / 回答期间看门狗不催。`tool` 为 `explore_workbook` 时是分头摸底的进度（「分头摸底：1/3 个子任务完成（#2 find 应收）」），进度持续更新期间看门狗不发卡住提示。`text` 为空表示清除 |
 | `plan` | `items: [{content, status}]` | 模型用 `todo_write` 维护的计划（status：pending / in_progress / completed，最多一条 in_progress）。面板在输入框上方显示计划胶囊；`todo_write` 本身不作为一步显示 |
 | `plan_proposal` | `summary`, `steps: [{action, target?, detail?}]`, `risks: []` | 模型用 `present_plan` 提交的变更方案（「只出方案」模式下必须用它收尾）。面板显示方案卡片：批准并执行（每步确认）/ 批准并自动应用 / 继续修改；`present_plan` 本身不作为一步显示 |

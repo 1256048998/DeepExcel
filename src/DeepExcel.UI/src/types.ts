@@ -5,7 +5,7 @@ export type Message = {
   toolName?: string
   result?: string
   // starter：欢迎语，下面带「首次使用」卡片（示例数据 / 为你的文件推荐）
-  type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice' | 'plan_proposal' | 'starter'
+  type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice' | 'plan_proposal' | 'starter' | 'thinking'
   options?: string[]
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并
@@ -23,6 +23,10 @@ export type Message = {
   // type==='plan_proposal'：模型用 present_plan 提交的方案，和用户的决定
   plan?: PlanProposal
   planDecision?: PermissionMode | 'dismissed'
+  // type==='thinking'：思考过程卡片（content 是思考文字）
+  thinkingId?: string
+  thinkingActive?: boolean
+  thinkingMs?: number
 }
 
 // 权限模式（侧车 permission_modes.py）：每步确认 / 本次会话自动应用写入 / 只出方案。只在内存里，不保存
@@ -75,6 +79,9 @@ export type UiEvent =
       detail?: string; ts?: number }
   | { v: number; kind: 'steer_delivered' | 'steer_deferred'; count: number; ts?: number }
   | { v: number; kind: 'plan'; items: PlanItem[]; ts?: number }
+  | { v: number; kind: 'thinking_start'; id: string; ts?: number }
+  | { v: number; kind: 'thinking_delta'; id: string; text: string; ts?: number }
+  | { v: number; kind: 'thinking_end'; id: string; chars?: number; duration_ms?: number; ts?: number }
   | { v: number; kind: 'plan_proposal'; summary: string; steps: PlanStep[]; risks: string[]; ts?: number }
   | { v: number; kind: 'run_summary'; outcome: string; tool_calls: number; failed_calls: number;
       duration_ms: number; num_turns?: number; input_tokens?: number; output_tokens?: number; ts?: number }

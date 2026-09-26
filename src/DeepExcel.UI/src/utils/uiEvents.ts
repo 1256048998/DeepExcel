@@ -74,6 +74,24 @@ function appendStep(messages: Message[], step: ToolStep): Message[] {
   }]
 }
 
+function updateThinking(messages: Message[], id: string, patch: (m: Message) => Partial<Message>): Message[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].type === 'thinking' && messages[i].thinkingId === id) {
+      const next = messages.slice()
+      next[i] = { ...messages[i], ...patch(messages[i]) }
+      return next
+    }
+  }
+  return messages
+}
+
+/** 本轮结束（或被停止）时还开着的思考卡片一律收起，不能一直显示「思考中」。 */
+export function closeThinking(messages: Message[]): Message[] {
+  return messages.some(m => m.thinkingActive)
+    ? messages.map(m => (m.thinkingActive ? { ...m, thinkingActive: false } : m))
+    : messages
+}
+
 // 这些工具有专门的展示位置（计划胶囊、方案卡片），不再作为一步显示在步骤列表里
 const HIDDEN_STEP_TOOLS = new Set(['todo_write', 'present_plan'])
 
@@ -115,6 +133,18 @@ export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
         checkpointId: event.checkpoint_id,
         changes: event.changes,
       })
+    case 'thinking_start':
+      return [...closeStreaming(messages), {
+        role: 'assistant',
+        type: 'thinking',
+        content: '',
+        thinkingId: event.id,
+        thinkingActive: true,
+      }]
+    case 'thinking_delta':
+      return updateThinking(messages, event.id, m => ({ content: m.content + (event.text ?? '') }))
+    case 'thinking_end':
+      return updateThinking(messages, event.id, () => ({ thinkingActive: false, thinkingMs: event.duration_ms }))
     case 'compaction':
       return [...messages, {
         role: 'assistant',

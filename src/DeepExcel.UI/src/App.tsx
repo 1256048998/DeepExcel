@@ -21,7 +21,7 @@ import { HeaderMenu } from './components/HeaderMenu'
 import { Brand } from './components/Logo'
 import type { HeaderMenuItem } from './components/HeaderMenu'
 import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent } from './types'
-import { applyUiEvent } from './utils/uiEvents'
+import { applyUiEvent, closeThinking } from './utils/uiEvents'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
@@ -357,9 +357,9 @@ export default function App() {
         // ★ 遍历所有消息，把所有 streaming: true 都重置为 false
         // 之前只处理最后一条，如果中间有 tool_call 插入导致 streaming 消息不在末尾，
         // 光标会永久闪烁（streaming 永远不被重置）
-        setMessages(prev => prev.map(m =>
+        setMessages(prev => closeThinking(prev.map(m =>
           m.streaming ? { ...m, streaming: false } : m
-        ))
+        )))
         setLoading(false)
         setStatusText(null)
         if (stopTimerRef.current) {
@@ -786,16 +786,16 @@ export default function App() {
         {/* 顶栏只留新建、历史、账户和「更多」，一律图标按钮；其余入口收进菜单 */}
         <div className="app-header-actions">
           <button
-            className="header-icon-btn"
+            className="header-new-btn"
             onClick={handleNewConversation}
-            title="新对话（当前对话会保存到历史）"
-            aria-label="新对话"
+            title="开始新对话（当前对话会保存到历史）"
             type="button"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 20h9"/>
-              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
+            新建对话
           </button>
           <button
             className="header-icon-btn"
@@ -810,22 +810,29 @@ export default function App() {
               <polyline points="12 7 12 12 15 14"/>
             </svg>
           </button>
-          <button
-            className="header-icon-btn"
-            onClick={() => setAccountOpen(true)}
-            title={
-              accountStatus && accountStatus.state !== 'signedout'
-                ? `账号：${accountStatus.email ?? ''}`
-                : '账号（未登录）'
-            }
-            aria-label="账号"
-            type="button"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-              <circle cx="12" cy="7" r="4"/>
-            </svg>
-          </button>
+          {/* 账号：未登录是「登录」（打开欢迎登录卡片），已登录是首字母头像（打开账号信息） */}
+          {accountStatus && (accountStatus.state === 'signedin' || accountStatus.state === 'offline') ? (
+            <button
+              className="header-icon-btn"
+              onClick={() => setAccountOpen(true)}
+              title={`账号：${accountStatus.email ?? ''}${accountStatus.state === 'offline' ? '（离线）' : ''}`}
+              aria-label="账号"
+              type="button"
+            >
+              <span className={`header-avatar${accountStatus.state === 'offline' ? ' offline' : ''}`} aria-hidden="true">
+                {(accountStatus.email ?? '?').trim().charAt(0).toUpperCase()}
+              </span>
+            </button>
+          ) : (
+            <button
+              className="header-signin-btn"
+              onClick={() => setWelcomeOpen(true)}
+              title={accountStatus?.state === 'expired' ? '登录已失效，重新登录' : '登录 DeepExcel 账号'}
+              type="button"
+            >
+              登录
+            </button>
+          )}
           <HeaderMenu items={headerMenuItems} />
         </div>
       </header>

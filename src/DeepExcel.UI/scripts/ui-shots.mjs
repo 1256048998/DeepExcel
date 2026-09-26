@@ -79,10 +79,15 @@ const scenes = {
       { content: '创建透视表', status: 'in_progress' },
       { content: '插入柱状图', status: 'pending' },
     ] }))
+    emit('ui_event', ev('thinking_start', { id: 'th-1' }))
+    emit('ui_event', ev('thinking_delta', { id: 'th-1', text: '用户要按部门汇总。先看数据表的表头和范围，再用透视表按部门求和，最后插一张柱状图放在透视表右边。' }))
+    emit('ui_event', ev('thinking_end', { id: 'th-1', duration_ms: 3200 }))
     emit('ui_event', ev('tool_start', { id: 'r1', name: 'read_workbook', args: {} }))
     emit('ui_event', ev('tool_end', { id: 'r1', name: 'read_workbook', ok: true, duration_ms: 120 }))
     const code = 'Sub BuildPivot()\n    Dim ws As Worksheet\n    Set ws = Worksheets("数据")\n    Dim pc As PivotCache\n    Set pc = ActiveWorkbook.PivotCaches.Create( _\n        SourceType:=xlDatabase, SourceData:=ws.Range("A1:F500"))\n'
     emit('ui_event', ev('tool_gen', { id: 'r2', name: 'execute_vba', chars: code.length, lines: 6, preview: code }))
+    emit('ui_event', ev('thinking_start', { id: 'th-2' }))
+    emit('ui_event', ev('thinking_delta', { id: 'th-2', text: '透视表放在新表「部门汇总」里，行字段用部门，值字段用销售额求和。' }))
     emit('ui_event', ev('status', { text: '仍在等待模型响应（25 秒）…' }))
   },
 

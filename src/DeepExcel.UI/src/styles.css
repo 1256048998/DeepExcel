@@ -87,9 +87,95 @@ body {
   color: var(--de-text);
 }
 
-.header-icon-btn:focus-visible {
+.header-icon-btn:focus-visible,
+.header-new-btn:focus-visible,
+.header-signin-btn:focus-visible {
   outline: none;
   box-shadow: var(--de-focus-ring);
+}
+
+/* 「+ 新建对话」：顶栏唯一的文字按钮，和图标按钮同高 */
+.header-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  margin-right: 4px;
+  padding: 0 11px 0 9px;
+  background: var(--de-bg);
+  border: 1px solid var(--de-border-strong);
+  border-radius: var(--de-radius-pill);
+  color: var(--de-text);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.header-new-btn:hover {
+  background: var(--de-bg-muted);
+}
+
+.header-new-btn svg {
+  color: var(--de-brand);
+}
+
+/* 未登录：「登录」文字按钮 */
+.header-signin-btn {
+  height: 30px;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-radius: var(--de-radius-lg);
+  color: var(--de-brand);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-sm);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.header-signin-btn:hover {
+  background: var(--de-brand-soft);
+}
+
+/* 已登录：首字母头像 + 右下角状态点（离线为灰） */
+.header-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--de-brand);
+  color: var(--de-on-brand);
+  font-size: var(--de-fs-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+
+.header-avatar::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--de-success-solid);
+  box-shadow: 0 0 0 1.5px var(--de-bg);
+}
+
+.header-avatar.offline::after {
+  background: var(--de-text-tertiary);
+}
+
+/* 很窄的面板只留标志，把位置让给按钮 */
+@media (max-width: 360px) {
+  .app-brand-name { display: none; }
 }
 
 .messages-wrap {
@@ -3128,33 +3214,42 @@ details[open] > summary .chevron-icon {
   color: var(--de-text);
 }
 
-/* 「回到这一步之前」：平时不占位置也不占视线，鼠标移到这一步上才盖在耗时上面出现 */
+/* 「回到这一步之前」：常驻的小胶囊，挂在这一步的结果下面 */
 .tool-step-rewind {
-  position: absolute;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  padding: 1px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 3px 0 1px 18px;
+  padding: 1px 9px 1px 7px;
   border: 1px solid var(--de-border);
   border-radius: var(--de-radius-pill);
   background: var(--de-bg);
-  color: var(--de-brand);
+  color: var(--de-text-secondary);
   font-family: var(--de-font);
   font-size: var(--de-fs-xs);
+  line-height: 18px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s;
+  transition: color 0.15s, border-color 0.15s;
 }
 
-.tool-step:hover .tool-step-rewind,
-.tool-step-rewind:focus-visible,
-.tool-step-rewind.pending {
-  opacity: 1;
+.tool-step-rewind:hover:not(:disabled) {
+  color: var(--de-brand);
+  border-color: var(--de-brand-border);
+}
+
+.tool-step-rewind:focus-visible {
+  outline: none;
+  box-shadow: var(--de-focus-ring);
 }
 
 .tool-step-rewind:disabled {
-  color: var(--de-text-secondary);
+  opacity: 0.55;
   cursor: default;
+}
+
+.tool-step-rewind.pending {
+  opacity: 1;
+  color: var(--de-brand);
 }
 
 /* 内联 diff */
@@ -3249,6 +3344,74 @@ details[open] > summary .chevron-icon {
 
 .tool-step-hint {
   color: var(--de-text-secondary);
+}
+
+/* === 思考过程卡片 === */
+.message.thinking-card {
+  max-width: 100%;
+  padding: 0;
+  margin-bottom: var(--de-space-2);
+  background: transparent;
+  white-space: normal;
+}
+
+.thinking-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: -6px;
+  padding: 2px 6px;
+  background: none;
+  border: none;
+  border-radius: var(--de-radius-md);
+  color: var(--de-text-secondary);
+  font-family: var(--de-font);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+}
+
+.thinking-header:hover {
+  background: var(--de-bg-muted);
+  color: var(--de-text);
+}
+
+.thinking-icon {
+  color: var(--de-brand);
+}
+
+/* 思考中：标题上走一道流光 */
+.thinking-card.active .thinking-title {
+  background: linear-gradient(90deg, var(--de-text-secondary) 0%, var(--de-text-secondary) 35%,
+    var(--de-text) 50%, var(--de-text-secondary) 65%, var(--de-text-secondary) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 1.8s linear infinite;
+}
+
+@keyframes thinking-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -150% 0; }
+}
+
+.thinking-body {
+  margin-top: 4px;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+  background: var(--de-bg);
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-lg);
+  color: var(--de-text-tertiary);
+  font-size: var(--de-fs-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-card.active .thinking-title { animation: none; color: var(--de-text-secondary); background: none; }
 }
 
 /* === 错误卡片（ui_event error） === */

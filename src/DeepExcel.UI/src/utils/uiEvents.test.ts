@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { Message, UiEvent } from '../types'
-import { applyUiEvent, runSummaryText } from './uiEvents'
+import { applyUiEvent, closeThinking, runSummaryText } from './uiEvents'
 import { TOOL_LABELS, toolLabel } from './toolCatalog'
 
 const start = (id: string, name: string, args: Record<string, unknown> = {}): UiEvent =>
@@ -65,6 +65,26 @@ describe('applyUiEvent', () => {
     expect(step.status).toBe('error')
     expect(step.error?.message).toBe('工作表受保护')
     expect(step.error?.hint).toBe('先取消保护')
+  })
+
+  it('builds one thinking card from start / delta / end', () => {
+    const th = (kind: string, extra: Record<string, unknown> = {}) => ({ v: 1, kind, id: 'th-1', ...extra }) as UiEvent
+    const streaming: Message[] = [{ role: 'assistant', content: '先看一下', streaming: true }]
+    const out = run([th('thinking_start'), th('thinking_delta', { text: '表头在第 3 行，' }),
+      th('thinking_delta', { text: '先读 A3:D3' })], streaming)
+    expect(out[0].streaming).toBe(false)
+    expect(out[1]).toMatchObject({ type: 'thinking', thinkingActive: true, content: '表头在第 3 行，先读 A3:D3' })
+    const done = applyUiEvent(out, th('thinking_end', { duration_ms: 2400 }))
+    expect(done[1]).toMatchObject({ thinkingActive: false, thinkingMs: 2400 })
+    // 后面的正文另起一条，不会拼进思考卡片（stream_delta 只接在 streaming 的消息后面）
+    expect(done[1].streaming).toBeUndefined()
+  })
+
+  it('closes thinking cards left open when the turn ends', () => {
+    const open: Message[] = [{ role: 'assistant', type: 'thinking', content: 'x', thinkingId: 'th-1', thinkingActive: true }]
+    expect(closeThinking(open)[0].thinkingActive).toBe(false)
+    const none: Message[] = [{ role: 'assistant', content: 'hi' }]
+    expect(closeThinking(none)).toBe(none)
   })
 
   it('ignores tool_end for an unknown id', () => {

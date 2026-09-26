@@ -179,7 +179,8 @@ async def test_leftover_steer_becomes_the_next_message(sent):
         tg.start_soon(stop_loop_later)
         await sidecar.run_agent_loop(client)
 
-    assert client.queries[-1].endswith("改成按月汇总")
+    # 每轮末尾固定带一句「用中文思考」的提醒，去掉后应当正好以插话结尾
+    assert client.queries[-1].removesuffix(sidecar.THINKING_LANGUAGE_NOTE).endswith("改成按月汇总")
     assert "steer_deferred" in _kinds(sent)
 
 
