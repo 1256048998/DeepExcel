@@ -98,6 +98,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 - 先读后写：`Application.ApiEvent.AddApiEventListener('SheetChange', …)` 能否收到用户编辑、
   `WorksheetFunction.CountA`
 - `execute_jsa` 的确认弹窗在 WPS 面板里是否正常出现、允许 / 拒绝能否回到侧车
+- 选区条：`ApiEvent.AddApiEventListener('SheetSelectionChange', …)` 能否收到选区变化、`Selection.Areas.Item(1)` / `CountLarge` 是否可用（取不到时退回 `Count`）
 
 ### Excel COM 加载项直接跑在 WPS 上（共用一套代码）：未验证
 

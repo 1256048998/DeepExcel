@@ -23,6 +23,8 @@ import type { HeaderMenuItem } from './components/HeaderMenu'
 import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent, closeThinking } from './utils/uiEvents'
 import { markClarifyAnswered, toQuestions } from './utils/clarify'
+import { sameSelection } from './utils/selection'
+import type { SelectionBrief } from './utils/selection'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
@@ -97,6 +99,10 @@ export default function App() {
   // 打开面板时的欢迎登录页：未登录时出现一次（选了「暂不登录」或「自己的 Key」就不再自动弹），
   // 登录失效时每次都出现。只是登录入口，走哪个模型出口仍由服务端决定。
   const [welcomeOpen, setWelcomeOpen] = useState(false)
+  // 选区条：宿主推来的当前选区；用户点了 × 就在选区变化之前不带它
+  const [selection, setSelection] = useState<SelectionBrief | null>(null)
+  const [selectionDismissed, setSelectionDismissed] = useState(false)
+  const selectionRef = useRef<SelectionBrief | null>(null)
   // ★ 输入框模型选择下拉：modelConfig（已连接 provider 列表）+ selectedModel（用户当前选择）
   // 挂载时加载一次，ModelConfigPanel 关闭时刷新（用户可能在面板里测试连接/切换默认厂商）
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null)
@@ -220,6 +226,19 @@ export default function App() {
       }
     })()
   }, [])
+
+  // 选区条：打开面板时要一次当前选区，之后宿主在选区变化时推 selection_brief
+  useEffect(() => {
+    void sendToHostWithResponse({ type: 'get_selection_brief', payload: {} }, 'selection_brief')
+      .then(resp => { if (resp?.payload) applySelection(resp.payload as SelectionBrief) })
+      .catch(() => { /* 宿主不支持就不显示选区条 */ })
+  }, [])
+
+  const applySelection = (next: SelectionBrief) => {
+    if (!sameSelection(selectionRef.current, next)) setSelectionDismissed(false)
+    selectionRef.current = next
+    setSelection(next)
+  }
 
   // ★ ModelConfigPanel 关闭后刷新（用户可能测试连接/切换默认厂商/编辑 key）
   useEffect(() => {
@@ -390,6 +409,8 @@ export default function App() {
       } else if (data.type === 'tool_result') {
         // 工具结果已不再单独展示（被合并到折叠组中），保留接口避免报错
         // 如果需要展示结果详情，可在此处把 result 写入对应工具组
+      } else if (data.type === 'selection_brief') {
+        if (data.payload) applySelection(data.payload as SelectionBrief)
       } else if (data.type === 'clarify') {
         const { question, options, questions } = data.payload
         // 提问卡：新侧车发 questions（多题 / 选项说明 / 多选），老的只有 question + options
@@ -524,7 +545,7 @@ export default function App() {
     try {
       await sendToHost({
         type: 'user_message',
-        payload: { content, permission_mode: mode }
+        payload: { content, permission_mode: mode, include_selection: !selectionDismissed }
       })
     } catch (err) {
       clearLoadingTimeout()
@@ -897,6 +918,8 @@ export default function App() {
         onManageModels={() => setModelConfigOpen(true)}
         permissionMode={permissionMode}
         onPermissionModeChange={changePermissionMode}
+        selection={selectionDismissed ? null : selection}
+        onDismissSelection={() => setSelectionDismissed(true)}
       />
 
       <HistoryPanel

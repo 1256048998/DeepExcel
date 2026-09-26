@@ -778,6 +778,65 @@ details[open] > summary .chevron-icon {
   cursor: not-allowed;
 }
 
+/* === 选区条（input-box 上方）：AI 这一轮会参考的选区 === */
+.selection-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  max-width: 100%;
+  height: 26px;
+  padding: 0 4px 0 9px;
+  background: var(--de-bg);
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  box-shadow: var(--de-shadow-sm);
+  color: var(--de-text-secondary);
+  font-size: var(--de-fs-sm);
+}
+
+.selection-chip > svg {
+  flex: none;
+  color: var(--de-success-solid);
+}
+
+.selection-chip-addr {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--de-text);
+  font-family: var(--de-font-mono);
+  font-size: var(--de-fs-xs);
+}
+
+.selection-chip-count {
+  flex: none;
+  color: var(--de-text-tertiary);
+  font-size: var(--de-fs-xs);
+  white-space: nowrap;
+}
+
+.selection-chip-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 50%;
+  color: var(--de-text-tertiary);
+  cursor: pointer;
+}
+
+.selection-chip-x:hover {
+  background: var(--de-bg-muted);
+  color: var(--de-text);
+}
+
 /* === 附件 chip 列表（input-box 上方） === */
 .attach-chips {
   display: flex;

@@ -76,6 +76,7 @@
     <Compile Include="Advanced\ChartSpecEngine.cs" />
     <Compile Include="Bridge\IExcelActions.cs" />
     <Compile Include="Bridge\MessageBridge.cs" />
+    <Compile Include="Bridge\SelectionHandlers.cs" />
     <Compile Include="Bridge\Messages.cs" />
     <Compile Include="Collaboration\OperationHistory.cs" />
     <Compile Include="Collaboration\WorkbookMemoryStore.cs" />

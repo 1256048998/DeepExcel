@@ -334,6 +334,8 @@ namespace DeepExcel.AddIn.Bridge
                         return MakeResponse("pong", new { });
                     case "get_selection":
                         return MakeResponse("selection", _excelActions.GetSelection());
+                    case "get_selection_brief":
+                        return HandleGetSelectionBrief();
                     case "read_workbook":
                         return MakeResponse("workbook", _excelActions.ReadWorkbook());
                     case "read_range":
@@ -1442,7 +1444,11 @@ namespace DeepExcel.AddIn.Bridge
                     session.HostNotices = ledger?.TakeNotices();
                 }
                 catch { session.UserEdits = null; session.HostNotices = null; }
-                var context = session.BuildContext(_excelActions);
+                // 用户在选区条上点了 ×：这一条不带选区
+                var includeSelection = !(msg.Payload.HasValue &&
+                    msg.Payload.Value.TryGetProperty("include_selection", out var selEl) &&
+                    selEl.ValueKind == JsonValueKind.False);
+                var context = session.BuildContext(_excelActions, includeSelection);
                 var sessionId = session.NextSessionId();
                 session.IsBusy = true;
                 BeginTaskTrace(session.WorkbookKey, sessionId, content);

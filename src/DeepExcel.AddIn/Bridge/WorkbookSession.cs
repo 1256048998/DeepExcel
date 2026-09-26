@@ -248,13 +248,13 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>两轮之间发生、模型必须知道的事（例如用户回退到了之前的检查点）</summary>
         public List<string> HostNotices { get; set; }
 
-        public object BuildContext(IExcelActions excelActions)
+        public object BuildContext(IExcelActions excelActions, bool includeSelection = true)
         {
             try
             {
-                // ★ 轻量级 selection：只取地址和行列数，不取 Values
+                // ★ 轻量级 selection：只取地址和行列数，不取 Values（用户在选区条上点了 × 就不带）
                 object selectionLite = null;
-                try
+                if (includeSelection) try
                 {
                     var fullSel = excelActions.GetSelection();
                     if (fullSel != null)

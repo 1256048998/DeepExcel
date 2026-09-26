@@ -107,6 +107,12 @@ const application = {
   GetTaskPane: () => pane,
   Enum: { msoCTPDockPositionRight: 2 },
   ActiveWorkbook: workbook,
+  Selection: {
+    Address: (rowAbs, colAbs) => (rowAbs === false && colAbs === false ? 'A1:D20' : '$A$1:$D$20'),
+    Worksheet: { Name: 'Sheet1' },
+    Areas: { Item: () => ({ Rows: { Count: 20 }, Columns: { Count: 4 } }) },
+    Count: 80,
+  },
   ApiEvent: { AddApiEventListener: (name, fn) => { apiListeners[name] = fn } },
 }
 const apiListeners = {}
@@ -134,6 +140,7 @@ const context = {
   console,
   encodeURIComponent,
   setTimeout,
+  clearTimeout,
   // 真实加载 config-store / model-service，只把 sidecar-host 换成假的
   require: request => (request === './sidecar-host'
     ? FakeSidecar
@@ -248,6 +255,14 @@ function sidecarInstance() {
 send('user_message', { content: '帮我统计 A 列' })
 assert.strictEqual(userMessages.length, 1, 'user_message should reach the sidecar')
 assert.ok(Array.isArray(userMessages[0].context.attachments), 'context should carry attachments')
+// 选区随消息进上下文（与 Excel 端同口径）；用户在选区条上点了 × 就不带
+const plain = value => JSON.parse(JSON.stringify(value))  // vm 里造的对象原型不同，按值比较
+assert.deepStrictEqual(plain(userMessages[0].context.selection), { address: 'A1:D20', sheet: 'Sheet1', rowCount: 20, columnCount: 4 })
+
+// 选区条：面板打开时要一次，之后选区变化防抖推送
+const brief = lastOfType(send('get_selection_brief'), 'selection_brief')
+assert.deepStrictEqual(plain(brief), { sheet: 'Sheet1', address: 'A1:D20', rows: 20, cols: 4, cells: 80 })
+assert.strictEqual(typeof apiListeners.SheetSelectionChange, 'function', 'SheetSelectionChange listener should be registered')
 
 emitFromSidecar('tool_call', { name: 'write_formula' })
 emitFromSidecar('stream_delta', { delta: '已在 B1 ' })
@@ -340,6 +355,8 @@ send('user_message', { content: '看看这个 CSV' })
 const lastContext = userMessages[userMessages.length - 1].context
 assert.strictEqual(lastContext.attachments.length, 2)
 assert.ok(lastContext.attachments[0].path, 'attachment context needs an absolute path')
+send('user_message', { content: '不看选区', include_selection: false })
+assert.strictEqual(userMessages[userMessages.length - 1].context.selection, null, '选区条上点了 × 就不带选区')
 
 const removed = lastOfType(send('delete_attachment', { file_name: 'data.csv' }), 'deleted')
 assert.ok(removed.success)
@@ -350,6 +367,13 @@ assert.strictEqual(lastOfType(send('list_attachments'), 'attachments').list.leng
 // 未配置 key 时，拉取模型列表要给出明确提示而不是静默失败
 // （refresh_models / test_api_key 是异步的，要等一个事件循环再看回包）
 async function checkAsyncMessages() {
+  const pushStart = sentToTaskpane.length
+  apiListeners.SheetSelectionChange()
+  apiListeners.SheetSelectionChange()
+  await new Promise(resolve => setTimeout(resolve, 400))
+  const pushed = sentToTaskpane.slice(pushStart).filter(e => e.type === 'selection_brief')
+  assert.strictEqual(pushed.length, 1, 'selection changes are debounced into one push')
+
   const before = sentToTaskpane.length
   createdChannel.onmessage({ data: { type: 'refresh_models', payload: { provider: 'deepseek' } } })
   await new Promise(resolve => setTimeout(resolve, 50))

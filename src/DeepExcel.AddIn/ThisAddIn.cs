@@ -334,6 +334,38 @@ namespace DeepExcel.AddIn
             catch { }
         }
 
+        private System.Windows.Forms.Timer _selectionTimer;
+        private string _pendingSelectionKey;
+        private Range _pendingSelection;
+
+        /// <summary>选区变化：只记下最新的一次，防抖后再推。和 SheetChange 一样必须极轻。</summary>
+        private void OnSheetSelectionChange(object sheet, Range target)
+        {
+            try
+            {
+                var workbook = (sheet as Worksheet)?.Parent as Workbook;
+                if (workbook == null || _bridge == null || _selectionTimer == null) return;
+                _pendingSelectionKey = GetWorkbookKey(workbook);
+                _pendingSelection = target;
+                _selectionTimer.Stop();
+                _selectionTimer.Start();
+            }
+            catch { }
+        }
+
+        private void OnSelectionTimerTick(object sender, EventArgs e)
+        {
+            _selectionTimer?.Stop();
+            var key = _pendingSelectionKey;
+            var target = _pendingSelection;
+            _pendingSelection = null;
+            try
+            {
+                if (key != null && target != null) _bridge?.OnSelectionChanged(key, target);
+            }
+            catch { }
+        }
+
         private void OnWorkbookBeforeClose(Workbook Wb, ref bool Cancel)
         {
             try
@@ -490,7 +522,11 @@ namespace DeepExcel.AddIn
                         _excelApp.WorkbookBeforeClose -= OnWorkbookBeforeClose;
                         _excelApp.WorkbookAfterSave -= OnWorkbookAfterSave;
                         _excelApp.SheetChange -= OnSheetChangeInvalidateIndex;
+                        _excelApp.SheetSelectionChange -= OnSheetSelectionChange;
                     }
+                    _selectionTimer?.Stop();
+                    _selectionTimer?.Dispose();
+                    _selectionTimer = null;
                 }
                 catch { }
 
@@ -595,6 +631,10 @@ namespace DeepExcel.AddIn
                 // 任何单元格改动都会让结构摘要过期。处理函数刻意做成只置一个
                 // 标志位：它在批量写入时会被触发成千上万次。
                 _excelApp.SheetChange += OnSheetChangeInvalidateIndex;
+                // 选区条：选区变化防抖 300ms 后推给面板（拖选时每移一格触发一次）
+                _selectionTimer = new System.Windows.Forms.Timer { Interval = 300 };
+                _selectionTimer.Tick += OnSelectionTimerTick;
+                _excelApp.SheetSelectionChange += OnSheetSelectionChange;
                 Log("Workbook event handlers registered");
 
                 // ★ 检查并尝试设置宏安全：VBA 功能依赖 AccessVBOM=1（信任对 VBA 工程对象模型的访问）

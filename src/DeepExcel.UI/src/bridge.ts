@@ -276,6 +276,10 @@ function mockHostResponse(message: HostMessage) {
               task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null } }
         : { state: 'signedout', server_url: null, email: null, mode: null, entitlement: null })
       return
+    // 选区条：dev 下假装选中了一块数据
+    case 'get_selection_brief':
+      emit('selection_brief', { sheet: '销售明细', address: 'A1:D20', rows: 20, cols: 4, cells: 80 })
+      return
     // 登录 / 注册：dev 下直接当成功，用来调欢迎登录页和账号面板
     case 'account_server_meta':
       emit('account_server_meta', { invite_required: true })

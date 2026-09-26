@@ -627,6 +627,50 @@ function _handleSessionMessage(type, payload) {
   }
 }
 
+// ★ 选区条：面板输入框上方显示「Sheet1!A1:D20 · 80 格」。和 Excel 端同一份 selection_brief；
+// 同一份选区也随每条消息进上下文（以前 WPS 端的上下文里没有选区，模型不知道用户选了哪里）。
+function _selectionBrief() {
+  try {
+    var app = _application()
+    var sel = app && app.Selection
+    if (!sel || sel.Address === undefined) return { address: '' }
+    var address = typeof sel.Address === 'function' ? sel.Address(false, false) : sel.Address
+    var first = sel.Areas && typeof sel.Areas.Item === 'function' ? sel.Areas.Item(1) : sel
+    var count = function (r) { return Number((r && (r.CountLarge !== undefined ? r.CountLarge : r.Count)) || 0) }
+    return {
+      sheet: sel.Worksheet ? sel.Worksheet.Name : '',
+      address: String(address || '').replace(/\$/g, ''),
+      rows: count(first && first.Rows),
+      cols: count(first && first.Columns),
+      cells: count(sel),
+    }
+  } catch (error) {
+    return { address: '' }
+  }
+}
+
+var _selectionListening = false
+var _selectionTimer = null
+function _ensureSelectionListener() {
+  if (_selectionListening) return
+  var app = _application()
+  try {
+    if (!app || !app.ApiEvent || typeof app.ApiEvent.AddApiEventListener !== 'function') return
+    app.ApiEvent.AddApiEventListener('SheetSelectionChange', function () {
+      // 拖选时每移一格触发一次：300ms 防抖；我们自己的工具执行期间不推
+      if (_selectionTimer) clearTimeout(_selectionTimer)
+      _selectionTimer = setTimeout(function () {
+        _selectionTimer = null
+        if (sidecar && sidecar.dispatcher && sidecar.dispatcher.isExecuting) return
+        _respond('selection_brief', _selectionBrief())
+      }, 300)
+    })
+    _selectionListening = true
+  } catch (error) {
+    console.warn('[DeepExcel] SheetSelectionChange listener unavailable:', error)
+  }
+}
+
 // ★ 首次使用：工作簿结构（推荐在面板里算）/ 插入示例数据到新表。不需要 sidecar
 function _handleStarterMessage(type, payload) {
   if (type !== 'get_starter' && type !== 'insert_sample') return false
@@ -652,6 +696,11 @@ function _handleFrontendMessage(message) {
   // ★ 再处理对话历史 / 附件消息
   if (_handleSessionMessage(message.type, message.payload || {})) return
   if (_handleStarterMessage(message.type, message.payload || {})) return
+  if (message.type === 'get_selection_brief') {
+    _ensureSelectionListener()
+    _respond('selection_brief', _selectionBrief())
+    return
+  }
 
   if (!_ensureSidecar()) {
     _forwardToTaskpane({
@@ -668,7 +717,7 @@ function _handleFrontendMessage(message) {
       // ★ 记进当前对话，stream_end 时连同 AI 回复一起落盘
       var userSession = _session()
       if (userSession) userSession.conversation.appendUserMessage(content)
-      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext(), payload.steer === true,
+      sidecar.sendUserMessage(content, 'wps-' + Date.now(), _buildContext(payload.include_selection !== false), payload.steer === true,
         payload.permission_mode)
       break
     }
@@ -705,7 +754,7 @@ function _forwardToTaskpane(event) {
   }
 }
 
-function _buildContext() {
+function _buildContext(includeSelection) {
   try {
     var app = _application()
     var workbook = app && app.ActiveWorkbook
@@ -725,6 +774,13 @@ function _buildContext() {
       // 工作簿记忆按它找目录（与 Excel 端同一口径，同一个文件两边共用一份记忆）
       workbookKey: _workbookIdentity().key,
       attachments: attachments,
+      // 与 Excel 端 BuildContext 的 selection 同一口径（侧车 _build_excel_context_lite 读它）
+      selection: includeSelection === false ? null : (function () {
+        var brief = _selectionBrief()
+        return brief.address
+          ? { address: brief.address, sheet: brief.sheet, rowCount: brief.rows, columnCount: brief.cols }
+          : null
+      })(),
     }
   } catch (error) {
     return { host_type: 'wps', error: String(error.message || error) }
