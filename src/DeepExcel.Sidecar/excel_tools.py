@@ -284,9 +284,88 @@ async def write_range(args):
     return _wrap_result(result)
 
 
-@tool("clarify_intent", "向用户提问以澄清模糊指令", {"question": str, "options": list})
+MAX_CLARIFY_QUESTIONS = 4
+MAX_CLARIFY_OPTIONS = 6
+
+
+def normalize_questions(args: dict) -> list:
+    """clarify_intent 的参数整理成提问卡：[{question, header, options: [{label, description}], multi_select}]。
+
+    兼容只问一个问题的旧写法（question + options 字符串数组）；选项可以是字符串或 {label, description}。"""
+    def text(value, limit):
+        return str(value or "").strip()[:limit]
+
+    def options_of(raw):
+        out = []
+        for opt in (raw or [])[:MAX_CLARIFY_OPTIONS]:
+            if isinstance(opt, dict):
+                label = text(opt.get("label"), 80)
+                if label:
+                    out.append({"label": label, "description": text(opt.get("description"), 160)})
+            elif text(opt, 80):
+                out.append({"label": text(opt, 80), "description": ""})
+        return out
+
+    raw_questions = args.get("questions")
+    if not isinstance(raw_questions, list) or not raw_questions:
+        raw_questions = [{"question": args.get("question"), "options": args.get("options"),
+                          "multi_select": args.get("multi_select")}]
+    questions = []
+    for raw in raw_questions[:MAX_CLARIFY_QUESTIONS]:
+        if not isinstance(raw, dict):
+            continue
+        question = text(raw.get("question"), 300)
+        if question:
+            questions.append({"question": question, "header": text(raw.get("header"), 12),
+                              "options": options_of(raw.get("options")),
+                              "multi_select": bool(raw.get("multi_select"))})
+    return questions
+
+
+_CLARIFY_OPTION = {
+    "anyOf": [
+        {"type": "string"},
+        {"type": "object", "properties": {"label": {"type": "string"}, "description": {"type": "string"}},
+         "required": ["label"]},
+    ]
+}
+
+
+@tool(
+    "clarify_intent",
+    "向用户提问以澄清模糊指令。面板把问题渲染成提问卡，用户点选或自己填写后一次提交。"
+    "只问一件事：question + options；有几处不确定时用 questions 一次问清（最多 4 题），不要一轮一轮地问。"
+    "每题：question 问题；header 2~6 字的短标签（如「汇总口径」）；options 2~4 个选项，"
+    "可写成 {label: 选项, description: 一句话说明后果}；multi_select 为 true 时可多选。"
+    "用户总能选「其他」自己填，不必把「其他」列进选项",
+    {
+        "type": "object",
+        "properties": {
+            "question": {"type": "string"},
+            "options": {"type": "array", "items": _CLARIFY_OPTION},
+            "multi_select": {"type": "boolean"},
+            "questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "header": {"type": "string"},
+                        "options": {"type": "array", "items": _CLARIFY_OPTION},
+                        "multi_select": {"type": "boolean"},
+                    },
+                    "required": ["question"],
+                },
+            },
+        },
+    },
+)
 async def clarify_intent(args):
-    user_answer = await call_csharp_clarify(args["question"], args.get("options", []))
+    questions = normalize_questions(args)
+    if not questions:
+        return _wrap_result({"success": False, "error": "没有给出要问的问题",
+                             "suggestion": "传 question（只问一件事）或 questions（最多 4 题）"})
+    user_answer = await call_csharp_clarify(questions)
     return _wrap_result({"success": True, "data": {"user_answer": user_answer}})
 
 

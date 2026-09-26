@@ -171,23 +171,32 @@ async def call_csharp(tool_name: str, args: dict, timeout: float = 60.0) -> dict
         await asyncio.sleep(0.05)
 
 
-async def call_csharp_clarify(question: str, options: list) -> str:
-    """向 C# 发送澄清请求，阻塞等待用户回答"""
+async def call_csharp_clarify(questions: list) -> str:
+    """向宿主发送提问卡，阻塞等待用户回答（面板把各题答案拼成一段文字）"""
     _init_buffer()
     _message_buffer["clarify_answer"] = None  # 重置
     _message_buffer["awaiting_user"] += 1
     try:
-        return await _wait_clarify(question, options)
+        return await _wait_clarify(questions)
     finally:
         _message_buffer["awaiting_user"] -= 1
 
 
-async def _wait_clarify(question: str, options: list) -> str:
-    await write_message({
+def clarify_message(questions: list) -> dict:
+    """question / options 是只认单题的旧字段（宿主记对话历史用）；面板按 questions 渲染提问卡。"""
+    first = questions[0] if questions else {"question": "", "options": []}
+    question = first["question"] if len(questions) <= 1 else "\n".join(
+        f"{i + 1}. {q['question']}" for i, q in enumerate(questions))
+    return {
         "type": "clarify",
         "question": question,
-        "options": options,
-    })
+        "options": [o["label"] for o in first.get("options", [])] if len(questions) <= 1 else [],
+        "questions": questions,
+    }
+
+
+async def _wait_clarify(questions: list) -> str:
+    await write_message(clarify_message(questions))
     while _message_buffer["clarify_answer"] is None:
         if _cancelled():
             return "（用户中断了任务，没有回答）"

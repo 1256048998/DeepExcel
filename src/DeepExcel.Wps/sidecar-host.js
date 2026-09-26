@@ -177,7 +177,7 @@ class SidecarHost {
         break
 
       case 'clarify':
-        this._emit({ type: 'clarify', payload: { question: msg.question, options: msg.options || [] } })
+        this._emit({ type: 'clarify', payload: { question: msg.question, options: msg.options || [], questions: msg.questions } })
         break
 
       case 'stream_end':

@@ -137,11 +137,6 @@ export function InputArea({
 
   return (
     <div className="input-area">
-      {isClarifying && (
-        <div className="clarify-hint">
-          请回答上面的澄清问题
-        </div>
-      )}
       {uploadError && (
         <div className="upload-error">{uploadError}</div>
       )}
@@ -202,7 +197,8 @@ export function InputArea({
               onPermissionModeChange(nextPermissionMode(permissionMode))
               return
             }
-            if (e.key === 'Enter' && !e.shiftKey) {
+            // 输入法选词时的 Enter 是确认候选词，不是发送
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault()
               onSend()
             }

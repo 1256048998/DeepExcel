@@ -57,7 +57,8 @@ namespace DeepExcel.AddIn.Sidecar
         public event Action<PythonSidecar, string> OnStreamDelta;
         public event Action<PythonSidecar, string, string, Dictionary<string, object>> OnToolCall;
         public event Action<PythonSidecar, string, Dictionary<string, object>> OnToolUse;
-        public event Action<PythonSidecar, string, List<string>> OnClarify;
+        /// <summary>提问卡：question / options 是单题旧字段（记历史用），questions 是完整的多题结构，原样转给面板（可能为 null）</summary>
+        public event Action<PythonSidecar, string, List<string>, JsonElement?> OnClarify;
         /// <summary>ui_event 的 event 对象（已 Clone，可跨线程使用）。</summary>
         public event Action<PythonSidecar, JsonElement> OnUiEvent;
         public event Action<PythonSidecar, int, int> OnStreamEnd;
@@ -438,7 +439,9 @@ namespace DeepExcel.AddIn.Sidecar
                         var q = root.GetProperty("question").GetString();
                         var opts = root.GetProperty("options").EnumerateArray()
                             .Select(x => x.GetString()).ToList();
-                        SafeBeginInvoke(() => OnClarify?.Invoke(this, q, opts));
+                        JsonElement? questions = root.TryGetProperty("questions", out var questionsEl) &&
+                            questionsEl.ValueKind == JsonValueKind.Array ? questionsEl.Clone() : (JsonElement?)null;
+                        SafeBeginInvoke(() => OnClarify?.Invoke(this, q, opts, questions));
                         break;
 
                     case SidecarProtocol.TypeStreamEnd:

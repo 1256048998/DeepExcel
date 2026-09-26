@@ -7,6 +7,8 @@ import { CopyButton } from './CopyButton'
 import { StreamingChoices } from './StreamingChoices'
 import { StarterCard } from './StarterCard'
 import { LogoMark } from './Logo'
+import { AskCard } from './AskCard'
+import { toQuestions } from '../utils/clarify'
 import type { StarterView } from './StarterCard'
 
 interface Props {
@@ -14,7 +16,7 @@ interface Props {
   loading: boolean
   statusText?: string | null
   onToggleToolGroup?: (idx: number) => void
-  onClarifyAnswer?: (answer: string) => void
+  onClarifyAnswer?: (answer: string, index: number) => void
   onChoiceSelect?: (choice: string) => void
   // ★ 保存用户消息为提示词模板
   onSaveAsPrompt?: (content: string) => void
@@ -62,7 +64,7 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
   const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision })
   latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision }
   const toggle = useCallback((i: number) => latest.current.onToggleToolGroup?.(i), [])
-  const clarify = useCallback((a: string) => latest.current.onClarifyAnswer?.(a), [])
+  const clarify = useCallback((a: string, i: number) => latest.current.onClarifyAnswer?.(a, i), [])
   const choose = useCallback((c: string) => latest.current.onChoiceSelect?.(c), [])
   const savePrompt = useCallback((c: string) => latest.current.onSaveAsPrompt?.(c), [])
   const onRewind = useCallback((step: ToolStep) => latest.current.onRewind?.(step), [])
@@ -154,7 +156,7 @@ const MessageItem = memo(function MessageItem({
   message: Message
   index: number
   onToggleToolGroup?: (idx: number) => void
-  onClarifyAnswer?: (answer: string) => void
+  onClarifyAnswer?: (answer: string, index: number) => void
   onChoiceSelect?: (choice: string) => void
   onSaveAsPrompt?: (content: string) => void
   rewind?: RewindControl
@@ -269,29 +271,16 @@ const MessageItem = memo(function MessageItem({
     )
   }
 
-  // Clarify 消息：在气泡上方显示选项按钮
-  if (message.type === 'clarify' && message.options && message.options.length > 0) {
+  // 提问卡：一题或多题，点选 / 多选 / 其他，一次提交；答过收成摘要
+  if (message.type === 'clarify') {
+    const questions = message.questions ?? toQuestions(message.content, message.options)
     return (
       <div className="message assistant clarify-message">
-        <div className="clarify-options">
-          {message.options.map((opt, i) => (
-            <button
-              key={i}
-              className="clarify-option-btn"
-              onClick={() => onClarifyAnswer?.(opt)}
-            >
-              {opt}
-            </button>
-          ))}
-        </div>
-        <div className="message-body">
-          {isMarkdown(message.content) ? (
-            <MarkdownRenderer content={message.content} />
-          ) : (
-            <span>{message.content}</span>
-          )}
-          {message.streaming && <span className="cursor">▊</span>}
-        </div>
+        <AskCard
+          questions={questions}
+          answered={message.answered}
+          onSubmit={onClarifyAnswer ? answer => onClarifyAnswer(answer, index) : undefined}
+        />
       </div>
     )
   }

@@ -161,9 +161,14 @@ async def test_call_csharp_clarify_sends_clarify_and_returns_answer():
         _message_buffer["clarify_answer"] = "COUNTA计数"
 
     asyncio.create_task(inject_answer_later())
-    answer = await call_csharp_clarify("A列是文本，求和还是计数？", ["SUM求和", "COUNTA计数"])
+    answer = await call_csharp_clarify([{
+        "question": "A列是文本，求和还是计数？", "header": "", "multi_select": False,
+        "options": [{"label": "SUM求和", "description": ""}, {"label": "COUNTA计数", "description": ""}],
+    }])
 
     assert sent_messages[0]["type"] == "clarify"
     assert sent_messages[0]["question"] == "A列是文本，求和还是计数？"
+    assert sent_messages[0]["options"] == ["SUM求和", "COUNTA计数"]
+    assert sent_messages[0]["questions"][0]["options"][1]["label"] == "COUNTA计数"
     assert answer == "COUNTA计数"
     assert _message_buffer["clarify_answer"] is None  # 已被消费

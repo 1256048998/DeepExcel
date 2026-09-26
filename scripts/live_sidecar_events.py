@@ -18,6 +18,7 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
     python scripts/live_sidecar_events.py --memory     # 工作簿记忆：记下偏好和禁区，新会话里模型已经知道
     python scripts/live_sidecar_events.py --skill      # 知识技能：身份证号被科学计数法吞掉，先读技能再如实告知
     python scripts/live_sidecar_events.py --modes      # 权限模式：只出方案不写、交方案；批准后自动应用写入不弹确认
+    python scripts/live_sidecar_events.py --ask        # 提问卡：两处不确定时用 questions 一次问清，回答后接着做
 """
 
 from __future__ import annotations
@@ -805,7 +806,60 @@ def skill_scenario() -> int:
     return 1 if problems else 0
 
 
+def ask_scenario() -> int:
+    """提问卡：有两处不确定时，模型用 clarify_intent 的 questions 一次问清；回答后接着做。"""
+    sys.stdout.reconfigure(encoding="utf-8")
+    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
+    )
+
+    def send(msg: dict) -> None:
+        proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    table = [["月份", "部门", "销售额", "毛利"], ["1月", "华东", 120, 30], ["1月", "华南", 90, 20],
+             ["2月", "华东", 130, 35], ["2月", "华南", 80, 18]]
+    send({"type": "user_message", "context": {},
+          "text": "Sheet1!A1:D5 是销售明细，帮我在 F1 起做个汇总。按月还是按部门、要哪些指标我还没想好，"
+                  "先问我，一次问清楚，别一个一个问。"})
+    clarifies, answered, t0 = [], False, time.time()
+    for raw in proc.stdout:
+        if time.time() - t0 > 240:
+            print("TIMEOUT")
+            break
+        msg = json.loads(raw.decode("utf-8"))
+        kind = msg.get("type")
+        if kind == "clarify":
+            clarifies.append(msg)
+            print("clarify", json.dumps(msg.get("questions"), ensure_ascii=False)[:400])
+            send({"type": "clarify_answer", "answer": "汇总口径：按部门\n指标：销售额、毛利"})
+            answered = True
+        elif kind == "tool_call":
+            data = {"address": msg["args"].get("address"), "values": table} if msg["tool"] == "read_range" else {}
+            send({"type": "tool_result", "call_id": msg["call_id"], "success": True, "data": data, "context": {}})
+        elif kind == "permission_request":
+            send({"type": "permission_response", "request_id": msg["request_id"], "decision": "allow"})
+        elif kind == "stream_end":
+            break
+    proc.kill()
+    problems = []
+    if not clarifies:
+        problems.append("model never asked")
+    elif len(clarifies) > 1:
+        problems.append(f"asked {len(clarifies)} times instead of once")
+    elif len(clarifies[0].get("questions") or []) < 2:
+        problems.append("asked only one question although two things were open")
+    if not answered:
+        problems.append("no answer sent")
+    print("\nPROBLEMS: " + "; ".join(problems) if problems else "\nAll checks passed.")
+    return 1 if problems else 0
+
+
 if __name__ == "__main__":
+    if "--ask" in sys.argv:
+        sys.exit(ask_scenario())
     if "--modes" in sys.argv:
         sys.exit(modes_scenario())
     if "--skill" in sys.argv:

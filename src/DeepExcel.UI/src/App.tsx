@@ -22,6 +22,7 @@ import { Brand } from './components/Logo'
 import type { HeaderMenuItem } from './components/HeaderMenu'
 import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent } from './types'
 import { applyUiEvent, closeThinking } from './utils/uiEvents'
+import { markClarifyAnswered, toQuestions } from './utils/clarify'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
 import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
@@ -390,14 +391,14 @@ export default function App() {
         // 工具结果已不再单独展示（被合并到折叠组中），保留接口避免报错
         // 如果需要展示结果详情，可在此处把 result 写入对应工具组
       } else if (data.type === 'clarify') {
-        const { question, options } = data.payload
-        const safeQuestion = question ?? ''
-        // 不再把选项拼到文本里，选项由按钮渲染
+        const { question, options, questions } = data.payload
+        // 提问卡：新侧车发 questions（多题 / 选项说明 / 多选），老的只有 question + options
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: safeQuestion,
+          content: question ?? '',
           type: 'clarify',
-          options
+          options,
+          questions: toQuestions(question, options, questions),
         }])
         setIsClarifying(true)
         setLoading(false)
@@ -495,6 +496,8 @@ export default function App() {
     }
 
     const userMessage: Message = { role: 'user', content }
+    // 在输入框里直接打字回答提问卡：卡片同样收成「已回答」
+    if (isClarifying) setMessages(prev => markClarifyAnswered(prev, content))
     // 新任务开始：上一个已经全部完成的计划不再显示（没做完的留着，用户可能是在说「继续」）
     setPlan(prev => (prev.length > 0 && prev.every(i => i.status === 'completed') ? [] : prev))
 
@@ -560,7 +563,8 @@ export default function App() {
   }
 
   // 点击 clarify 选项按钮：直接作为用户回答发送
-  const handleClarifyAnswer = (answer: string) => {
+  const handleClarifyAnswer = (answer: string, index?: number) => {
+    setMessages(prev => markClarifyAnswered(prev, answer, index))
     sendMessage(answer)
   }
 

@@ -1875,14 +1875,14 @@ namespace DeepExcel.AddIn.Bridge
             SendToSessionUi(session.WorkbookKey, "ui_event", uiEvent);
         }
 
-        private void OnClarify(PythonSidecar sender, string question, List<string> options)
+        private void OnClarify(PythonSidecar sender, string question, List<string> options, JsonElement? questions)
         {
             var session = FindSessionBySidecar(sender);
             if (session != null)
             {
                 session.PendingClarifyQuestion = question;
                 session.IsBusy = false;
-                SendToSessionUi(session.WorkbookKey, "clarify", new { question, options });
+                SendToSessionUi(session.WorkbookKey, "clarify", new { question, options, questions });
                 // ★ 追加到历史
                 session.AppendClarify(question, options?.ToArray());
             }

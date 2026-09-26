@@ -98,6 +98,26 @@ const scenes = {
     emit('stream_end', {})
   },
 
+  ask: async ({ emit, send, page }) => {
+    await send('把销售明细汇总一下')
+    emit('clarify', {
+      question: '1. 按什么汇总？\n2. 要哪些指标？', options: [],
+      questions: [
+        { question: '按什么汇总？', header: '汇总口径', multi_select: false, options: [
+          { label: '按月', description: '每月一行，适合看趋势' },
+          { label: '按部门', description: '每个部门一行' },
+        ] },
+        { question: '要哪些指标？', header: '指标', multi_select: true, options: [
+          { label: '销售额' }, { label: '毛利' }, { label: '订单数' },
+        ] },
+      ],
+    })
+    await page.waitForSelector('.ask-card')
+    await page.click('.ask-option >> text=按部门')
+    await page.click('.ask-option >> text=销售额')
+    await page.click('.ask-option >> text=毛利')
+  },
+
   permission: async ({ emit, send }) => {
     await send('删除所有空行')
     emit('permission_request', {

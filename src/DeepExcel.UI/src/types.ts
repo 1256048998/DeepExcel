@@ -7,6 +7,9 @@ export type Message = {
   // starter：欢迎语，下面带「首次使用」卡片（示例数据 / 为你的文件推荐）
   type?: 'clarify' | 'compacted' | 'error' | 'run_summary' | 'notice' | 'plan_proposal' | 'starter' | 'thinking'
   options?: string[]
+  // type==='clarify'：提问卡的题目（多题、选项说明）；answered 是已发出的回答
+  questions?: ClarifyQuestion[]
+  answered?: string
   // 折叠工具调用组：当 role==='tool' 且是连续工具调用的首条时，
   // toolGroup 存该组所有工具名（按调用顺序），后续同组 tool 消息会被合并
   toolGroup?: string[]
@@ -28,6 +31,9 @@ export type Message = {
   thinkingActive?: boolean
   thinkingMs?: number
 }
+
+export type ClarifyOption = { label: string; description?: string }
+export type ClarifyQuestion = { question: string; header?: string; multiSelect?: boolean; options: ClarifyOption[] }
 
 // 权限模式（侧车 permission_modes.py）：每步确认 / 本次会话自动应用写入 / 只出方案。只在内存里，不保存
 export type PermissionMode = 'default' | 'accept_writes' | 'plan'
