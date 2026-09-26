@@ -1,5 +1,6 @@
 import { useRef, useState, ChangeEvent, useEffect } from 'react'
 import { PromptDropdown } from './PromptDropdown'
+import { ModelPicker } from './ModelPicker'
 import type { PromptTemplate } from '../utils/prompts'
 import type { PermissionMode } from '../types'
 
@@ -10,7 +11,7 @@ export interface AttachmentItem {
 
 /**
  * ★ 模型选择下拉单选项：每个已连接 provider 的每个模型作为一个选项。
- * 输入框底部工具栏渲染 select，按 provider 分组（optgroup）。
+ * 输入框底部工具栏的 ModelPicker 按 provider 分组显示。
  * value 用 `${provider}::${model}` 格式唯一标识。
  */
 export interface ModelOption {
@@ -51,6 +52,8 @@ interface Props {
   selectedModel?: string
   // ★ 切换模型：用户选择后调用，App.tsx 会在 stream_end 后真正切换
   onModelChange?: (provider: string, model: string) => void
+  // ★ 模型弹层底部「管理模型与密钥」：打开模型配置
+  onManageModels?: () => void
   // 权限模式：点按钮或 Shift+Tab 轮换（任务进行中也能切，立即生效）
   permissionMode?: PermissionMode
   onPermissionModeChange?: (mode: PermissionMode) => void
@@ -75,7 +78,7 @@ export function InputArea({
   attachments = [], onDeleteAttachment,
   permissionPending = false,
   prompts = [], onCreatePrompt,
-  modelOptions = [], selectedModel, onModelChange,
+  modelOptions = [], selectedModel, onModelChange, onManageModels,
   permissionMode = 'default', onPermissionModeChange,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -260,39 +263,13 @@ export function InputArea({
               默认值 = 默认厂商的主模型（模型优先级第 1 项）。
               选择后不立即切换，等当前对话输出结束（stream_end）后才切换。 */}
           {onModelChange && modelOptions.length > 0 && (
-            <select
-              className="toolbar-model-select"
+            <ModelPicker
+              options={modelOptions}
               value={selectedModel}
-              onChange={e => {
-                const v = e.target.value
-                const sep = v.indexOf('::')
-                if (sep > 0) {
-                  const p = v.slice(0, sep)
-                  const m = v.slice(sep + 2)
-                  onModelChange(p, m)
-                }
-              }}
+              onChange={onModelChange}
               disabled={disabled}
-              title="选择对话使用的模型（对话输出结束后切换）"
-            >
-              {(() => {
-                // 按 provider 分组
-                const groups: Record<string, ModelOption[]> = {}
-                for (const opt of modelOptions) {
-                  if (!groups[opt.provider]) groups[opt.provider] = []
-                  groups[opt.provider].push(opt)
-                }
-                return Object.entries(groups).map(([provider, opts]) => (
-                  <optgroup key={provider} label={opts[0]?.providerDisplayName || provider}>
-                    {opts.map(o => (
-                      <option key={`${o.provider}::${o.model}`} value={`${o.provider}::${o.model}`}>
-                        {o.isPrimary ? `${o.model} · 主模型` : o.model}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))
-              })()}
-            </select>
+              onManage={onManageModels}
+            />
           )}
           {disabled && allowQueue && value.trim() && (
             <button

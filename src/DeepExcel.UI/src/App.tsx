@@ -890,6 +890,7 @@ export default function App() {
         modelOptions={modelOptions}
         selectedModel={effectiveSelectedModel}
         onModelChange={handleModelChange}
+        onManageModels={() => setModelConfigOpen(true)}
         permissionMode={permissionMode}
         onPermissionModeChange={changePermissionMode}
       />

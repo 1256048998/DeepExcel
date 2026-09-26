@@ -115,6 +115,10 @@ const scenes = {
     await page.click('[aria-label="更多"]')
   },
 
+  model: async ({ page }) => {
+    await page.click('.model-picker-btn')
+  },
+
   // 滚动：往上翻时新内容不把人拽回底部；「回到底部」恢复跟随；发新消息总是回到底部
   scroll: async ({ page, emit, send }) => {
     const problems = []
