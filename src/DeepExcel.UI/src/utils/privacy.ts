@@ -29,6 +29,14 @@ export const STORED_LOCALLY: string[] = [
 export const TELEMETRY_INTRO =
   '只在登录账号后发送；没登录时不会离开这台电脑。服务器按公开的白名单接收，名单外的字段直接丢弃。'
 
+// 开关：TelemetryReporter.SetOptOut —— 关掉后不记录、不发送，本机还没发出的记录一并删掉
+export const TELEMETRY_SWITCH = {
+  label: '发送使用统计',
+  on: '帮我们发现哪里出错、哪些功能好用。只含上面列出的字段。',
+  off: '已关闭：不再记录，也不再发送；关闭时本机还没发出的记录已删除。',
+  unsupported: 'WPS 版不发送任何使用统计。',
+}
+
 // 每个事件、每个字段说的是什么。服务端白名单里的字段必须都在这里有说明（测试守卫）
 export const TELEMETRY_EVENTS: Record<string, { label: string; fields: Record<string, string> }> = {
   session_start: {

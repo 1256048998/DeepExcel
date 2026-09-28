@@ -1,9 +1,58 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { sendToHostWithResponse } from '../bridge'
 import type { ReactNode } from 'react'
 import {
   NEVER_COLLECTED, PRIVACY_SUMMARY, ROUTE_TEXT, SENT_TO_MODEL, SKILL_SYNC_TEXT, STORED_LOCALLY,
-  TELEMETRY_EVENTS, TELEMETRY_INTRO,
+  TELEMETRY_EVENTS, TELEMETRY_INTRO, TELEMETRY_SWITCH,
 } from '../utils/privacy'
+
+type UsageStats = { supported: boolean; enabled: boolean }
+
+function UsageStatsSwitch() {
+  const [stats, setStats] = useState<UsageStats | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    sendToHostWithResponse({ type: 'get_usage_stats', payload: {} }, 'usage_stats')
+      .then(resp => { if (alive && resp?.payload) setStats(resp.payload as UsageStats) })
+      .catch(() => { if (alive) setError('读不到这个设置') })
+    return () => { alive = false }
+  }, [])
+
+  if (error && !stats) return <p className="privacy-text muted">{error}</p>
+  if (!stats) return null
+  if (!stats.supported) return <p className="privacy-text">{TELEMETRY_SWITCH.unsupported}</p>
+
+  const toggle = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const resp = await sendToHostWithResponse(
+        { type: 'set_usage_stats', payload: { enabled: !stats.enabled } }, 'usage_stats')
+      if (resp?.payload) setStats(resp.payload as UsageStats)
+      else setError('没能保存这个设置，请稍后重试')
+    } catch {
+      setError('没能保存这个设置，请稍后重试')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="privacy-switch-row">
+      <div className="privacy-switch-text">
+        <span className="privacy-switch-label">{TELEMETRY_SWITCH.label}</span>
+        <span className="privacy-switch-hint">{error ?? (stats.enabled ? TELEMETRY_SWITCH.on : TELEMETRY_SWITCH.off)}</span>
+      </div>
+      <button type="button" role="switch" aria-checked={stats.enabled} aria-label={TELEMETRY_SWITCH.label}
+        className={`privacy-switch${stats.enabled ? ' on' : ''}`} disabled={busy} onClick={() => void toggle()}>
+        <span className="privacy-switch-knob" />
+      </button>
+    </div>
+  )
+}
 
 interface Props {
   open: boolean
@@ -72,6 +121,7 @@ export function PrivacyPanel({ open, onClose, mode, serverUrl }: Props) {
 
           <Section title="使用统计">
             <p className="privacy-text">{TELEMETRY_INTRO}</p>
+            <UsageStatsSwitch />
             <div className="privacy-never">
               <span className="privacy-never-label">从不收集</span>
               {NEVER_COLLECTED.map(t => <span key={t} className="privacy-chip">{t}</span>)}

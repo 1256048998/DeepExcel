@@ -4976,3 +4976,48 @@ details[open] > summary .chevron-icon {
     scroll-behavior: auto !important;
   }
 }
+
+.privacy-switch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  background: var(--de-bg);
+}
+
+.privacy-switch-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.privacy-switch-label { font-size: var(--de-fs-md); font-weight: 500; color: var(--de-text); }
+.privacy-switch-hint { font-size: var(--de-fs-xs); line-height: 1.5; color: var(--de-text-tertiary); }
+
+.privacy-switch {
+  flex: none;
+  position: relative;
+  width: 36px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--de-radius-pill);
+  background: var(--de-border-strong);
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.privacy-switch.on { background: var(--de-brand); }
+.privacy-switch:disabled { opacity: 0.6; cursor: default; }
+.privacy-switch:focus-visible { box-shadow: var(--de-focus-ring); outline: none; }
+
+.privacy-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: transform 0.15s;
+}
+
+.privacy-switch.on .privacy-switch-knob { transform: translateX(16px); }

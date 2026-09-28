@@ -264,6 +264,11 @@ const brief = lastOfType(send('get_selection_brief'), 'selection_brief')
 assert.deepStrictEqual(plain(brief), { sheet: 'Sheet1', address: 'A1:D20', rows: 20, cols: 4, cells: 80 })
 assert.strictEqual(typeof apiListeners.SheetSelectionChange, 'function', 'SheetSelectionChange listener should be registered')
 
+// 面板主题交给系统深浅色；使用统计开关在 WPS 上没有东西可开关（WPS 版不发统计）
+assert.deepStrictEqual(plain(lastOfType(send('get_host_theme'), 'host_theme')), { theme: 'system' })
+assert.deepStrictEqual(plain(lastOfType(send('get_usage_stats'), 'usage_stats')), { supported: false, enabled: false })
+assert.deepStrictEqual(plain(lastOfType(send('set_usage_stats', { enabled: true }), 'usage_stats')), { supported: false, enabled: false })
+
 emitFromSidecar('tool_call', { name: 'write_formula' })
 emitFromSidecar('stream_delta', { delta: '已在 B1 ' })
 emitFromSidecar('stream_delta', { delta: '写入 =SUM(A:A)' })

@@ -206,6 +206,53 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
+        public void Turning_usage_statistics_off_stops_recording_and_deletes_what_was_waiting()
+        {
+            using (var reporter = SignedOut())
+            {
+                reporter.Record("task_complete", new Dictionary<string, object> { ["outcome"] = "success" });
+                TelemetryReporter.AppendToOutbox("startup_error", new Dictionary<string, object>
+                {
+                    ["diagnostic_code"] = StartupErrorCodes.LoadFailed,
+                }, _outbox);
+                // 另一个进程正在发的一批也要删
+                File.WriteAllText(_outbox + ".99999.abc.sending", "{\"event_type\":\"tool_error\"}\n");
+                Assert.Equal(2, reporter.BufferedCount);
+
+                Assert.True(TelemetryReporter.SetOptOut(true, _outbox));
+                Assert.True(TelemetryReporter.IsOptedOut(_outbox));
+                Assert.Equal(0, reporter.BufferedCount);
+                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(_outbox), "*.sending"));
+
+                reporter.Record("task_complete", new Dictionary<string, object> { ["outcome"] = "success" });
+                TelemetryReporter.AppendToOutbox("startup_error", new Dictionary<string, object>(), _outbox);
+                Assert.Equal(0, reporter.BufferedCount);
+
+                Assert.True(TelemetryReporter.SetOptOut(false, _outbox));
+                reporter.Record("task_complete", new Dictionary<string, object> { ["outcome"] = "success" });
+                Assert.Equal(1, reporter.BufferedCount);
+            }
+        }
+
+        [Fact]
+        public void Nothing_is_sent_while_usage_statistics_are_off()
+        {
+            var server = new Server();
+            using (var reporter = SignedIn(server))
+            {
+                reporter.Record("session_start", new Dictionary<string, object> { ["host"] = "excel" });
+                // 只放标记、不清发件箱：确认发送这一步本身也看开关
+                File.WriteAllText(TelemetryReporter.OptOutPath(_outbox), "off");
+                reporter.FlushAsync().GetAwaiter().GetResult();
+                Assert.Empty(server.TelemetryBodies);
+
+                TelemetryReporter.SetOptOut(false, _outbox);
+                reporter.FlushAsync().GetAwaiter().GetResult();
+                Assert.Equal(new[] { "session_start" }, SentEventTypes(server));
+            }
+        }
+
+        [Fact]
         public void Startup_codes_fit_the_server_allowlist_pattern()
         {
             var pattern = new System.Text.RegularExpressions.Regex(@"^E-[A-Z]+-\d{3}$");

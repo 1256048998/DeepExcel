@@ -158,7 +158,14 @@ const scenes = {
     await page.click('.header-menu-list >> text=数据与隐私')
     await page.click('.privacy-toggle')
     const rows = await page.$$eval('.privacy-field-row', els => els.length)
-    return rows >= 5 ? [] : [`字段清单只有 ${rows} 行`]
+    await page.waitForSelector('.privacy-switch[aria-checked="true"]', { timeout: 3000 })
+    await page.click('.privacy-switch')
+    const off = await page.waitForSelector('.privacy-switch[aria-checked="false"]', { timeout: 3000 }).then(() => true, () => false)
+    await page.$eval('.privacy-switch-row', el => el.scrollIntoView({ block: 'center' }))
+    const problems = []
+    if (rows < 5) problems.push(`字段清单只有 ${rows} 行`)
+    if (!off) problems.push('使用统计开关没关掉')
+    return problems
   },
 
   // 滚动：往上翻时新内容不把人拽回底部；「回到底部」恢复跟随；发新消息总是回到底部

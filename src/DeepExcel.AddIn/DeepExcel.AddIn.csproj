@@ -78,6 +78,7 @@
     <Compile Include="Bridge\MessageBridge.cs" />
     <Compile Include="Bridge\SelectionHandlers.cs" />
     <Compile Include="Bridge\OfficeTheme.cs" />
+    <Compile Include="Bridge\PrivacyHandlers.cs" />
     <Compile Include="Bridge\Messages.cs" />
     <Compile Include="Collaboration\OperationHistory.cs" />
     <Compile Include="Collaboration\WorkbookMemoryStore.cs" />

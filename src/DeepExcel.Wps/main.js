@@ -706,6 +706,11 @@ function _handleFrontendMessage(message) {
     _respond('host_theme', { theme: 'system' })
     return
   }
+  // 使用统计开关：WPS 版不发任何使用统计，没有可开关的东西
+  if (message.type === 'get_usage_stats' || message.type === 'set_usage_stats') {
+    _respond('usage_stats', { supported: false, enabled: false })
+    return
+  }
 
   if (!_ensureSidecar()) {
     _forwardToTaskpane({

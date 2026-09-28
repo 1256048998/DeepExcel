@@ -339,6 +339,11 @@ namespace DeepExcel.AddIn.Bridge
                     // 面板跟随 Office 主题：面板加载和重新获得焦点时来问
                     case "get_host_theme":
                         return MakeResponse("host_theme", new { theme = OfficeTheme.Read() });
+                    // 「数据与隐私」里的使用统计开关
+                    case "get_usage_stats":
+                        return MakeResponse("usage_stats", new { supported = true, enabled = !Account.TelemetryReporter.IsOptedOut() });
+                    case "set_usage_stats":
+                        return HandleSetUsageStats(msg);
                     case "read_workbook":
                         return MakeResponse("workbook", _excelActions.ReadWorkbook());
                     case "read_range":

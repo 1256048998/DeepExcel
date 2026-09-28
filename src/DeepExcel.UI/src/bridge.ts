@@ -222,6 +222,7 @@ const mockMemory = {
 }
 
 let mockAttachments: { fileName: string; size: number }[] = []
+let mockUsageStats = true
 
 function emitMockTrial(requestId: string, thenStale: boolean) {
   const send = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
@@ -285,6 +286,14 @@ function mockHostResponse(message: HostMessage) {
     // 宿主主题：dev 下用 ?host_theme=dark|light 模拟 Office 主题，不带就是 system
     case 'get_host_theme':
       emit('host_theme', { theme: new URLSearchParams(window.location.search).get('host_theme') ?? 'system' })
+      return
+    // 使用统计开关：dev 下只记在内存里
+    case 'get_usage_stats':
+      emit('usage_stats', { supported: true, enabled: mockUsageStats })
+      return
+    case 'set_usage_stats':
+      mockUsageStats = message.payload?.enabled !== false
+      emit('usage_stats', { supported: true, enabled: mockUsageStats })
       return
     // 附件：dev 下只记文件名和大小（和宿主一样不回内容）
     case 'list_attachments':

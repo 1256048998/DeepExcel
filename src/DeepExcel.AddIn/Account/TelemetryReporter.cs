@@ -75,12 +75,63 @@ namespace DeepExcel.AddIn.Account
 
         public bool Enabled { get; set; } = true;
 
+        /// <summary>
+        /// The user's switch in 数据与隐私. Kept as a marker file next to the
+        /// outbox rather than in config.json: the load-failure path
+        /// (<see cref="AppendToOutbox"/>) runs before any config is read, and a
+        /// file is shared by every Excel process without coordination. While it
+        /// exists nothing is recorded, nothing is sent, and turning it on deletes
+        /// whatever was still waiting -- "off" means off, not "later".
+        /// </summary>
+        public static string OptOutPath(string outboxPath = null) =>
+            Path.Combine(Path.GetDirectoryName(outboxPath ?? DefaultOutboxPath), "opt-out");
+
+        public static bool IsOptedOut(string outboxPath = null)
+        {
+            try { return File.Exists(OptOutPath(outboxPath)); }
+            catch (Exception) { return false; }
+        }
+
+        /// <summary>Returns false when the preference could not be written.</summary>
+        public static bool SetOptOut(bool optOut, string outboxPath = null)
+        {
+            var path = outboxPath ?? DefaultOutboxPath;
+            var marker = OptOutPath(path);
+            try
+            {
+                if (!optOut)
+                {
+                    if (File.Exists(marker)) File.Delete(marker);
+                    return true;
+                }
+                Directory.CreateDirectory(Path.GetDirectoryName(marker));
+                File.WriteAllText(marker, "usage statistics turned off by the user\n", new UTF8Encoding(false));
+                WithOutbox(() =>
+                {
+                    TryDelete(path);
+                    var directory = Path.GetDirectoryName(path);
+                    if (!Directory.Exists(directory)) return;
+                    // Batches another process is sending right now go too; if
+                    // that send fails, Release finds nothing to put back.
+                    foreach (var claim in Directory.GetFiles(directory, Path.GetFileName(path) + ".*" + ClaimSuffix))
+                    {
+                        TryDelete(claim);
+                    }
+                });
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         /// <summary>Events waiting in the outbox (not counting a batch in flight)</summary>
         public int BufferedCount => ReadOutbox(_outboxPath).Count;
 
         public void Record(string eventType, IDictionary<string, object> payload = null)
         {
-            if (!Enabled || _disposed || string.IsNullOrEmpty(eventType))
+            if (!Enabled || _disposed || string.IsNullOrEmpty(eventType) || IsOptedOut(_outboxPath))
             {
                 return;
             }
@@ -96,7 +147,7 @@ namespace DeepExcel.AddIn.Account
         /// </summary>
         public static void AppendToOutbox(string eventType, IDictionary<string, object> payload, string outboxPath = null)
         {
-            if (string.IsNullOrEmpty(eventType)) return;
+            if (string.IsNullOrEmpty(eventType) || IsOptedOut(outboxPath)) return;
             Append(outboxPath ?? DefaultOutboxPath, eventType, payload, LoadOrCreateInstallId());
         }
 
@@ -151,7 +202,7 @@ namespace DeepExcel.AddIn.Account
 
         public async Task FlushAsync(CancellationToken cancellationToken = default)
         {
-            if (!Enabled || _disposed)
+            if (!Enabled || _disposed || IsOptedOut(_outboxPath))
             {
                 return;
             }
@@ -234,6 +285,11 @@ namespace DeepExcel.AddIn.Account
         {
             WithOutbox(() =>
             {
+                if (IsOptedOut(path))
+                {
+                    TryDelete(claim);
+                    return;
+                }
                 var merged = ReadOutbox(claim);
                 merged.AddRange(ReadOutbox(path));
                 if (merged.Count > MaxBuffered) merged = merged.Skip(merged.Count - MaxBuffered).ToList();
