@@ -49,7 +49,7 @@ DeepExcel 本质上是「工作簿里的 Claude Code」。Claude Code 在代码�
 | # | 问题 | 位置 | 修法 | 状态 |
 |---|---|---|---|---|
 | F1 | 回滚会不保存就关掉**当前活动**工作簿，再用快照覆盖磁盘原文件；用户中途切换过工作簿时会关错文件【确认】 | `Executor/SnapshotManager.cs` 回滚段 | 打开快照为隐藏工作簿，按受影响的表替换回会话绑定的目标工作簿；恢复前先对当前状态再存一份；不改写磁盘原文件 | 已完成（2026-09-24）：两边都有的表原地恢复，其他表对它的引用不断；目标工作簿没打开就拒绝；真 Excel 集成测试 10 项（`DEEPEXCEL_EXCEL_TESTS=1`） |
-| F2 | 免费额度按模型调用次数计（每成功调用一次 `tasks_used += 1`），一个真实任务要调十几次【确认】 | `server/app/proxy/router.py` 记账段 | 每个用户任务生成 `task_id` 经请求头传给代理；服务端按 task_id 去重计数，并设单任务上限；老客户端不带头时兼容旧逻辑 | 托管模式对外收费前必须完成 |
+| F2 | 免费额度按模型调用次数计（每成功调用一次 `tasks_used += 1`），一个真实任务要调十几次【确认】 | `server/app/proxy/router.py` 记账段 | 每个用户任务生成 `task_id` 经请求头传给代理；服务端按 task_id 去重计数，并设单任务上限；老客户端不带头时兼容旧逻辑 | 已完成：按用户回合计数（`7f3b014`；客户端发不了 `x-trace-id`，见下文 trace_id 条）。2026-09-28 补两处：① 单任务调用上限以前只对带 trace_id 的请求生效，等于没有，现在按「距该用户最近一次计数任务以来的调用数」约束；② CLI 自动压缩的总结请求被当成新任务多扣一次，按实测请求形状识别（`scripts/probe_compaction_shapes.py`，升级 SDK 后要重跑） |
 | F3 | WebView2 数据目录按进程号新建、从不清理（开发机已 162 个、约 3.1 GB）【确认】 | `ThisAddIn.cs::InitializeWebView` | 固定共享目录；创建失败才回退到按 pid，并在启动时清理死 pid 目录；发版做一次性清理 | 已完成（2026-09-25，c8e5bd9）：固定共享数据目录，创建失败才按进程号回退；启动时清理旧的按进程目录 |
 | F4 | `auto_analyze` 在 sidecar 注册了，C# 侧没有实现，调用必败【确认】；`echo` / `quick_summary` 等同类 | `excel_tools.py` | 删除或实现；system prompt 的工具清单与实际注册对齐 | 已完成（2026-09-24）：删除 `auto_analyze`/`echo`/`quick_summary`/`create_plan`/`update_plan`；`<available-tools>` 与注册表一致（去掉不存在的 `remove_duplicates`，补上 20 个漏列的工具），均有守卫测试 |
 | F5 | 写入类工具不自动备份，依赖模型记得调 `create_snapshot` | `Sidecar/ToolDispatcher.cs` | 每个用户回合首次写入前统一备份，**备份失败则不执行** | 已完成（2026-09-24）：未列入只读白名单的工具一律先备份；活动工作簿不是会话绑定的那本时也拒绝写入；结果带 `backup_snapshot_id` |

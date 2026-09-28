@@ -37,7 +37,7 @@ from ..models import (
 )
 from ..security import ACCESS_AUDIENCE_PROXY, decode_access_token
 from .metering import StreamUsageCollector, Usage, estimate_cost_usd, usage_from_payload
-from .tasks import TASK_WINDOW, clean_trace_id, starts_new_user_turn, strip_window_suffix
+from .tasks import COMPACTION, NEW_TURN, TASK_WINDOW, classify_turn, clean_trace_id, strip_window_suffix
 from .upstream import load_upstreams, select as select_upstreams
 
 router = APIRouter(prefix="/v1", tags=["proxy"])
@@ -146,16 +146,61 @@ def _calls_in_task(db: Session, user_id: int, trace_id: str) -> int:
     )
 
 
-def _check_task_budget(db: Session, user_id: int, trace_id: str | None) -> None:
+def _has_recent_task(db: Session, user_id: int) -> bool:
+    return db.scalar(
+        select(func.count()).select_from(UsageRecord).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.counted_as_task.is_(True),
+            UsageRecord.created_at >= _trace_window_start(),
+        )
+    ) > 0
+
+
+def _calls_since_last_task_start(db: Session, user_id: int) -> int:
+    """Calls since this user's most recent counted task began (that call included).
+
+    The budget for clients that send no trace id -- which today is every client:
+    the CLI can only set request headers per process, so a per-task id cannot be
+    sent (see docs/2026-09-25-improvement-roadmap.md, trace_id). Without this a
+    task is still counted once, but nothing bounds how many calls it makes.
+
+    Two tasks running at once (two Excel windows) share one count and each new
+    turn restarts it, so the bound errs towards letting calls through, never
+    towards refusing a task that is within its budget.
+    """
+    window_start = _trace_window_start()
+    started = db.scalar(
+        select(func.max(UsageRecord.created_at)).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.counted_as_task.is_(True),
+            UsageRecord.created_at >= window_start,
+        )
+    )
+    return db.scalar(
+        select(func.count()).select_from(UsageRecord).where(
+            UsageRecord.user_id == user_id,
+            UsageRecord.created_at >= (started or window_start),
+        )
+    )
+
+
+def _check_task_budget(
+    db: Session, user_id: int, trace_id: str | None, new_user_turn: bool = True,
+) -> None:
     """Refuses a call that would push one task past its call budget.
 
     Checked before forwarding so a runaway loop stops costing money at the
-    limit rather than one call after it.
+    limit rather than one call after it. A call that starts a new user turn is
+    the start of a task and always goes through.
     """
-    if trace_id is None:
-        return
     limit = get_settings().max_calls_per_task
-    if _calls_in_task(db, user_id, trace_id) >= limit:
+    if trace_id is not None:
+        used = _calls_in_task(db, user_id, trace_id)
+    elif new_user_turn:
+        return
+    else:
+        used = _calls_since_last_task_start(db, user_id)
+    if used >= limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail={
@@ -254,8 +299,13 @@ async def messages(
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
     trace_id = clean_trace_id(request.headers.get("x-trace-id"))
-    new_user_turn = starts_new_user_turn(payload)
-    _check_task_budget(db, user.id, trace_id)
+    turn = classify_turn(payload)
+    if turn == COMPACTION and not _has_recent_task(db, user.id):
+        # Compaction overhead belongs to a task already running. With no task
+        # to belong to, the marker is just text a client chose to send.
+        turn = NEW_TURN
+    new_user_turn = turn == NEW_TURN
+    _check_task_budget(db, user.id, trace_id, new_user_turn)
 
     candidates = select_upstreams(load_upstreams(), model)
     if not candidates:

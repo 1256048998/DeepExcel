@@ -51,18 +51,66 @@ def strip_window_suffix(model: str) -> str:
     return _WINDOW_SUFFIX.sub("", model or "")
 
 
-def starts_new_user_turn(payload: dict) -> bool:
-    """True unless the request is carrying tool results back to the model."""
+# Auto-compaction. Observed on the wire from Claude Code 2.1.190 (the CLI bundled
+# with claude-agent-sdk 0.2.109) against a fake upstream -- see
+# scripts/probe_compaction_shapes.py:
+#
+#   1. The summary request is the conversation so far with this instruction
+#      appended as an extra text block to the last user message. Same system
+#      prompt as any other call, no tool_result -- so by shape alone it looked
+#      like a new user turn and every compaction cost the user one task.
+#   2. The call after it is one user message: reminder, the summary (starting
+#      with the sentence below), then whatever the user just typed, if anything.
+#      With new user text it is a new turn; without (compaction in the middle of
+#      a task) it continues the task that was running.
+_COMPACT_INSTRUCTION = "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools."
+_CONTINUED_SUMMARY = "This session is being continued from a previous conversation"
+_REMINDER = "<system-reminder>"
+
+NEW_TURN = "new"
+CONTINUATION = "continuation"
+COMPACTION = "compaction"
+
+
+def _text_blocks(content) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+    return [
+        str(block.get("text") or "") for block in content
+        if isinstance(block, dict) and block.get("type") == "text"
+    ]
+
+
+def classify_turn(payload: dict) -> str:
+    """NEW_TURN, CONTINUATION (tool results going back), or COMPACTION.
+
+    COMPACTION is a claim the client makes by the shape of its request, so the
+    proxy only honours it for a user who already has a task running; see
+    router._record_usage. Anything unrecognised is a new turn.
+    """
     messages = payload.get("messages") if isinstance(payload, dict) else None
     if not isinstance(messages, list) or not messages:
-        return True
+        return NEW_TURN
     last = messages[-1]
     if not isinstance(last, dict) or last.get("role") != "user":
         # An assistant-prefill or malformed tail: not a continuation of tool use.
-        return True
+        return NEW_TURN
     content = last.get("content")
     if isinstance(content, list):
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                return False
-    return True
+                return CONTINUATION
+    texts = [t.strip() for t in _text_blocks(content)]
+    if any(t.startswith(_COMPACT_INSTRUCTION) for t in texts):
+        return COMPACTION
+    if any(t.startswith(_CONTINUED_SUMMARY) for t in texts):
+        typed = [t for t in texts if t and not t.startswith((_CONTINUED_SUMMARY, _REMINDER))]
+        return NEW_TURN if typed else COMPACTION
+    return NEW_TURN
+
+
+def starts_new_user_turn(payload: dict) -> bool:
+    """True unless the request carries tool results back or is compaction overhead."""
+    return classify_turn(payload) == NEW_TURN

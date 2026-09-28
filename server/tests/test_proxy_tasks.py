@@ -173,6 +173,122 @@ def test_one_trace_id_cannot_carry_unlimited_calls(hosted, monkeypatch):
         config.reset_settings_for_tests()
 
 
+# Shapes captured from Claude Code 2.1.190 by scripts/probe_compaction_shapes.py.
+_REMINDER_BLOCK = {"type": "text", "text": "<system-reminder>\nAs you answer the user's questions, you can use the following context: …"}
+_SUMMARY_BLOCK = {"type": "text", "text": (
+    "This session is being continued from a previous conversation that ran out of context. "
+    "The summary below covers the earlier portion of the conversation.\n\n…")}
+
+
+def _compaction_request():
+    return [
+        _user_turn("第一句"),
+        {"role": "assistant", "content": "好的。"},
+        {"role": "user", "content": [
+            {"type": "text", "text": "第二句：继续 "},
+            {"type": "text", "text": "CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\n- Do NOT use Read, Bash…"},
+        ]},
+    ]
+
+
+def _after_compaction(typed=None):
+    blocks = [_REMINDER_BLOCK, _SUMMARY_BLOCK]
+    if typed:
+        blocks.append({"type": "text", "text": typed})
+    return [{"role": "user", "content": blocks}]
+
+
+@pytest.mark.parametrize("messages, expected", [
+    (_compaction_request(), "compaction"),
+    (_after_compaction("第三句：再来"), "new"),
+    (_after_compaction(), "compaction"),
+    ([_user_turn(), {"role": "assistant", "content": [{"type": "tool_use"}]}, _tool_result_turn()], "continuation"),
+    ([_user_turn("帮我总结一下这张表")], "new"),
+])
+def test_compaction_calls_are_recognised_by_shape(messages, expected):
+    from app.proxy.tasks import classify_turn
+    assert classify_turn({"messages": messages}) == expected
+
+
+def test_auto_compaction_does_not_cost_the_user_a_task(hosted, monkeypatch):
+    client, token, user_id = hosted
+    _install(monkeypatch, FakeUpstream([(200, STREAM_BODY, None)]))
+
+    _post(client, token, [_user_turn("第一句")])
+    assert _tasks_used(user_id) == 1
+    _post(client, token, _compaction_request())          # CLI 压缩：不算
+    assert _tasks_used(user_id) == 1
+    _post(client, token, _after_compaction("第三句：再来"))  # 用户的新一句：算
+    assert _tasks_used(user_id) == 2
+    _post(client, token, _after_compaction())             # 任务中途压缩后续跑：不算
+    assert _tasks_used(user_id) == 2
+
+
+def test_a_compaction_marker_without_a_running_task_is_still_counted(hosted, monkeypatch):
+    # The marker is text the client sends; alone it cannot make usage free.
+    client, token, user_id = hosted
+    _install(monkeypatch, FakeUpstream([(200, STREAM_BODY, None)]))
+
+    assert _post(client, token, _compaction_request()).status_code == 200
+    assert _tasks_used(user_id) == 1
+
+
+def _with_call_limit(limit):
+    import os
+
+    from app import config
+
+    os.environ["MAX_CALLS_PER_TASK"] = str(limit)
+    config.reset_settings_for_tests()
+
+    def restore():
+        os.environ.pop("MAX_CALLS_PER_TASK", None)
+        config.reset_settings_for_tests()
+    return restore
+
+
+def test_without_a_trace_id_one_task_still_cannot_make_unlimited_calls(hosted, monkeypatch):
+    # Today's clients send no trace id at all; a runaway loop inside one user
+    # turn must still stop at the budget, before the call that would exceed it.
+    restore = _with_call_limit(3)
+    try:
+        client, token, user_id = hosted
+        upstream = FakeUpstream([(200, STREAM_BODY, None)])
+        _install(monkeypatch, upstream)
+
+        assert _post(client, token, [_user_turn()]).status_code == 200
+        for _ in range(2):
+            assert _post(client, token, [_user_turn(), _tool_result_turn()]).status_code == 200
+        refused = _post(client, token, [_user_turn(), _tool_result_turn()])
+
+        assert refused.status_code == 429
+        assert refused.json()["detail"]["reason"] == "task_call_limit"
+        assert len(upstream.calls) == 3
+        assert _tasks_used(user_id) == 1
+    finally:
+        restore()
+
+
+def test_without_a_trace_id_a_new_user_turn_gets_a_fresh_budget(hosted, monkeypatch):
+    restore = _with_call_limit(3)
+    try:
+        client, token, user_id = hosted
+        _install(monkeypatch, FakeUpstream([(200, STREAM_BODY, None)]))
+
+        _post(client, token, [_user_turn()])
+        for _ in range(2):
+            _post(client, token, [_user_turn(), _tool_result_turn()])
+        assert _post(client, token, [_user_turn(), _tool_result_turn()]).status_code == 429
+
+        # 用户发了下一句：新任务，额度重新算
+        history = [_user_turn(), {"role": "assistant", "content": "好了"}, _user_turn("再按月份拆开")]
+        assert _post(client, token, history).status_code == 200
+        assert _post(client, token, history + [_tool_result_turn()]).status_code == 200
+        assert _tasks_used(user_id) == 2
+    finally:
+        restore()
+
+
 def test_trace_id_and_window_suffix_never_reach_the_provider(hosted, monkeypatch):
     client, token, _ = hosted
     upstream = FakeUpstream([(200, STREAM_BODY, None)])
