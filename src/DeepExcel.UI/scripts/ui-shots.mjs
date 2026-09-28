@@ -91,6 +91,19 @@ const scenes = {
     emit('ui_event', ev('status', { text: '仍在等待模型响应（25 秒）…' }))
   },
 
+  // 附件 chip：图片带缩略图，其它按类型给图标；文件名很长时不能撑破面板
+  attach: async ({ page }) => {
+    const png = await page.screenshot({ clip: { x: 0, y: 0, width: 120, height: 80 } })
+    await page.setInputFiles('input[type="file"]', [
+      { name: '发票截图.png', mimeType: 'image/png', buffer: png },
+      { name: '2026年第三季度各区域销售明细（含退货）.xlsx', mimeType: 'application/octet-stream', buffer: Buffer.from('x') },
+      { name: '合同.pdf', mimeType: 'application/pdf', buffer: Buffer.from('x') },
+    ])
+    await page.waitForTimeout(4000)
+    const chips = await page.$$eval('.attach-chip', els => els.map(e => e.classList.contains('has-thumb')))
+    return chips.length === 3 && chips[0] && !chips[1] ? [] : [`附件 chip 不对：${JSON.stringify(chips)}`]
+  },
+
   error: async ({ emit, send }) => {
     await send('帮我把这张表按日期排序')
     emit('ui_event', ev('error', { code: 'auth', message: '模型服务拒绝了凭据。', hint: '到「模型设置」检查 API Key 是否正确、是否过期。', retryable: false, detail: 'HTTP 401 invalid_api_key' }))

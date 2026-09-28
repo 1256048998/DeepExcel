@@ -852,7 +852,7 @@ details[open] > summary .chevron-icon {
   gap: 4px;
   max-width: 180px;
   height: 22px;
-  padding: 0 4px 0 8px;
+  padding: 0 4px 0 6px;
   background: var(--de-bg-subtle);
   border: 1px solid var(--de-border);
   border-radius: var(--de-radius-xl);
@@ -860,6 +860,31 @@ details[open] > summary .chevron-icon {
   color: var(--de-text-secondary);
   line-height: 1;
 }
+
+.attach-chip.has-thumb {
+  height: 28px;
+  padding-left: 3px;
+  border-radius: var(--de-radius-md);
+}
+
+.attach-chip-thumb {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+  background: var(--de-bg-muted);
+}
+
+.attach-chip-icon {
+  flex: none;
+  display: inline-flex;
+  color: var(--de-text-tertiary);
+}
+
+.attach-chip-icon.kind-image { color: var(--de-brand); }
+.attach-chip-icon.kind-sheet { color: var(--de-success); }
+.attach-chip-icon.kind-pdf { color: var(--de-danger); }
 
 .attach-chip-name {
   overflow: hidden;

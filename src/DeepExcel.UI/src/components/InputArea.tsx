@@ -1,14 +1,30 @@
-import { useRef, useState, ChangeEvent, useEffect } from 'react'
+import { useRef, useState, ChangeEvent, ClipboardEvent, useEffect } from 'react'
 import { PromptDropdown } from './PromptDropdown'
 import { ModelPicker } from './ModelPicker'
 import type { PromptTemplate } from '../utils/prompts'
 import type { PermissionMode } from '../types'
 import { cellCountText, selectionLabel, shouldShowSelection } from '../utils/selection'
 import type { SelectionBrief } from '../utils/selection'
+import { attachmentKind, formatSize, pastedImageName } from '../utils/attachments'
+import type { AttachmentKind } from '../utils/attachments'
 
 export interface AttachmentItem {
   fileName: string
   size: number
+  /** 图片缩略图（数据 URL）；没有就显示类型图标 */
+  thumbnail?: string
+}
+
+function AttachmentIcon({ kind }: { kind: AttachmentKind }) {
+  const common = { width: 12, height: 12, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true }
+  if (kind === 'image') return (
+    <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="9" cy="10" r="1.6" /><path d="m21 16-5-5-9 9" /></svg>)
+  if (kind === 'sheet') return (
+    <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 10h18M3 15h18M10 4v16" /></svg>)
+  return (
+    <svg {...common}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" />
+      {kind === 'pdf' && <path d="M9 14h6M9 17h4" />}</svg>)
 }
 
 /**
@@ -107,14 +123,13 @@ export function InputArea({
     ta.style.height = Math.min(ta.scrollHeight, maxH) + 'px'
   }, [value])
 
-  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files
-    if (!files || files.length === 0 || !onUploadAttachment) return
+  const uploadFiles = async (files: File[]) => {
+    if (files.length === 0 || !onUploadAttachment) return
     setUploadError(null)
     setUploading(true)
     try {
-      for (let i = 0; i < files.length; i++) {
-        await onUploadAttachment(files[i])
+      for (const f of files) {
+        await onUploadAttachment(f)
       }
     } catch (err: any) {
       setUploadError(typeof err === 'string' ? err : (err?.message || '上传失败'))
@@ -122,6 +137,22 @@ export function InputArea({
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
+    void uploadFiles(Array.from(e.target.files ?? []))
+  }
+
+  // 粘贴截图直接当附件上传。从 Excel 复制单元格时剪贴板里同时有文字和位图，
+  // 这时照常粘贴文字，不上传图片
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!onUploadAttachment) return
+    const data = e.clipboardData
+    if (data.getData('text/plain')) return
+    const images = Array.from(data.files).filter(f => f.type.startsWith('image/'))
+    if (images.length === 0) return
+    e.preventDefault()
+    void uploadFiles(images.map(f => new File([f], pastedImageName(f.type), { type: f.type })))
   }
 
   // ★ 选中提示词：用 content 替换输入框内容（不自动发送，用户可编辑后 Enter）
@@ -150,7 +181,11 @@ export function InputArea({
       {attachments.length > 0 && onDeleteAttachment && (
         <div className="attach-chips">
           {attachments.map(att => (
-            <span key={att.fileName} className="attach-chip" title={att.fileName}>
+            <span key={att.fileName} className={`attach-chip${att.thumbnail ? ' has-thumb' : ''}`}
+              title={`${att.fileName}${att.size ? ' · ' + formatSize(att.size) : ''}`}>
+              {att.thumbnail
+                ? <img className="attach-chip-thumb" src={att.thumbnail} alt="" />
+                : <span className={`attach-chip-icon kind-${attachmentKind(att.fileName)}`}><AttachmentIcon kind={attachmentKind(att.fileName)} /></span>}
               <span className="attach-chip-name">{att.fileName}</span>
               <button
                 className="attach-chip-x"
@@ -216,6 +251,7 @@ export function InputArea({
           ref={textareaRef}
           value={value}
           onChange={e => onChange(e.target.value)}
+          onPaste={handlePaste}
           onKeyDown={e => {
             // Shift+Tab 轮换权限模式（Claude Code 同款）
             if (e.key === 'Tab' && e.shiftKey && onPermissionModeChange) {

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { sendToHost, sendToHostWithResponse, onHostMessage } from './bridge'
 import { MessageList } from './components/MessageList'
@@ -27,6 +27,7 @@ import { sameSelection } from './utils/selection'
 import { retryTarget } from './utils/errorActions'
 import type { ErrorAction } from './utils/errorActions'
 import { escOwnedByOverlay } from './utils/keys'
+import { keepThumbnail } from './utils/attachments'
 import type { SelectionBrief } from './utils/selection'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -88,6 +89,11 @@ export default function App() {
   // ★ 附件面板开关 + 附件列表
   const [attachmentsOpen, setAttachmentsOpen] = useState(false)
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([])
+  // 本次面板里上传的图片的缩略图（文件名 → 数据 URL）；宿主只回文件名和大小
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({})
+  const attachmentChips = useMemo(
+    () => attachments.map(a => ({ ...a, thumbnail: thumbnails[a.fileName] })),
+    [attachments, thumbnails])
   // ★ 历史对话弹窗
   const [conversationsOpen, setConversationsOpen] = useState(false)
   // ★ 模型配置弹窗（Ribbon 按钮触发）
@@ -657,6 +663,9 @@ export default function App() {
             'uploaded'
           )
           if (resp?.type === 'uploaded') {
+            if (keepThumbnail(file.name, file.size)) {
+              setThumbnails(prev => ({ ...prev, [file.name]: reader.result as string }))
+            }
             await loadAttachments()
             resolve()
           } else {
@@ -673,6 +682,12 @@ export default function App() {
   const deleteAttachment = async (fileName: string) => {
     try {
       await sendToHost({ type: 'delete_attachment', payload: { file_name: fileName } })
+      setThumbnails(prev => {
+        if (!(fileName in prev)) return prev
+        const next = { ...prev }
+        delete next[fileName]
+        return next
+      })
       await loadAttachments()
     } catch (e) {
       console.warn('deleteAttachment failed', e)
@@ -943,7 +958,7 @@ export default function App() {
         onUploadAttachment={uploadAttachment}
         attachmentCount={attachments.length}
         onViewAttachments={openAttachments}
-        attachments={attachments}
+        attachments={attachmentChips}
         onDeleteAttachment={deleteAttachment}
         permissionPending={permission.visible}
         prompts={prompts}

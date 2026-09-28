@@ -221,6 +221,8 @@ const mockMemory = {
   historyCount: 12,
 }
 
+let mockAttachments: { fileName: string; size: number }[] = []
+
 function emitMockTrial(requestId: string, thenStale: boolean) {
   const send = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
   send('ui_event', { v: 1, kind: 'status', text: '正在工作簿副本上试跑这段代码…', tool: 'execute_vba' })
@@ -279,6 +281,20 @@ function mockHostResponse(message: HostMessage) {
     // 选区条：dev 下假装选中了一块数据
     case 'get_selection_brief':
       emit('selection_brief', { sheet: '销售明细', address: 'A1:D20', rows: 20, cols: 4, cells: 80 })
+      return
+    // 附件：dev 下只记文件名和大小（和宿主一样不回内容）
+    case 'list_attachments':
+      emit('attachments', { list: mockAttachments })
+      return
+    case 'upload_attachment': {
+      const name = String(message.payload?.file_name ?? 'unnamed')
+      const size = Math.floor(String(message.payload?.file_base64 ?? '').length * 3 / 4)
+      mockAttachments = [...mockAttachments.filter(a => a.fileName !== name), { fileName: name, size }]
+      emit('uploaded', { fileName: name, size })
+      return
+    }
+    case 'delete_attachment':
+      mockAttachments = mockAttachments.filter(a => a.fileName !== message.payload?.file_name)
       return
     // 登录 / 注册：dev 下直接当成功，用来调欢迎登录页和账号面板
     case 'account_server_meta':
