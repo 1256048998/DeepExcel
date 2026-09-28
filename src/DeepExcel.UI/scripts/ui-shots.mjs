@@ -152,6 +152,15 @@ const scenes = {
     await page.click('.model-picker-btn')
   },
 
+  // 数据与隐私：从「更多」打开，展开字段清单
+  privacy: async ({ page }) => {
+    await page.click('[aria-label="更多"]')
+    await page.click('.header-menu-list >> text=数据与隐私')
+    await page.click('.privacy-toggle')
+    const rows = await page.$$eval('.privacy-field-row', els => els.length)
+    return rows >= 5 ? [] : [`字段清单只有 ${rows} 行`]
+  },
+
   // 滚动：往上翻时新内容不把人拽回底部；「回到底部」恢复跟随；发新消息总是回到底部
   scroll: async ({ page, emit, send }) => {
     const problems = []
@@ -203,7 +212,7 @@ const scenes = {
 // ---------------- 执行 ----------------
 
 // 深色：这些场景再跑一遍，模拟 Office 深色主题（宿主回 host_theme=dark）
-const DARK_SCENES = ['conversation', 'running', 'error', 'ask', 'permission', 'setup', 'login', 'menu', 'model', 'attach']
+const DARK_SCENES = ['conversation', 'running', 'error', 'ask', 'permission', 'setup', 'login', 'menu', 'model', 'attach', 'privacy']
 
 function sceneEntries() {
   const all = Object.entries(scenes)

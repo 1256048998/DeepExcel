@@ -6,6 +6,7 @@ import { InputArea, ModelOption } from './components/InputArea'
 import { HistoryPanel } from './components/HistoryPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { AttachmentPanel } from './components/AttachmentPanel'
+import { PrivacyPanel } from './components/PrivacyPanel'
 import { ConversationsPanel } from './components/ConversationsPanel'
 import { ModelConfigPanel } from './components/ModelConfigPanel'
 import { AccountPanel } from './components/AccountPanel'
@@ -88,6 +89,7 @@ export default function App() {
   const [isClarifying, setIsClarifying] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [memoryOpen, setMemoryOpen] = useState(false)
+  const [privacyOpen, setPrivacyOpen] = useState(false)
   // ★ 附件面板开关 + 附件列表
   const [attachmentsOpen, setAttachmentsOpen] = useState(false)
   const [attachments, setAttachments] = useState<AttachmentInfo[]>([])
@@ -884,6 +886,10 @@ export default function App() {
       icon: menuIcon(<><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></>),
     },
     {
+      key: 'privacy', label: '数据与隐私', onSelect: () => setPrivacyOpen(true),
+      icon: menuIcon(<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>),
+    },
+    {
       key: 'theme', label: THEME_PREF_TEXT[themePref], onSelect: cycleThemePref,
       icon: menuIcon(<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>),
     },
@@ -1016,6 +1022,13 @@ export default function App() {
       <MemoryPanel
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
+      />
+
+      <PrivacyPanel
+        open={privacyOpen}
+        onClose={() => setPrivacyOpen(false)}
+        mode={accountStatus?.mode ?? null}
+        serverUrl={accountStatus?.server_url ?? null}
       />
 
       <AttachmentPanel

@@ -4812,3 +4812,167 @@ details[open] > summary .chevron-icon {
   color: var(--de-text-tertiary);
   font-size: var(--de-fs-sm);
 }
+
+/* === 数据与隐私 === */
+.privacy-panel { display: flex; flex-direction: column; }
+
+.privacy-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.privacy-summary {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--de-success-border);
+  border-radius: var(--de-radius-lg);
+  background: var(--de-success-soft);
+  color: var(--de-text);
+  font-size: var(--de-fs-md);
+  line-height: 1.6;
+}
+
+.privacy-summary svg { flex: none; margin-top: 2px; color: var(--de-success); }
+
+.privacy-section { display: flex; flex-direction: column; gap: 8px; }
+
+.privacy-section-title {
+  margin: 0;
+  font-size: var(--de-fs-md);
+  font-weight: 600;
+  color: var(--de-text);
+}
+
+.privacy-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--de-fs-sm);
+  line-height: 1.6;
+  color: var(--de-text-secondary);
+}
+
+.privacy-text {
+  margin: 0;
+  font-size: var(--de-fs-sm);
+  line-height: 1.6;
+  color: var(--de-text-secondary);
+}
+
+.privacy-text.muted { color: var(--de-text-tertiary); overflow-wrap: anywhere; }
+.privacy-text code { font-family: var(--de-font-mono); font-size: var(--de-fs-xs); }
+
+.privacy-routes { display: flex; flex-direction: column; gap: 6px; }
+
+.privacy-route {
+  padding: 8px 10px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  background: var(--de-bg);
+  font-size: var(--de-fs-sm);
+  line-height: 1.6;
+  color: var(--de-text-secondary);
+}
+
+.privacy-route.current {
+  border-color: var(--de-brand-border);
+  background: var(--de-brand-soft);
+  color: var(--de-text);
+}
+
+.privacy-route-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: var(--de-radius-pill);
+  background: var(--de-brand);
+  color: var(--de-on-brand);
+  font-size: var(--de-fs-xs);
+  line-height: 18px;
+  vertical-align: 1px;
+}
+
+.privacy-never { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+
+.privacy-never-label {
+  margin-right: 2px;
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-tertiary);
+}
+
+.privacy-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  background: var(--de-bg-subtle);
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-secondary);
+}
+
+.privacy-toggle {
+  align-self: flex-start;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--de-brand);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+}
+
+.privacy-toggle:hover { text-decoration: underline; }
+.privacy-toggle:focus-visible { box-shadow: var(--de-focus-ring); outline: none; border-radius: 2px; }
+
+.privacy-fields {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-md);
+  overflow: hidden;
+}
+
+.privacy-field-row {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: var(--de-fs-xs);
+  line-height: 1.6;
+}
+
+.privacy-field-row + .privacy-field-row { border-top: 1px solid var(--de-border); }
+.privacy-field-row dt { color: var(--de-text); font-weight: 500; }
+.privacy-field-row dd { margin: 0; color: var(--de-text-secondary); }
+
+/* === 减少动效：系统设置了「减少动画」时，入场动画、跳动的省略号和闪烁光标都停下；
+   附件上传的转圈保留，它是唯一能看出「还在传」的地方 === */
+@media (prefers-reduced-motion: reduce) {
+  .message,
+  .conv-panel-overlay,
+  .conv-panel,
+  .history-panel,
+  .config-overlay,
+  .config-panel,
+  .import-overlay,
+  .prompt-dropdown,
+  .model-picker-pop {
+    animation: none;
+  }
+
+  .message.loading .dot { animation: none; opacity: 0.6; }
+  .cursor { animation: none; }
+
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
