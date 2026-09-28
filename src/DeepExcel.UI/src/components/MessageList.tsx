@@ -11,6 +11,34 @@ import { AskCard } from './AskCard'
 import { toQuestions } from '../utils/clarify'
 import { ERROR_ACTION_TEXT, errorActions } from '../utils/errorActions'
 import type { ErrorAction } from '../utils/errorActions'
+import { copyText } from '../utils/clipboard'
+
+function ErrorActions({ error, canRetry, onAction }: {
+  error: NonNullable<Message['error']>
+  canRetry: boolean
+  onAction: (action: ErrorAction) => void
+}) {
+  const [copied, setCopied] = useState(false)
+  const actions = errorActions(error, canRetry)
+  if (actions.length === 0) return null
+  const click = async (a: ErrorAction) => {
+    if (a !== 'copy_detail') return onAction(a)
+    if (await copyText(`[${error.code}] ${error.message}\n${error.detail ?? ''}`)) {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+  }
+  return (
+    <div className="error-card-actions">
+      {actions.map(a => (
+        <button key={a} type="button" className={`error-card-btn${a === actions[0] ? ' primary' : ''}`}
+          onClick={() => void click(a)}>
+          {a === 'copy_detail' && copied ? '已复制' : ERROR_ACTION_TEXT[a]}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 // 错误卡片后面只跟着终态行之类的附属消息时，它仍然算「最后一条」，可以重试
 function trailingNonErrors(messages: Message[], idx: number): number {
@@ -216,19 +244,9 @@ const MessageItem = memo(function MessageItem({
         <div className="error-card-body">
           <div className="error-card-title">{message.error.message}</div>
           {message.error.hint && <div className="error-card-hint">{message.error.hint}</div>}
-          {onErrorAction && (() => {
-            const actions = errorActions(message.error, !!canRetry)
-            return actions.length > 0 && (
-              <div className="error-card-actions">
-                {actions.map(a => (
-                  <button key={a} type="button" className={`error-card-btn${a === actions[0] ? ' primary' : ''}`}
-                    onClick={() => onErrorAction(a, index)}>
-                    {ERROR_ACTION_TEXT[a]}
-                  </button>
-                ))}
-              </div>
-            )
-          })()}
+          {onErrorAction && (
+            <ErrorActions error={message.error} canRetry={!!canRetry} onAction={a => onErrorAction(a, index)} />
+          )}
         </div>
       </div>
     )

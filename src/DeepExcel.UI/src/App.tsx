@@ -729,7 +729,6 @@ export default function App() {
 
   // 错误卡片上的按钮
   const handleErrorAction = (action: ErrorAction, index: number) => {
-    const error = messages[index]?.error
     if (action === 'retry') {
       const text = retryTarget(messages, index)
       if (text) void sendMessage(text)
@@ -739,9 +738,8 @@ export default function App() {
       setAccountOpen(true)
     } else if (action === 'new_chat') {
       void handleNewConversation()
-    } else if (action === 'copy_detail' && error) {
-      void navigator.clipboard?.writeText(`[${error.code}] ${error.message}\n${error.detail ?? ''}`)
     }
+    // copy_detail 由错误卡片自己处理（要给「已复制」反馈）
   }
 
   // Esc 停止当前任务（确认抽屉开着时 Esc 是「拒绝」，弹窗 / 菜单开着时 Esc 先关它们）
