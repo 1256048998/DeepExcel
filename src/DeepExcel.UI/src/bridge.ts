@@ -282,6 +282,10 @@ function mockHostResponse(message: HostMessage) {
     case 'get_selection_brief':
       emit('selection_brief', { sheet: '销售明细', address: 'A1:D20', rows: 20, cols: 4, cells: 80 })
       return
+    // 宿主主题：dev 下用 ?host_theme=dark|light 模拟 Office 主题，不带就是 system
+    case 'get_host_theme':
+      emit('host_theme', { theme: new URLSearchParams(window.location.search).get('host_theme') ?? 'system' })
+      return
     // 附件：dev 下只记文件名和大小（和宿主一样不回内容）
     case 'list_attachments':
       emit('attachments', { list: mockAttachments })

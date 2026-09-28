@@ -701,6 +701,11 @@ function _handleFrontendMessage(message) {
     _respond('selection_brief', _selectionBrief())
     return
   }
+  // 面板主题：WPS 没有稳定可读的皮肤设置，交给面板按系统深浅色（prefers-color-scheme）判断
+  if (message.type === 'get_host_theme') {
+    _respond('host_theme', { theme: 'system' })
+    return
+  }
 
   if (!_ensureSidecar()) {
     _forwardToTaskpane({

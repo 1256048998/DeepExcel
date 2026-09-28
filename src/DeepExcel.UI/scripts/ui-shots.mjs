@@ -202,10 +202,14 @@ const scenes = {
 
 // ---------------- 执行 ----------------
 
+// 深色：这些场景再跑一遍，模拟 Office 深色主题（宿主回 host_theme=dark）
+const DARK_SCENES = ['conversation', 'running', 'error', 'ask', 'permission', 'setup', 'login', 'menu', 'model', 'attach']
+
 function sceneEntries() {
-  return Object.entries(scenes)
-    .filter(([name]) => name.includes(filter))
+  const all = Object.entries(scenes)
     .map(([name, s]) => (typeof s === 'function' ? { name, mock: 'default', run: s } : { name, mock: 'default', ...s }))
+  const dark = all.filter(s => DARK_SCENES.includes(s.name)).map(s => ({ ...s, name: `${s.name}-dark`, hostTheme: 'dark' }))
+  return [...all, ...dark].filter(s => s.name.includes(filter))
 }
 
 async function runScene(page, scene) {
@@ -282,8 +286,13 @@ async function main() {
         if (!scene.welcome) {
           await page.addInitScript(() => localStorage.setItem('deepexcel.welcomeLogin.dismissed', '1'))
         }
-        await page.goto(`${base}?mock=${scene.mock}`)
+        await page.goto(`${base}?mock=${scene.mock}${scene.hostTheme ? '&host_theme=' + scene.hostTheme : ''}`)
         await page.waitForSelector('textarea')
+        if (scene.hostTheme) {
+          // 宿主回主题要等 mock 的 500ms
+          await page.waitForFunction(t => document.documentElement.dataset.theme === t, scene.hostTheme, { timeout: 3000 })
+            .catch(() => errors.push(`面板没有切到 ${scene.hostTheme}`))
+        }
         await page.addStyleTag({ content: '*, *::before, *::after { animation: none !important; transition: none !important; caret-color: transparent !important; }' })
         await page.waitForTimeout(300)
         errors.push(...await runScene(page, scene))

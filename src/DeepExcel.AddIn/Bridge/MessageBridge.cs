@@ -336,6 +336,9 @@ namespace DeepExcel.AddIn.Bridge
                         return MakeResponse("selection", _excelActions.GetSelection());
                     case "get_selection_brief":
                         return HandleGetSelectionBrief();
+                    // 面板跟随 Office 主题：面板加载和重新获得焦点时来问
+                    case "get_host_theme":
+                        return MakeResponse("host_theme", new { theme = OfficeTheme.Read() });
                     case "read_workbook":
                         return MakeResponse("workbook", _excelActions.ReadWorkbook());
                     case "read_range":

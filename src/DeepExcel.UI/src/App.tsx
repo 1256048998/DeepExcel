@@ -28,6 +28,8 @@ import { retryTarget } from './utils/errorActions'
 import type { ErrorAction } from './utils/errorActions'
 import { escOwnedByOverlay } from './utils/keys'
 import { keepThumbnail } from './utils/attachments'
+import { THEME_PREF_KEY, THEME_PREF_TEXT, nextThemePref, parseHostTheme, parseThemePref, resolveTheme } from './utils/theme'
+import type { HostTheme, ThemePref } from './utils/theme'
 import type { SelectionBrief } from './utils/selection'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -236,6 +238,35 @@ export default function App() {
     })()
   }, [])
 
+  // 深浅色：默认跟随宿主（Excel 回 Office 主题），用户可在「更多」里固定；宿主回 system 时看系统深浅色
+  const [themePref, setThemePref] = useState<ThemePref>(() => {
+    try { return parseThemePref(localStorage.getItem(THEME_PREF_KEY)) } catch { return 'auto' }
+  })
+  const [hostTheme, setHostTheme] = useState<HostTheme>('system')
+  const [systemDark, setSystemDark] = useState(() => window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false)
+  useEffect(() => {
+    const mq = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!mq) return
+    const onChange = (e: MediaQueryListEvent) => setSystemDark(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  useEffect(() => {
+    // Office 换主题没有事件：面板打开和重新获得焦点时各问一次
+    const ask = () => void sendToHost({ type: 'get_host_theme', payload: {} })
+    ask()
+    window.addEventListener('focus', ask)
+    return () => window.removeEventListener('focus', ask)
+  }, [])
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolveTheme(themePref, hostTheme, systemDark)
+  }, [themePref, hostTheme, systemDark])
+  const cycleThemePref = () => {
+    const next = nextThemePref(themePref)
+    setThemePref(next)
+    try { localStorage.setItem(THEME_PREF_KEY, next) } catch { /* 存不了就只管这一次 */ }
+  }
+
   // 选区条：打开面板时要一次当前选区，之后宿主在选区变化时推 selection_brief
   useEffect(() => {
     void sendToHostWithResponse({ type: 'get_selection_brief', payload: {} }, 'selection_brief')
@@ -420,6 +451,8 @@ export default function App() {
         // 如果需要展示结果详情，可在此处把 result 写入对应工具组
       } else if (data.type === 'selection_brief') {
         if (data.payload) applySelection(data.payload as SelectionBrief)
+      } else if (data.type === 'host_theme') {
+        setHostTheme(parseHostTheme(data.payload?.theme))
       } else if (data.type === 'clarify') {
         const { question, options, questions } = data.payload
         // 提问卡：新侧车发 questions（多题 / 选项说明 / 多选），老的只有 question + options
@@ -851,6 +884,10 @@ export default function App() {
     {
       key: 'autoload', label: '打开面板时恢复上次对话', onSelect: toggleAutoLoadHistory, checked: autoLoadHistory,
       icon: menuIcon(<><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></>),
+    },
+    {
+      key: 'theme', label: THEME_PREF_TEXT[themePref], onSelect: cycleThemePref,
+      icon: menuIcon(<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>),
     },
   ]
 

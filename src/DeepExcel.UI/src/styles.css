@@ -1033,7 +1033,7 @@ details[open] > summary .chevron-icon {
   align-items: center;
   justify-content: center;
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   font-size: var(--de-fs-xs);
   font-weight: 600;
   line-height: 1;
@@ -1193,13 +1193,13 @@ details[open] > summary .chevron-icon {
 .header-btn.primary {
   background: var(--de-brand);
   border-color: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
 }
 
 .header-btn.primary:hover {
   background: var(--de-brand-hover);
   border-color: var(--de-brand-hover);
-  color: white;
+  color: var(--de-on-brand);
 }
 
 /* 加载历史开关：开启时高亮 */
@@ -1252,7 +1252,7 @@ details[open] > summary .chevron-icon {
   align-items: center;
   justify-content: center;
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   font-size: var(--de-fs-xs);
   font-weight: 600;
   line-height: 1;
@@ -1413,7 +1413,7 @@ details[open] > summary .chevron-icon {
 .conv-continue-btn {
   padding: 4px 10px;
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border: none;
   border-radius: var(--de-radius-sm);
   font-size: var(--de-fs-xs);
@@ -1651,7 +1651,7 @@ details[open] > summary .chevron-icon {
 .history-rollback-btn {
   padding: 4px 10px;
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border: none;
   border-radius: var(--de-radius-sm);
   font-size: var(--de-fs-xs);
@@ -2053,7 +2053,7 @@ details[open] > summary .chevron-icon {
   margin-top: 8px;
   padding: 4px 12px;
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border: none;
   border-radius: var(--de-radius-md);
   cursor: pointer;
@@ -2395,7 +2395,7 @@ details[open] > summary .chevron-icon {
   border: 1px solid var(--de-brand);
   border-radius: var(--de-radius-md);
   font-size: var(--de-fs-sm);
-  color: white;
+  color: var(--de-on-brand);
   cursor: pointer;
   transition: all 0.15s;
 }
@@ -2873,7 +2873,7 @@ details[open] > summary .chevron-icon {
 
 .perm-allow {
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border-color: var(--de-brand);
 }
 
@@ -2958,7 +2958,7 @@ details[open] > summary .chevron-icon {
 
 .streaming-choice-card:hover .choice-tag {
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border-color: var(--de-brand);
 }
 
@@ -3143,7 +3143,7 @@ details[open] > summary .chevron-icon {
 .prompt-type-tab.active {
   background: var(--de-brand);
   border-color: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
 }
 
 .prompt-type-hint {
@@ -3249,7 +3249,7 @@ details[open] > summary .chevron-icon {
 
 .prompt-btn.save {
   background: var(--de-brand);
-  color: white;
+  color: var(--de-on-brand);
   border-color: var(--de-brand);
 }
 
