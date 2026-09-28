@@ -2840,6 +2840,10 @@ details[open] > summary .chevron-icon {
   transition: all 0.15s;
   border: 1px solid transparent;
   line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .perm-allow {
@@ -3688,11 +3692,64 @@ details[open] > summary .chevron-icon {
 
 /* === 错误卡片（ui_event error） === */
 .message.error-card {
-  padding: 8px 12px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 12px;
   background: var(--de-danger-soft);
   border: 1px solid var(--de-danger-border);
   border-radius: var(--de-radius-lg);
   font-size: var(--de-fs-md);
+}
+
+.error-card-icon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--de-danger);
+}
+
+.error-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.error-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.error-card-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  background: var(--de-bg);
+  color: var(--de-text);
+  font-size: var(--de-fs-sm);
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s;
+}
+
+.error-card-btn:hover { background: var(--de-bg-muted); border-color: var(--de-border-strong); }
+.error-card-btn.primary { background: var(--de-brand); border-color: var(--de-brand); color: var(--de-on-brand); }
+.error-card-btn.primary:hover { background: var(--de-brand-hover); border-color: var(--de-brand-hover); }
+.error-card-btn:focus-visible { box-shadow: var(--de-focus-ring); outline: none; }
+
+.perm-btn kbd {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font: inherit;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+/* 窄面板里快捷键提示让位给按钮文字 */
+@media (max-width: 359px) {
+  .perm-btn kbd { display: none; }
 }
 
 .error-card-title {

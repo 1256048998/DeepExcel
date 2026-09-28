@@ -1,4 +1,6 @@
+import { useEffect, useRef } from 'react'
 import { ChangePreview } from './ChangePreview'
+import { isEditable } from '../utils/keys'
 import type { ChangePreviewData } from './ChangePreview'
 
 interface PermissionDrawerProps {
@@ -39,8 +41,33 @@ function formatValue(v: any): string {
   return s.length > 240 ? s.slice(0, 240) + '\n…' : s
 }
 
+// 抽屉刚弹出的这一小会儿不接受 Enter：用户可能正准备按 Enter 发别的，别被当成「允许」
+const KEY_GUARD_MS = 300
+
 export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny, onRerunTrial }: PermissionDrawerProps) {
   const desc = TOOL_DESC[tool] || `执行 ${tool}`
+  const shownAt = useRef(0)
+  const latest = useRef({ onAllow, onDeny })
+  latest.current = { onAllow, onDeny }
+
+  useEffect(() => {
+    if (!visible) return
+    shownAt.current = Date.now()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing || isEditable(e.target)) return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        latest.current.onDeny()
+      } else if (e.key === 'Enter' && !e.shiftKey && Date.now() - shownAt.current >= KEY_GUARD_MS) {
+        // 焦点在「拒绝」上按 Enter 是拒绝（按钮自己的点击），不要再额外允许
+        if ((e.target as HTMLElement | null)?.closest?.('.perm-deny')) return
+        e.preventDefault()
+        latest.current.onAllow()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [visible])
 
   // 筛选要显示的参数（最多 5 个，跳过 null/undefined）
   const argEntries = Object.entries(args || {})
@@ -91,11 +118,11 @@ export function PermissionDrawer({ visible, tool, args, preview, onAllow, onDeny
                 : '本次会话内允许后不再询问'}
           </span>
           <div className="permission-btns">
-            <button className="perm-btn perm-deny" onClick={onDeny} type="button">
-              拒绝
+            <button className="perm-btn perm-deny" onClick={onDeny} type="button" title="拒绝（Esc）">
+              拒绝 <kbd>Esc</kbd>
             </button>
-            <button className="perm-btn perm-allow" onClick={onAllow} type="button">
-              允许
+            <button className="perm-btn perm-allow" onClick={onAllow} type="button" title="允许（Enter）">
+              允许 <kbd>↵</kbd>
             </button>
           </div>
         </div>

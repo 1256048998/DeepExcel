@@ -93,7 +93,7 @@ const scenes = {
 
   error: async ({ emit, send }) => {
     await send('帮我把这张表按日期排序')
-    emit('ui_event', ev('error', { code: 'auth', message: '模型服务拒绝了凭据。', hint: '到「模型设置」检查 API Key 是否正确、是否过期。', retryable: false }))
+    emit('ui_event', ev('error', { code: 'auth', message: '模型服务拒绝了凭据。', hint: '到「模型设置」检查 API Key 是否正确、是否过期。', retryable: false, detail: 'HTTP 401 invalid_api_key' }))
     emit('ui_event', ev('run_summary', { outcome: 'error', tool_calls: 0, failed_calls: 0, duration_ms: 2100 }))
     emit('stream_end', {})
   },

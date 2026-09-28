@@ -18,7 +18,7 @@ export type Message = {
   // 该工具组是否处于展开状态
   expanded?: boolean
   // type==='error'
-  error?: { code: string; message: string; hint?: string; retryable?: boolean }
+  error?: { code: string; message: string; hint?: string; retryable?: boolean; detail?: string }
   // type==='run_summary'
   outcome?: string
   // 任务进行中发出的插话：pending 已发出 / delivered 已交给 AI / deferred 本轮结束后处理

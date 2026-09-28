@@ -24,6 +24,9 @@ import type { Message, ModelConfig, PermissionMode, PlanItem, ToolStep, UiEvent 
 import { applyUiEvent, closeThinking } from './utils/uiEvents'
 import { markClarifyAnswered, toQuestions } from './utils/clarify'
 import { sameSelection } from './utils/selection'
+import { retryTarget } from './utils/errorActions'
+import type { ErrorAction } from './utils/errorActions'
+import { escOwnedByOverlay } from './utils/keys'
 import type { SelectionBrief } from './utils/selection'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
@@ -557,6 +560,7 @@ export default function App() {
   // ★ 停止：侧车会让 AI 停下当前步骤并收尾（最多约 15 秒），收到 stream_end 才算停完。
   // 以前这里立刻把 loading 置 false，AI 其实还在后台跑，下一条消息可能读到上一轮的残留。
   const stopTimerRef = useRef<number | null>(null)
+  const stopRef = useRef<() => void>(() => {})
   const stopGeneration = () => {
     sendToHost({ type: 'cancel', payload: {} })
     setStatusText('正在停止…')
@@ -566,6 +570,9 @@ export default function App() {
       setLoading(false)
       setStatusText(null)
     }, 25_000)
+  }
+  stopRef.current = () => {
+    if (loading && !permission.visible) stopGeneration()
   }
 
   // 方案卡片：批准 → 切到选定的模式并开始执行；继续修改 → 留在只出方案，等用户说修改意见
@@ -671,6 +678,34 @@ export default function App() {
       console.warn('deleteAttachment failed', e)
     }
   }
+
+  // 错误卡片上的按钮
+  const handleErrorAction = (action: ErrorAction, index: number) => {
+    const error = messages[index]?.error
+    if (action === 'retry') {
+      const text = retryTarget(messages, index)
+      if (text) void sendMessage(text)
+    } else if (action === 'settings') {
+      setModelConfigOpen(true)
+    } else if (action === 'account') {
+      setAccountOpen(true)
+    } else if (action === 'new_chat') {
+      void handleNewConversation()
+    } else if (action === 'copy_detail' && error) {
+      void navigator.clipboard?.writeText(`[${error.code}] ${error.message}\n${error.detail ?? ''}`)
+    }
+  }
+
+  // Esc 停止当前任务（确认抽屉开着时 Esc 是「拒绝」，弹窗 / 菜单开着时 Esc 先关它们）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return
+      if (escOwnedByOverlay()) return
+      stopRef.current()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [])
 
   const dismissWelcome = () => {
     setWelcomeOpen(false)
@@ -881,6 +916,7 @@ export default function App() {
         onSaveAsPrompt={handleSaveAsPrompt}
         rewind={{ onRewind: handleRewind, disabled: loading, pendingId: rewindingId }}
         onPlanDecision={handlePlanDecision}
+        onErrorAction={handleErrorAction}
       />
 
       {/* ★ AI Native 权限确认抽屉：从输入框上方 slide-up 显示，类似 Claude Code/Trae/Codex */}

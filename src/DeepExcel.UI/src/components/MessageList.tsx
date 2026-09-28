@@ -9,6 +9,15 @@ import { StarterCard } from './StarterCard'
 import { LogoMark } from './Logo'
 import { AskCard } from './AskCard'
 import { toQuestions } from '../utils/clarify'
+import { ERROR_ACTION_TEXT, errorActions } from '../utils/errorActions'
+import type { ErrorAction } from '../utils/errorActions'
+
+// 错误卡片后面只跟着终态行之类的附属消息时，它仍然算「最后一条」，可以重试
+function trailingNonErrors(messages: Message[], idx: number): number {
+  let n = 0
+  for (let i = messages.length - 1; i > idx && messages[i].type === 'run_summary'; i--) n++
+  return n
+}
 import type { StarterView } from './StarterCard'
 
 interface Props {
@@ -24,6 +33,8 @@ interface Props {
   rewind?: RewindControl
   // 方案卡片：批准（按哪种模式执行）或继续修改
   onPlanDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
+  // 错误卡片上的按钮（重试 / 打开模型设置 / 查看账号 / 开新对话 / 复制诊断）
+  onErrorAction?: (action: ErrorAction, index: number) => void
   // 首次使用卡片：点推荐问题直接发送；空工作簿可插入示例数据
   starter?: StarterView
   onStarterPick?: (prompt: string) => void
@@ -56,13 +67,14 @@ function isMarkdown(content: string): boolean {
   return patterns.some(p => p.test(content))
 }
 
-export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind, onPlanDecision, starter, onStarterPick, onInsertSample }: Props) {
+export function MessageList({ messages, loading, statusText, onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, rewind, onPlanDecision, onErrorAction, starter, onStarterPick, onInsertSample }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
 
   // 回调每次 App 渲染都是新函数；包一层稳定引用，消息项才能 memo（流式输出时只重绘最后一条）
-  const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision })
-  latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision }
+  const latest = useRef({ onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision, onErrorAction })
+  latest.current = { onToggleToolGroup, onClarifyAnswer, onChoiceSelect, onSaveAsPrompt, onRewind: rewind?.onRewind, onPlanDecision, onErrorAction }
+  const errorAction = useCallback((a: ErrorAction, i: number) => latest.current.onErrorAction?.(a, i), [])
   const toggle = useCallback((i: number) => latest.current.onToggleToolGroup?.(i), [])
   const clarify = useCallback((a: string, i: number) => latest.current.onClarifyAnswer?.(a, i), [])
   const choose = useCallback((c: string) => latest.current.onChoiceSelect?.(c), [])
@@ -116,6 +128,8 @@ export function MessageList({ messages, loading, statusText, onToggleToolGroup, 
               onSaveAsPrompt={onSaveAsPrompt ? savePrompt : undefined}
               rewind={stableRewind}
               onPlanDecision={onPlanDecision ? decidePlan : undefined}
+              onErrorAction={onErrorAction ? errorAction : undefined}
+              canRetry={!loading && idx === messages.length - 1 - trailingNonErrors(messages, idx)}
               busy={loading}
             />
           ))}
@@ -151,6 +165,8 @@ const MessageItem = memo(function MessageItem({
   onSaveAsPrompt,
   rewind,
   onPlanDecision,
+  onErrorAction,
+  canRetry,
   busy
 }: {
   message: Message
@@ -161,6 +177,8 @@ const MessageItem = memo(function MessageItem({
   onSaveAsPrompt?: (content: string) => void
   rewind?: RewindControl
   onPlanDecision?: (index: number, decision: PermissionMode | 'dismissed') => void
+  onErrorAction?: (action: ErrorAction, index: number) => void
+  canRetry?: boolean
   busy?: boolean
 }) {
   // 方案卡片（present_plan）：涉及的表和区域、每一步、风险点，下面是批准按钮
@@ -189,8 +207,29 @@ const MessageItem = memo(function MessageItem({
   if (message.type === 'error' && message.error) {
     return (
       <div className="message error-card" role="alert">
-        <div className="error-card-title">{message.error.message}</div>
-        {message.error.hint && <div className="error-card-hint">{message.error.hint}</div>}
+        <svg className="error-card-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <line x1="12" y1="8" x2="12" y2="12.5" />
+          <line x1="12" y1="16" x2="12.01" y2="16" />
+        </svg>
+        <div className="error-card-body">
+          <div className="error-card-title">{message.error.message}</div>
+          {message.error.hint && <div className="error-card-hint">{message.error.hint}</div>}
+          {onErrorAction && (() => {
+            const actions = errorActions(message.error, !!canRetry)
+            return actions.length > 0 && (
+              <div className="error-card-actions">
+                {actions.map(a => (
+                  <button key={a} type="button" className={`error-card-btn${a === actions[0] ? ' primary' : ''}`}
+                    onClick={() => onErrorAction(a, index)}>
+                    {ERROR_ACTION_TEXT[a]}
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
+        </div>
       </div>
     )
   }

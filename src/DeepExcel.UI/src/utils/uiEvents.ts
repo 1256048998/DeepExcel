@@ -158,7 +158,7 @@ export function applyUiEvent(messages: Message[], event: UiEvent): Message[] {
         role: 'assistant',
         type: 'error',
         content: event.message,
-        error: { code: event.code, message: event.message, hint: event.hint, retryable: event.retryable },
+        error: { code: event.code, message: event.message, hint: event.hint, retryable: event.retryable, detail: event.detail },
       }]
     case 'steer_delivered':
     case 'steer_deferred': {
