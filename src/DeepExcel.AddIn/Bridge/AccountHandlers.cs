@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using DeepExcel.AddIn.Account;
+using DeepExcel.AddIn.Config;
 using DeepExcel.AddIn.Diagnostics;
 
 namespace DeepExcel.AddIn.Bridge
@@ -100,13 +101,21 @@ namespace DeepExcel.AddIn.Bridge
                 }
 
                 var endpoint = session.CurrentEndpoint;
+                var hosted = endpoint != null && endpoint.Mode == Account.RoutingMode.Hosted;
+                var catalog = hosted ? endpoint.Models : null;
                 return MakeResponse("account_status", new
                 {
                     state = session.State.ToString().ToLowerInvariant(),
                     server_url = session.ServerUrl,
                     email = session.Email,
                     mode = endpoint == null ? null : endpoint.ModeRaw,
-                    entitlement = endpoint?.Entitlement
+                    entitlement = endpoint?.Entitlement,
+                    // 托管目录（服务端给的，面板照着列出来）和这个会话实际会用的那一个
+                    hosted_models = catalog,
+                    hosted_model = catalog != null && catalog.Count > 0
+                        ? Account.SidecarRoutingResolver.PickHostedModel(
+                            catalog, ConfigManager.Instance.Current.HostedModel, ConfigManager.Instance.Current.CurrentModel)
+                        : null
                 });
             }
             catch (Exception ex)

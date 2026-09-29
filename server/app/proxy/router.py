@@ -36,6 +36,7 @@ from ..models import (
     utcnow,
 )
 from ..security import ACCESS_AUDIENCE_PROXY, decode_access_token
+from . import catalog
 from .metering import StreamUsageCollector, Usage, estimate_cost_usd, model_weight, usage_from_payload
 from .tasks import COMPACTION, NEW_TURN, TASK_WINDOW, classify_turn, clean_trace_id, strip_window_suffix
 from .upstream import load_upstreams, select as select_upstreams
@@ -324,6 +325,20 @@ async def messages(
         # to belong to, the marker is just text a client chose to send.
         turn = NEW_TURN
     new_user_turn = turn == NEW_TURN
+    if not catalog.is_offered(model, entitlement.plan.value):
+        # Checked on every call, not only new tasks: a task cannot switch to a
+        # model the plan does not include halfway through either.
+        offered = [e.model for e in catalog.catalog_for(entitlement.plan.value)]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "reason": "model_not_offered",
+                "model": model,
+                "offered": offered,
+                "message": f"托管服务没有为你的套餐提供模型 {model}，请在模型选择里换一个"
+                           + (f"（可选：{'、'.join(offered)}）。" if offered else "。"),
+            },
+        )
     if new_user_turn:
         _check_points(entitlement, model)
     _check_task_budget(db, user.id, trace_id, new_user_turn)

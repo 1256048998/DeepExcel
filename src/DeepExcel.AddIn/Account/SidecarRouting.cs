@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace DeepExcel.AddIn.Account
 {
@@ -46,11 +48,17 @@ namespace DeepExcel.AddIn.Account
         /// <param name="localBaseUrl">Provider base URL from config.json.</param>
         /// <param name="localModel">Model the user selected.</param>
         /// <param name="localApiKey">DPAPI-decrypted provider key.</param>
+        /// <param name="hostedModel">
+        /// The model the user picked from the hosted catalog (config.json
+        /// HostedModel), kept apart from the local provider's model so switching
+        /// between hosted and BYOK never loses either choice.
+        /// </param>
         public static SidecarRouting Resolve(
-            EndpointConfig endpoint, string localBaseUrl, string localModel, string localApiKey)
+            EndpointConfig endpoint, string localBaseUrl, string localModel, string localApiKey,
+            string hostedModel = null)
         {
-            // The model is always the user's choice, in both modes. The proxy
-            // validates it; it is not the server's job to pick it.
+            // The model is always the user's choice. In hosted mode with a
+            // catalog the choice is made from the catalog; the proxy enforces it.
             var model = localModel;
 
             if (endpoint == null || endpoint.Mode == RoutingMode.Byok)
@@ -80,12 +88,36 @@ namespace DeepExcel.AddIn.Account
             {
                 Mode = "hosted",
                 BaseUrl = endpoint.BaseUrl,
-                Model = model,
+                Model = PickHostedModel(endpoint.Models, hostedModel, localModel),
                 // The proxy authenticates the request; the user's own key must
                 // never be sent to it.
                 ApiKey = null,
                 AuthToken = StripScheme(endpoint.AuthHeader)
             };
+        }
+
+        /// <summary>
+        /// Which catalog model a hosted session uses: the user's hosted pick if
+        /// the catalog still has it, else the local model if it happens to be in
+        /// the catalog, else the server's default, else the first entry. Without
+        /// a catalog it is the local model, which is how hosted worked before.
+        /// A model the plan no longer includes is dropped here rather than sent
+        /// to a proxy that would refuse every request.
+        /// </summary>
+        public static string PickHostedModel(IList<HostedModelInfo> catalog, string hostedModel, string localModel)
+        {
+            var offered = (catalog ?? new List<HostedModelInfo>())
+                .Where(m => m != null && !string.IsNullOrEmpty(m.Model)).ToList();
+            if (offered.Count == 0)
+            {
+                return localModel;
+            }
+            Func<string, HostedModelInfo> find = name => string.IsNullOrEmpty(name)
+                ? null
+                : offered.FirstOrDefault(m => string.Equals(m.Model, name, StringComparison.OrdinalIgnoreCase));
+            var chosen = find(hostedModel) ?? find(localModel)
+                         ?? offered.FirstOrDefault(m => m.IsDefault) ?? offered[0];
+            return chosen.Model;
         }
 
         /// <summary>

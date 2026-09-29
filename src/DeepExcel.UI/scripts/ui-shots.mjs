@@ -166,6 +166,28 @@ const scenes = {
     },
   },
 
+  // 托管目录：本地一个 Key 都没有，模型选择列的是服务端目录，切一个试试
+  'model-hosted': {
+    mock: 'hosted',
+    run: async ({ page }) => {
+      await page.waitForSelector('.model-picker-btn', { timeout: 3000 })
+      await page.click('.model-picker-btn')
+      const items = await page.$$eval('.model-picker-item', els => els.map(e => e.textContent))
+      const hasManage = await page.$('.model-picker-manage')
+      const problems = []
+      if (items.length !== 3) problems.push(`目录应列 3 个模型，实际 ${items.length}`)
+      if (!items.some(t => /Claude Sonnet 5.*12 点\/任务/.test(t))) problems.push('没有显示目录给的点数')
+      if (!items.some(t => /DeepSeek V4 Pro.*默认/.test(t))) problems.push('默认模型没有标出来')
+      if (hasManage) problems.push('托管目录下不该出现「管理模型与密钥」')
+      await page.click('.model-picker-item >> text=Claude Sonnet 5')
+      // 切换在发送前才生效（pending），按钮上先显示新选择
+      await page.waitForFunction(() => document.querySelector('.model-picker-name')?.textContent === 'Claude Sonnet 5', null, { timeout: 3000 })
+        .catch(() => problems.push('选了之后按钮没变'))
+      await page.click('.model-picker-btn')
+      return problems
+    },
+  },
+
   // 数据与隐私：从「更多」打开，展开字段清单
   privacy: async ({ page }) => {
     await page.click('[aria-label="更多"]')

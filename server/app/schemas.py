@@ -98,6 +98,16 @@ class UserView(BaseModel):
 # Endpoint routing -- the M6 switch
 # ---------------------------------------------------------------------------
 
+class HostedModelView(BaseModel):
+    """One entry of the hosted model catalog (proxy/catalog.py)."""
+
+    model: str
+    label: str
+    # Points one task on this model costs; the panel shows it, never computes it.
+    points: int
+    default: bool
+
+
 class EndpointConfig(BaseModel):
     """Tells the client where to send model traffic.
 
@@ -124,6 +134,10 @@ class EndpointConfig(BaseModel):
 
     expires_at: int
     entitlement: EntitlementView
+    # Hosted with a catalog configured: the models the user may pick, in order.
+    # None in byok mode, or when the server has no catalog -- the client then
+    # keeps using its local model name, as before the catalog existed.
+    models: list[HostedModelView] | None = None
     # Advisory. Lets the server slow clients down without a client change.
     refresh_after_seconds: int
 

@@ -25,8 +25,9 @@ from ..config import get_settings
 from ..db import get_db
 from ..deps import get_current_user
 from ..models import Entitlement, Installation, RoutingMode, User, utcnow
-from ..schemas import EndpointConfig, EntitlementView
+from ..schemas import EndpointConfig, EntitlementView, HostedModelView
 from ..security import ACCESS_AUDIENCE_PROXY, issue_access_token
+from ..proxy import catalog
 from ..proxy.metering import model_weights
 
 router = APIRouter(prefix="/api/v1/session", tags=["session"])
@@ -123,7 +124,17 @@ def resolve_endpoint(user: User, entitlement: Entitlement) -> EndpointConfig:
         expires_at=min(expires_at, proxy_expires_at),
         entitlement=_entitlement_view(entitlement),
         refresh_after_seconds=ttl,
+        models=_hosted_models(entitlement),
     )
+
+
+def _hosted_models(entitlement: Entitlement) -> list[HostedModelView] | None:
+    if not catalog.is_configured():
+        return None
+    return [
+        HostedModelView(model=e.model, label=e.label, points=e.points, default=e.default)
+        for e in catalog.catalog_for(entitlement.plan.value)
+    ]
 
 
 @router.get("/endpoint", response_model=EndpointConfig)

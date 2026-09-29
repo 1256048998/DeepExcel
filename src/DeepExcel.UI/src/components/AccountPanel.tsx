@@ -38,6 +38,17 @@ export interface AccountStatus {
   /** 'byok' | 'hosted'，由服务端决定，客户端只做展示 */
   mode: string | null
   entitlement: Entitlement | null
+  /** 托管目录：服务端给的可选模型（带每任务点数）；没有目录时为空 */
+  hosted_models?: HostedModel[] | null
+  /** 这个会话托管时实际会用的模型（宿主按目录挑好的） */
+  hosted_model?: string | null
+}
+
+export interface HostedModel {
+  model: string
+  label: string
+  points: number
+  default: boolean
 }
 
 const PLAN_LABELS: Record<string, string> = {

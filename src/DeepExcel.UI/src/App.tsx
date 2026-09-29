@@ -34,7 +34,7 @@ import type { HostTheme, ThemePref } from './utils/theme'
 import type { SelectionBrief } from './utils/selection'
 import type { PromptTemplate, PromptType } from './utils/prompts'
 import { loadPrompts } from './utils/prompts'
-import { buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
+import { HOSTED_PROVIDER, buildHostedModelOptions, buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
 import { GENERIC_STARTERS } from './components/StarterCard'
 import type { StarterView } from './components/StarterCard'
 import { recommendStarters, sampleQuestions, sampleRows, SAMPLE_NUMBER_FORMATS, SAMPLE_SHEET_NAME } from './utils/starter'
@@ -290,7 +290,9 @@ export default function App() {
   }, [modelConfigOpen])
 
   // ★ 输入框模型下拉选项。纯函数，有测试：src/utils/modelSelection.ts
-  const modelOptions: ModelOption[] = buildModelOptions(modelConfig)
+  // 托管且服务端给了目录：只列目录里的模型；否则列本地已配 Key 的厂商
+  const hostedOptions = buildHostedModelOptions(accountStatus)
+  const modelOptions: ModelOption[] = hostedOptions ?? buildModelOptions(modelConfig)
 
   // ★ 该不该提示用户先去配个模型。两个数据源都 fail-open，
   // 理由写在 computeSetupNeeded 的注释里（那里也有测试）。
@@ -299,11 +301,17 @@ export default function App() {
   // ★ 兜底：selectedModel 指向的模型可能不在选项里（比如该厂商 key 被删了）。
   // 这时 <select> 会自己显示第一个选项，但 state 还是旧值——显示和实际用的模型不一致。
   // 统一回落到第一个可用选项，保证"看到什么就是用什么"。
+  // 托管目录：当前用哪个由宿主按目录挑好（hosted_model），选择以它为准
+  const activeHostedKey = hostedOptions && accountStatus?.hosted_model
+    ? `${HOSTED_PROVIDER}::${accountStatus.hosted_model}` : null
+  const wantedModel = hostedOptions
+    ? (pendingModelSwitchRef.current?.provider === HOSTED_PROVIDER ? selectedModel : activeHostedKey ?? selectedModel)
+    : selectedModel
   const selectedModelInOptions = modelOptions.some(
-    o => `${o.provider}::${o.model}` === selectedModel
+    o => `${o.provider}::${o.model}` === wantedModel
   )
   const effectiveSelectedModel = selectedModelInOptions
-    ? selectedModel
+    ? wantedModel
     : (modelOptions[0] ? `${modelOptions[0].provider}::${modelOptions[0].model}` : '')
 
   // ★ 用户在下拉选择新模型：记录到 pendingModelSwitchRef，等 stream_end 后切换。
@@ -313,7 +321,8 @@ export default function App() {
     userPickedModelRef.current = true  // 之后刷新配置不再强制跟随主模型
     setSelectedModel(newKey)
     // 如果选的就是当前已激活的 provider+model，无需切换
-    if (modelConfig && provider === modelConfig.currentProvider && model === modelConfig.currentModel) {
+    if (provider === HOSTED_PROVIDER ? model === accountStatus?.hosted_model
+      : (modelConfig && provider === modelConfig.currentProvider && model === modelConfig.currentModel)) {
       pendingModelSwitchRef.current = null
       return
     }
@@ -333,6 +342,11 @@ export default function App() {
       )
       // 刷新 modelConfig（currentProvider/currentModel 会同步）
       await loadModelConfig()
+      if (pending.provider === HOSTED_PROVIDER) {
+        // 托管选择存在宿主里，账号状态的 hosted_model 跟着变
+        const resp = await sendToHostWithResponse({ type: 'account_status', payload: {} }, 'account_status')
+        if (resp?.type === 'account_status' && resp.payload) setAccountStatus(resp.payload as AccountStatus)
+      }
     } catch (e) {
       console.warn('[DeepExcel] switch_model failed', e)
     }
@@ -1007,7 +1021,7 @@ export default function App() {
         modelOptions={modelOptions}
         selectedModel={effectiveSelectedModel}
         onModelChange={handleModelChange}
-        onManageModels={() => setModelConfigOpen(true)}
+        onManageModels={hostedOptions ? undefined : () => setModelConfigOpen(true)}
         modelWeights={accountStatus?.mode === 'hosted' ? accountStatus.entitlement?.model_weights ?? null : null}
         modelWeightDefault={accountStatus?.mode === 'hosted' ? accountStatus.entitlement?.model_weight_default ?? null : null}
         permissionMode={permissionMode}
@@ -1068,7 +1082,7 @@ export default function App() {
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
         onStatusChange={setAccountStatus}
-        currentModel={modelConfig?.currentModel ?? null}
+        currentModel={accountStatus?.hosted_model ?? modelConfig?.currentModel ?? null}
       />
       <PromptManager
         visible={promptManagerOpen}

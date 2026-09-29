@@ -98,6 +98,14 @@ namespace DeepExcel.AddIn.Account
         [JsonPropertyName("refresh_after_seconds")]
         public int RefreshAfterSeconds { get; set; }
 
+        /// <summary>
+        /// Hosted with a catalog: the models the user may pick, in the server's
+        /// order. Null when byok or when the server has no catalog; the client
+        /// then keeps sending its local model name, as before catalogs existed.
+        /// </summary>
+        [JsonPropertyName("models")]
+        public List<HostedModelInfo> Models { get; set; }
+
         [JsonIgnore]
         public DateTimeOffset ExpiresAt
         {
@@ -130,6 +138,23 @@ namespace DeepExcel.AddIn.Account
             }
             return !string.IsNullOrEmpty(BaseUrl) && !string.IsNullOrEmpty(AuthHeader);
         }
+    }
+
+    /// <summary>One entry of the server's hosted model catalog.</summary>
+    public sealed class HostedModelInfo
+    {
+        [JsonPropertyName("model")]
+        public string Model { get; set; }
+
+        [JsonPropertyName("label")]
+        public string Label { get; set; }
+
+        /// <summary>Points one task costs. Display only; the proxy charges.</summary>
+        [JsonPropertyName("points")]
+        public int Points { get; set; }
+
+        [JsonPropertyName("default")]
+        public bool IsDefault { get; set; }
     }
 
     public sealed class AccountInfo

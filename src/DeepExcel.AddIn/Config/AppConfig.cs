@@ -18,6 +18,13 @@ namespace DeepExcel.AddIn.Config
         /// 旧 config 无此字段默认 null，前端回退到 CurrentProvider。</summary>
         public string DefaultProvider { get; set; } = null;
 
+        /// <summary>
+        /// 托管模式下用户在模型选择里挑的模型（服务端托管目录里的一项）。和 CurrentModel 分开存：
+        /// 在托管和自带 Key 之间来回切，两边各自的选择都不丢。null = 用目录默认。
+        /// WPS 的 config-store 会原样保留这个字段。
+        /// </summary>
+        public string HostedModel { get; set; } = null;
+
         /// <summary>★ 内置模型目录版本号。MigrateConfig 只在本地版本落后时才把
         /// LatestModelCatalog 推送到各 provider，避免每次启动都覆盖用户自己整理的模型列表/排序。
         /// 旧 config.json 无此字段默认 0，会执行一次升级后写入当前版本。</summary>
@@ -301,6 +308,13 @@ namespace DeepExcel.AddIn.Config
         /// <summary>
         /// 切换当前模型提供方
         /// </summary>
+        /// <summary>托管模式切模型：只记下选择，校验是否在目录里由调用方做。</summary>
+        public void SetHostedModel(string model)
+        {
+            _config.HostedModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+            Save();
+        }
+
         public bool SwitchProvider(string providerKey, string modelName = null)
         {
             if (!_config.Providers.ContainsKey(providerKey)) return false;

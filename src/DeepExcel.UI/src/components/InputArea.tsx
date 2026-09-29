@@ -37,6 +37,10 @@ export interface ModelOption {
   providerDisplayName: string  // e.g. "Claude (Anthropic)"
   model: string                // model name, e.g. "claude-sonnet-5"
   isPrimary: boolean           // 是否该 provider 的主模型（模型优先级第 1 项 / DefaultModel）
+  /** 托管目录里的模型：服务端给的每任务点数 */
+  points?: number
+  /** 显示名（托管目录的 label）；没有就显示 model */
+  label?: string
 }
 
 interface Props {

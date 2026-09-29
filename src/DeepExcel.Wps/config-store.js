@@ -185,7 +185,17 @@ class ConfigStore {
     const general = pick(source, 'General', {}) || {}
     const ui = pick(source, 'UI', {}) || {}
 
+    // 这里不认识的顶层字段（Excel 端的 Update 更新设置、托管模型 HostedModel 等）原样带回：
+    // config.json 两边共用，以前在 WPS 里保存一次就会把它们抹掉
+    const handled = ['currentprovider', 'currentmodel', 'defaultprovider', 'modelcatalogversion',
+      'providers', 'general', 'ui']
+    const passthrough = {}
+    for (const k of Object.keys(source)) {
+      if (handled.indexOf(k.toLowerCase()) < 0) passthrough[k] = source[k]
+    }
+
     return {
+      ...passthrough,
       CurrentProvider: currentProvider,
       CurrentModel: currentModel,
       DefaultProvider: providers[defaultProvider] ? defaultProvider : null,

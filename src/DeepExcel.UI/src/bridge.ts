@@ -223,6 +223,13 @@ const mockMemory = {
 
 let mockAttachments: { fileName: string; size: number }[] = []
 let mockUsageStats = true
+// 托管目录：dev 下 ?mock=hosted 时服务端"给"的模型，和当前选中的那个
+const mockHostedModels = [
+  { model: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', points: 1, default: true },
+  { model: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash', points: 1, default: false },
+  { model: 'claude-sonnet-5', label: 'Claude Sonnet 5', points: 12, default: false },
+]
+let mockHostedModel = 'deepseek-v4-pro'
 
 function emitMockTrial(requestId: string, thenStale: boolean) {
   const send = (type: string, payload: any) => listeners.forEach(l => l({ type, payload }))
@@ -278,7 +285,8 @@ function mockHostResponse(message: HostMessage) {
             mode: 'hosted', entitlement: { plan: 'pro', status: 'active', routing_mode: 'hosted',
               task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null,
               model_weights: { 'claude-opus': 58, 'claude-sonnet': 12, 'claude-haiku': 3, deepseek: 1, kimi: 2, qwen: 1, glm: 2 },
-              model_weight_default: 58 } }
+              model_weight_default: 58 },
+            hosted_models: mockHostedModels, hosted_model: mockHostedModel }
         : { state: 'signedout', server_url: null, email: null, mode: null, entitlement: null })
       return
     // 选区条：dev 下假装选中了一块数据
@@ -322,6 +330,10 @@ function mockHostResponse(message: HostMessage) {
         email: message.payload?.email ?? 'dev@example.com', mode: 'byok',
         entitlement: { plan: 'beta', status: 'active', task_limit: null, tasks_used: 0, tasks_remaining: null },
       }), 600)
+      return
+    case 'switch_model':
+      if (message.payload?.provider === 'hosted') mockHostedModel = String(message.payload?.model ?? mockHostedModel)
+      emit('model_switched', { success: true, provider: message.payload?.provider, model: message.payload?.model })
       return
     case 'get_model_config':
       emit('model_config', {

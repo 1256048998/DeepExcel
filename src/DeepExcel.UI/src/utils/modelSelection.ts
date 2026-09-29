@@ -2,6 +2,26 @@ import type { ModelConfig } from '../types'
 import type { ModelOption } from '../components/InputArea'
 import type { AccountStatus } from '../components/AccountPanel'
 
+/** 托管目录那一组在模型选择里的 provider 名，和宿主 MessageBridge.HostedProviderKey 一致 */
+export const HOSTED_PROVIDER = 'hosted'
+
+/**
+ * 托管且服务端给了目录：模型选择就列目录里的模型（带每任务点数），不再看本地厂商。
+ * 没有目录（或不是托管）返回 null，调用方退回本地厂商的模型——那是有目录之前的行为。
+ * 路由模式和目录都是服务端给的，这里只是照着排出来。
+ */
+export function buildHostedModelOptions(account: AccountStatus | null): ModelOption[] | null {
+  if (account?.mode !== 'hosted' || !account.hosted_models?.length) return null
+  return account.hosted_models.map(m => ({
+    provider: HOSTED_PROVIDER,
+    providerDisplayName: 'DeepExcel 托管',
+    model: m.model,
+    label: m.label,
+    isPrimary: m.default,
+    points: m.points,
+  }))
+}
+
 /**
  * 输入框模型下拉的选项，以及"现在到底能不能发消息"。
  *

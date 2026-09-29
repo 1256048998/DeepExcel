@@ -240,7 +240,7 @@ namespace DeepExcel.AddIn.Bridge
                 // exactly one place. AccountSession is null on a local-only
                 // install, which resolves to BYOK and behaves as it always has.
                 var routing = Account.SidecarRoutingResolver.Resolve(
-                    AccountSession?.CurrentEndpoint, baseUrl, model, apiKey);
+                    AccountSession?.CurrentEndpoint, baseUrl, model, apiKey, cfg.HostedModel);
 
                 Logger.Instance.Info("MessageBridge",
                     $"SendConfigToSession: wb={session.WorkbookName}, model={routing.Model}, " +
@@ -1355,6 +1355,12 @@ namespace DeepExcel.AddIn.Bridge
                     return MakeError("provider 和 model 不能为空");
                 }
 
+                // 托管目录里的模型：provider 固定为 "hosted"，只能选服务端目录里有的
+                if (provider == HostedProviderKey)
+                {
+                    return HandleSwitchHostedModel(model);
+                }
+
                 var cfg = ConfigManager.Instance.Current;
                 if (!cfg.Providers.ContainsKey(provider))
                 {
@@ -1396,6 +1402,34 @@ namespace DeepExcel.AddIn.Bridge
                 Logger.Instance.Error("MessageBridge", "HandleSwitchModel failed", ex);
                 return MakeError("切换模型失败");
             }
+        }
+
+        /// <summary>面板模型选择里托管目录那一组的 provider 名（不是 config.json 里的厂商）</summary>
+        internal const string HostedProviderKey = "hosted";
+
+        /// <summary>
+        /// 托管模式切模型：只能选服务端目录里有的（代理也只放行目录里的），选择存进 HostedModel，
+        /// 和自带 Key 的 CurrentModel 分开。重启 sidecar 让新模型生效，和厂商切换一样。
+        /// </summary>
+        private string HandleSwitchHostedModel(string model)
+        {
+            var endpoint = AccountSession?.CurrentEndpoint;
+            var catalog = endpoint != null && endpoint.Mode == Account.RoutingMode.Hosted ? endpoint.Models : null;
+            if (catalog == null || !catalog.Exists(m => string.Equals(m.Model, model, StringComparison.OrdinalIgnoreCase)))
+            {
+                return MakeError($"托管服务没有提供模型 {model}");
+            }
+
+            ConfigManager.Instance.SetHostedModel(model);
+            var session = GetOrCreateActiveSession();
+            if (session != null)
+            {
+                session.Sidecar.Restart();
+                SendConfigToSession(session);
+            }
+            RefreshConfigForAllSessions();
+            Logger.Instance.Info("MessageBridge", $"HandleSwitchHostedModel: model={model}, sidecarRestarted={session != null}");
+            return MakeResponse("model_switched", new { success = true, provider = HostedProviderKey, model });
         }
 
         /// <summary>面板消息里的 permission_mode（或 mode）；不认识的值返回 null，侧车保持原模式</summary>

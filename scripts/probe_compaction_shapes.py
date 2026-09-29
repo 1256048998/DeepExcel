@@ -30,6 +30,8 @@ def shape(payload):
     content = last.get("content")
     blocks = content if isinstance(content, list) else [{"type": "text", "text": str(content or "")}]
     return {
+        # 托管目录要求代理只放行目录里的模型：CLI 若在后台用别的模型（如小模型做摘要）会被拦
+        "model": payload.get("model"),
         "n_messages": len(msgs),
         "last_blocks": [(b.get("type"), (b.get("text") or "")[:70].replace("\n", " "))
                         for b in blocks if isinstance(b, dict)],
@@ -109,8 +111,11 @@ def main() -> int:
         print(json.dumps(row, ensure_ascii=False))
     turns = [r["turn"] for r in requests]
     # 三句话 = 三个任务；压缩请求必须被认成 compaction，而不是第四个任务
-    ok = turns.count("new") == 3 and "compaction" in turns
-    print(f"\nturns={turns}\n{'OK' if ok else 'FAIL'}：{turns.count('new')} 个新任务，"
+    # 所有请求（含压缩）都用主模型：代理按托管目录只放行目录里的模型，
+    # CLI 若改成在后台用别的模型（如小模型做摘要），会被代理拦掉
+    models = {r["model"] for r in requests}
+    ok = turns.count("new") == 3 and "compaction" in turns and models == {"claude-sonnet-4-5"}
+    print(f"\nmodels={sorted(models)} turns={turns}\n{'OK' if ok else 'FAIL'}：{turns.count('new')} 个新任务，"
           f"{turns.count('compaction')} 个压缩请求")
     return 0 if ok else 1
 

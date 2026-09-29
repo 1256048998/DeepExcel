@@ -137,6 +137,70 @@ namespace DeepExcel.Tests
             Assert.Equal("https://api.anthropic.com", routing.BaseUrl);
         }
 
+        private static EndpointConfig HostedWithCatalog(params (string model, bool isDefault)[] models)
+        {
+            var endpoint = Hosted();
+            endpoint.Models = new System.Collections.Generic.List<HostedModelInfo>();
+            foreach (var (model, isDefault) in models)
+            {
+                endpoint.Models.Add(new HostedModelInfo { Model = model, Label = model, Points = 1, IsDefault = isDefault });
+            }
+            return endpoint;
+        }
+
+        [Fact]
+        public void HostedWithACatalogUsesTheUsersHostedPick()
+        {
+            var endpoint = HostedWithCatalog(("deepseek-v4-pro", true), ("deepseek-v4-flash", false));
+            var routing = SidecarRoutingResolver.Resolve(endpoint, "https://x", "claude-opus-5", null, "deepseek-v4-flash");
+            Assert.Equal("deepseek-v4-flash", routing.Model);
+        }
+
+        [Fact]
+        public void HostedFallsBackToTheCatalogDefaultWhenThePickIsNoLongerOffered()
+        {
+            // A plan change can drop a model; sending it anyway would make the
+            // proxy refuse every request.
+            var endpoint = HostedWithCatalog(("deepseek-v4-flash", false), ("deepseek-v4-pro", true));
+            var routing = SidecarRoutingResolver.Resolve(endpoint, "https://x", "claude-opus-5", null, "claude-sonnet-5");
+            Assert.Equal("deepseek-v4-pro", routing.Model);
+        }
+
+        [Fact]
+        public void HostedUsesTheLocalModelWhenItIsInTheCatalogAndNothingWasPicked()
+        {
+            var endpoint = HostedWithCatalog(("deepseek-v4-pro", true), ("deepseek-v4-flash", false));
+            var routing = SidecarRoutingResolver.Resolve(endpoint, "https://x", "DeepSeek-V4-Flash", null, null);
+            Assert.Equal("deepseek-v4-flash", routing.Model);
+        }
+
+        [Fact]
+        public void HostedWithoutACatalogKeepsTheLocalModel()
+        {
+            var routing = SidecarRoutingResolver.Resolve(Hosted(), "https://x", "claude-opus-5", null, "deepseek-v4-pro");
+            Assert.Equal("claude-opus-5", routing.Model);
+        }
+
+        [Fact]
+        public void ByokIgnoresTheHostedPick()
+        {
+            var routing = SidecarRoutingResolver.Resolve(Byok(), "https://x", "kimi-k2", "sk", "deepseek-v4-pro");
+            Assert.Equal("kimi-k2", routing.Model);
+        }
+
+        [Fact]
+        public void TheCatalogIsReadFromTheServersEndpointJson()
+        {
+            var json = "{\"mode\":\"hosted\",\"base_url\":\"https://p\",\"auth_header\":\"Bearer t\",\"expires_at\":1," +
+                       "\"entitlement\":{\"plan\":\"pro\",\"status\":\"active\",\"tasks_used\":0}," +
+                       "\"models\":[{\"model\":\"deepseek-v4-pro\",\"label\":\"DeepSeek V4 Pro\",\"points\":1,\"default\":true}]}";
+            var endpoint = System.Text.Json.JsonSerializer.Deserialize<EndpointConfig>(json);
+            Assert.Single(endpoint.Models);
+            Assert.Equal("DeepSeek V4 Pro", endpoint.Models[0].Label);
+            Assert.True(endpoint.Models[0].IsDefault);
+            Assert.Equal(1, endpoint.Models[0].Points);
+        }
+
         [Fact]
         public void IsHostedReflectsTheResolvedMode()
         {

@@ -59,6 +59,49 @@ def _env_weights(name: str) -> dict[str, int]:
     return parsed
 
 
+_CATALOG_PLANS = {"beta", "free", "pro", "team"}
+
+
+def _env_catalog(name: str) -> tuple[dict, ...]:
+    """The hosted model catalog, as a JSON list (proxy/catalog.py).
+
+    Example: HOSTED_MODELS='[{"model": "deepseek-v4-pro", "label": "DeepSeek V4 Pro",
+    "default": true}, {"model": "claude-sonnet-5", "plans": ["pro", "team"]}]'.
+    ``plans`` limits an entry to those plans; omitted means every hosted plan.
+    Malformed input stops startup: offering the wrong models is a billing bug.
+    """
+    raw = _env(name)
+    if raw is None:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a JSON list, got {raw!r}") from exc
+    if not isinstance(parsed, list):
+        raise RuntimeError(f"{name} must be a JSON list of models")
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for item in parsed:
+        if not isinstance(item, dict) or not isinstance(item.get("model"), str) or not item["model"].strip():
+            raise RuntimeError(f"{name}: every entry needs a non-empty \"model\", got {item!r}")
+        model = item["model"].strip()
+        if model.lower() in seen:
+            raise RuntimeError(f"{name}: {model} is listed twice")
+        seen.add(model.lower())
+        label = item.get("label", model)
+        default = item.get("default", False)
+        plans = item.get("plans")
+        if not isinstance(label, str) or not isinstance(default, bool):
+            raise RuntimeError(f"{name}: bad label/default for {model}")
+        if plans is not None and (
+            not isinstance(plans, list) or not plans or not all(p in _CATALOG_PLANS for p in plans)
+        ):
+            raise RuntimeError(f"{name}: plans for {model} must be a non-empty subset of {sorted(_CATALOG_PLANS)}")
+        entries.append({"model": model, "label": label, "default": default,
+                        "plans": tuple(plans) if plans else None})
+    return tuple(entries)
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str = field(default_factory=lambda: _env("DEEPEXCEL_ENV", "development"))
@@ -105,6 +148,10 @@ class Settings:
     # Points per task by model prefix, overriding the price-derived defaults
     # (proxy/metering.py, model_weights).
     model_weights: dict[str, int] = field(default_factory=lambda: _env_weights("MODEL_WEIGHTS"))
+
+    # Models hosted users may pick (proxy/catalog.py). Empty means no catalog:
+    # the proxy then accepts any model an upstream serves, as it did before.
+    hosted_models: tuple[dict, ...] = field(default_factory=lambda: _env_catalog("HOSTED_MODELS"))
 
     # First admin is created from the environment on startup, never through a
     # public endpoint.

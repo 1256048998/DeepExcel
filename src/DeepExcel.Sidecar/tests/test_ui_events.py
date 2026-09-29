@@ -131,6 +131,7 @@ def test_interrupted_tool_is_reported_in_chinese():
     ('{"reason":"task_call_limit"}', "task_limit"),
     ('API Error: 402 {"detail":{"reason":"quota_insufficient","points_needed":12}}', "quota_model"),
     ('API Error: 402 {"detail":{"reason":"quota_exhausted"}}', "quota"),
+    ('API Error: 400 {"detail":{"reason":"model_not_offered","model":"claude-opus-5"}}', "model_not_found"),
     ("prompt is too long: 250000 tokens", "context_too_long"),
     ("ConnectError: getaddrinfo failed", "network"),
     ("something odd", "unknown"),

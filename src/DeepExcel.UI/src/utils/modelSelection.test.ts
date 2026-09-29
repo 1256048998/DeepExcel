@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildModelOptions, computeSetupNeeded } from './modelSelection'
+import { buildHostedModelOptions, buildModelOptions, computeSetupNeeded } from './modelSelection'
 import type { ModelConfig } from '../types'
 import type { AccountStatus } from '../components/AccountPanel'
 
@@ -118,6 +118,30 @@ describe('buildModelOptions', () => {
     }))
 
     expect(options).toEqual([])
+  })
+})
+
+describe('buildHostedModelOptions', () => {
+  const catalog = [
+    { model: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', points: 1, default: true },
+    { model: 'claude-sonnet-5', label: 'Claude Sonnet 5', points: 12, default: false },
+  ]
+  const account = (mode: string, hosted_models: typeof catalog | null) =>
+    ({ state: 'signedin', server_url: 'https://s', email: 'a@b', mode, entitlement: null, hosted_models }) as AccountStatus
+
+  it('lists the server catalog, in order, with points and the default marked', () => {
+    const options = buildHostedModelOptions(account('hosted', catalog))!
+    expect(options.map(o => [o.provider, o.model, o.label, o.points, o.isPrimary])).toEqual([
+      ['hosted', 'deepseek-v4-pro', 'DeepSeek V4 Pro', 1, true],
+      ['hosted', 'claude-sonnet-5', 'Claude Sonnet 5', 12, false],
+    ])
+  })
+
+  it('falls back to local providers without a catalog or outside hosted mode', () => {
+    expect(buildHostedModelOptions(account('hosted', null))).toBeNull()
+    expect(buildHostedModelOptions(account('hosted', []))).toBeNull()
+    expect(buildHostedModelOptions(account('byok', catalog))).toBeNull()
+    expect(buildHostedModelOptions(null)).toBeNull()
   })
 })
 

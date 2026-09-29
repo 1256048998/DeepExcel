@@ -89,7 +89,7 @@ export function ModelPicker({ options, value, onChange, disabled, onManage, weig
         aria-expanded={open}
       >
         <CurrentIcon size={16} />
-        <span className="model-picker-name">{current.model}</span>
+        <span className="model-picker-name">{current.label ?? current.model}</span>
         <svg className="model-picker-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <polyline points="6 15 12 9 18 15" />
@@ -120,10 +120,10 @@ export function ModelPicker({ options, value, onChange, disabled, onManage, weig
                       onMouseEnter={() => setActive(i)}
                       onClick={() => choose(o)}
                     >
-                      <span className="model-picker-item-name">{o.model}</span>
-                      {o.isPrimary && <span className="model-picker-badge">主模型</span>}
+                      <span className="model-picker-item-name" title={o.label ? o.model : undefined}>{o.label ?? o.model}</span>
+                      {o.isPrimary && <span className="model-picker-badge">{o.provider === 'hosted' ? '默认' : '主模型'}</span>}
                       {(() => {
-                        const points = pointsForModel(o.model, weights, weightDefault)
+                        const points = o.points ?? pointsForModel(o.model, weights, weightDefault)
                         return points === null ? null : (
                           <span className={`model-picker-points${points > 1 ? ' costly' : ''}`}
                             title={`用这个模型，每个任务扣 ${points} 点`}>
