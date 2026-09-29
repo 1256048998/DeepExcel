@@ -276,7 +276,9 @@ function mockHostResponse(message: HostMessage) {
       emit('account_status', mockScenario === 'hosted'
         ? { state: 'signedin', server_url: 'https://mock.local', email: 'dev@example.com',
             mode: 'hosted', entitlement: { plan: 'pro', status: 'active', routing_mode: 'hosted',
-              task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null } }
+              task_limit: 1000, tasks_used: 12, tasks_remaining: 988, expires_at: null,
+              model_weights: { 'claude-opus': 58, 'claude-sonnet': 12, 'claude-haiku': 3, deepseek: 1, kimi: 2, qwen: 1, glm: 2 },
+              model_weight_default: 58 } }
         : { state: 'signedout', server_url: null, email: null, mode: null, entitlement: null })
       return
     // 选区条：dev 下假装选中了一块数据

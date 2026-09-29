@@ -188,6 +188,9 @@ _ERROR_RULES = [
     # (code, 匹配片段（小写）, 中文说明, 下一步, 可重试)
     ("auth", ("401", "authentication", "invalid x-api-key", "invalid api key", "unauthorized"),
      "模型服务拒绝了凭据。", "到「模型设置」检查 API Key 是否正确、是否过期。", False),
+    # 必须排在 quota 前面：quota 的 "insufficient" 也会匹配上
+    ("quota_model", ("quota_insufficient",),
+     "剩下的额度不够用这个模型。", "换一个每个任务点数更低的模型（模型选择里标着），或充值后再试。", False),
     ("quota", ("402", "quota_exhausted", "insufficient", "余额", "billing"),
      "额度已用完或账户欠费。", "充值或升级套餐后再试。", False),
     ("task_limit", ("task_call_limit",),

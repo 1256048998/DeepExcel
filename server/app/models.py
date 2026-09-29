@@ -129,8 +129,11 @@ class Entitlement(Base):
     routing_mode: Mapped[RoutingMode] = mapped_column(
         Enum(RoutingMode, native_enum=False), default=RoutingMode.BYOK
     )
-    # NULL means unlimited. Counting is in whole tasks, not tokens, because that
-    # is the unit a user can actually predict.
+    # NULL means unlimited. The unit is the point (额度点): a task costs its
+    # model's weight, charged when the task starts -- predictable like a task
+    # count, but a task on a model that costs twelve times as much uses twelve
+    # (proxy/metering.py, model_weight). The column names predate points; one
+    # point is still one task on the baseline model.
     task_limit: Mapped[int | None] = mapped_column(Integer, default=None)
     tasks_used: Mapped[int] = mapped_column(Integer, default=0)
     period_started_at: Mapped[dt.datetime] = mapped_column(
@@ -256,6 +259,9 @@ class UsageRecord(Base):
     trace_id: Mapped[str | None] = mapped_column(String(64), default=None)
     # True on the one call that consumed a task from the quota.
     counted_as_task: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Points that call took from the quota (the model's weight at the time), 0
+    # on every other call. Recorded rather than recomputed: weights change.
+    points: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     __table_args__ = (

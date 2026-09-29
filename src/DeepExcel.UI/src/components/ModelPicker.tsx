@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { pointsForModel, pointsLabel } from '../utils/points'
+import type { ModelWeights } from '../utils/points'
 import type { KeyboardEvent } from 'react'
 import { providerIcons } from '../providerIcons'
 import type { ModelOption } from './InputArea'
@@ -11,6 +13,9 @@ interface Props {
   disabled?: boolean
   /** 弹层底部「管理模型」：打开模型配置 */
   onManage?: () => void
+  /** 托管模式下服务端给的每任务点数（按模型名前缀）；自带 Key 时为空，不显示 */
+  weights?: ModelWeights | null
+  weightDefault?: number | null
 }
 
 const keyOf = (o: ModelOption) => `${o.provider}::${o.model}`
@@ -20,7 +25,7 @@ const keyOf = (o: ModelOption) => `${o.provider}::${o.model}`
  * 键盘：↑↓ 移动、Enter 选中、Esc 关闭；点外面关闭。
  * 只展示已连接供应商的模型；成本、速度这类信息要等服务端目录下发，客户端不自己编。
  */
-export function ModelPicker({ options, value, onChange, disabled, onManage }: Props) {
+export function ModelPicker({ options, value, onChange, disabled, onManage, weights, weightDefault }: Props) {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -117,6 +122,15 @@ export function ModelPicker({ options, value, onChange, disabled, onManage }: Pr
                     >
                       <span className="model-picker-item-name">{o.model}</span>
                       {o.isPrimary && <span className="model-picker-badge">主模型</span>}
+                      {(() => {
+                        const points = pointsForModel(o.model, weights, weightDefault)
+                        return points === null ? null : (
+                          <span className={`model-picker-points${points > 1 ? ' costly' : ''}`}
+                            title={`用这个模型，每个任务扣 ${points} 点`}>
+                            {pointsLabel(points)}
+                          </span>
+                        )
+                      })()}
                       {selected && (
                         <svg className="model-picker-check" width="13" height="13" viewBox="0 0 24 24" fill="none"
                           stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

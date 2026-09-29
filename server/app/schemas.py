@@ -63,6 +63,13 @@ class EntitlementView(BaseModel):
     tasks_used: int
     tasks_remaining: int | None
     expires_at: dt.datetime | None
+    # Hosted only: points one task costs, by model prefix. The client shows it
+    # next to each model and never computes a charge itself.
+    model_weights: dict[str, int] | None = None
+    # What a model matching none of those prefixes costs (the most expensive
+    # weight; see metering.model_weight). Sent so the panel shows the real
+    # charge instead of guessing or showing nothing.
+    model_weight_default: int | None = None
 
 
 class UserView(BaseModel):

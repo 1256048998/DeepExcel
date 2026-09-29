@@ -36,7 +36,7 @@ from ..models import (
     utcnow,
 )
 from ..security import ACCESS_AUDIENCE_PROXY, decode_access_token
-from .metering import StreamUsageCollector, Usage, estimate_cost_usd, usage_from_payload
+from .metering import StreamUsageCollector, Usage, estimate_cost_usd, model_weight, usage_from_payload
 from .tasks import COMPACTION, NEW_TURN, TASK_WINDOW, classify_turn, clean_trace_id, strip_window_suffix
 from .upstream import load_upstreams, select as select_upstreams
 
@@ -107,18 +107,35 @@ def _check_quota(db: Session, user: User) -> Entitlement:
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"reason": "not_hosted", "message": "当前账号未启用托管转发。"},
         )
-    remaining = entitlement.tasks_remaining
-    if remaining is not None and remaining <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={
-                "reason": "quota_exhausted",
-                "task_limit": entitlement.task_limit,
-                "tasks_used": entitlement.tasks_used,
-                "message": "本期额度已用完。",
-            },
-        )
     return entitlement
+
+
+def _check_points(entitlement: Entitlement, model: str) -> None:
+    """Refuses to start a task the remaining points cannot pay for.
+
+    Only a new task is checked: points are taken when a task starts, so a task
+    already running is paid for and is never cut off halfway because the
+    balance reached zero. Refused before forwarding, so the refusal costs nothing.
+    """
+    remaining = entitlement.tasks_remaining
+    if remaining is None:
+        return
+    needed = model_weight(model, get_settings().model_weights)
+    if remaining >= needed:
+        return
+    exhausted = remaining <= 0
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail={
+            "reason": "quota_exhausted" if exhausted else "quota_insufficient",
+            "task_limit": entitlement.task_limit,
+            "tasks_used": entitlement.tasks_used,
+            "points_needed": needed,
+            "points_remaining": remaining,
+            "message": "本期额度已用完。" if exhausted else
+                       f"额度不够用这个模型：每个任务 {needed} 点，本期还剩 {remaining} 点。可以换一个点数更低的模型。",
+        },
+    )
 
 
 def _trace_window_start() -> dt.datetime:
@@ -216,8 +233,8 @@ def _record_usage(
     status_code: int, duration_ms: int,
     trace_id: str | None = None, new_user_turn: bool = True,
 ) -> None:
-    """Writes the usage row on its own session, and consumes a task if this call
-    starts one (see proxy/tasks.py).
+    """Writes the usage row on its own session, and takes the task's points if
+    this call starts one (see proxy/tasks.py and metering.model_weight).
 
     Separate from the request session because it runs after the response has
     been streamed, by which time the request's session is gone. Failures here
@@ -232,6 +249,7 @@ def _record_usage(
                     counts = not _task_already_counted(db, user_id, trace_id)
                 else:
                     counts = new_user_turn
+            points = model_weight(model, get_settings().model_weights) if counts else 0
             db.add(
                 UsageRecord(
                     user_id=user_id,
@@ -246,12 +264,13 @@ def _record_usage(
                     duration_ms=duration_ms,
                     trace_id=trace_id,
                     counted_as_task=counts,
+                    points=points,
                 )
             )
             if counts:
                 entitlement = db.scalar(select(Entitlement).where(Entitlement.user_id == user_id))
                 if entitlement is not None:
-                    entitlement.tasks_used += 1
+                    entitlement.tasks_used += points
             db.commit()
     except Exception:  # pragma: no cover - accounting must never break serving
         pass
@@ -280,7 +299,7 @@ async def messages(
             detail={"reason": "hosted_routing_disabled", "message": "托管转发未启用。"},
         )
 
-    _check_quota(db, user)
+    entitlement = _check_quota(db, user)
 
     body = await request.body()
     try:
@@ -305,6 +324,8 @@ async def messages(
         # to belong to, the marker is just text a client chose to send.
         turn = NEW_TURN
     new_user_turn = turn == NEW_TURN
+    if new_user_turn:
+        _check_points(entitlement, model)
     _check_task_budget(db, user.id, trace_id, new_user_turn)
 
     candidates = select_upstreams(load_upstreams(), model)
@@ -434,6 +455,7 @@ def my_usage(
             func.coalesce(func.sum(UsageRecord.input_tokens), 0),
             func.coalesce(func.sum(UsageRecord.output_tokens), 0),
             func.coalesce(func.sum(UsageRecord.cost_usd), 0.0),
+            func.coalesce(func.sum(UsageRecord.points), 0),
         ).where(*conditions)
     ).one()
 
@@ -445,6 +467,7 @@ def my_usage(
         "input_tokens": int(row[1]),
         "output_tokens": int(row[2]),
         "cost_usd": round(float(row[3]), 4),
+        "points": int(row[4]),
         "tasks_used": entitlement.tasks_used if entitlement else 0,
         "tasks_remaining": entitlement.tasks_remaining if entitlement else None,
     }

@@ -5021,3 +5021,55 @@ details[open] > summary .chevron-icon {
 }
 
 .privacy-switch.on .privacy-switch-knob { transform: translateX(16px); }
+
+/* 托管模式：每个任务扣几点（服务端给的数） */
+.model-picker-points {
+  flex: none;
+  padding: 0 6px;
+  border-radius: var(--de-radius-pill);
+  background: var(--de-bg-muted);
+  color: var(--de-text-tertiary);
+  font-size: var(--de-fs-xs);
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.model-picker-points.costly {
+  background: var(--de-warning-soft);
+  color: var(--de-warning);
+}
+
+.account-points {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 2px;
+}
+
+.account-points-hint {
+  font-size: var(--de-fs-xs);
+  line-height: 1.5;
+  color: var(--de-text-tertiary);
+}
+
+.account-points-table { display: flex; flex-wrap: wrap; gap: 4px; }
+
+.account-points-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--de-border);
+  border-radius: var(--de-radius-pill);
+  background: var(--de-bg-subtle);
+  font-size: var(--de-fs-xs);
+  color: var(--de-text-secondary);
+}
+
+.account-points-chip b { color: var(--de-text); font-weight: 600; }
+
+/* 账号面板（已登录）：.config-body 是给模型配置的左右分栏用的，没有内边距，这里补上 */
+.config-section.account-summary {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 16px 16px;
+  overflow-y: auto;
+}

@@ -1008,6 +1008,8 @@ export default function App() {
         selectedModel={effectiveSelectedModel}
         onModelChange={handleModelChange}
         onManageModels={() => setModelConfigOpen(true)}
+        modelWeights={accountStatus?.mode === 'hosted' ? accountStatus.entitlement?.model_weights ?? null : null}
+        modelWeightDefault={accountStatus?.mode === 'hosted' ? accountStatus.entitlement?.model_weight_default ?? null : null}
         permissionMode={permissionMode}
         onPermissionModeChange={changePermissionMode}
         selection={selectionDismissed ? null : selection}
@@ -1066,6 +1068,7 @@ export default function App() {
         open={accountOpen}
         onClose={() => setAccountOpen(false)}
         onStatusChange={setAccountStatus}
+        currentModel={modelConfig?.currentModel ?? null}
       />
       <PromptManager
         visible={promptManagerOpen}

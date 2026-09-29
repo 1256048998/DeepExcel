@@ -129,6 +129,8 @@ def test_interrupted_tool_is_reported_in_chinese():
 @pytest.mark.parametrize("text,code", [
     ("HTTP 429 Too Many Requests", "rate_limit"),
     ('{"reason":"task_call_limit"}', "task_limit"),
+    ('API Error: 402 {"detail":{"reason":"quota_insufficient","points_needed":12}}', "quota_model"),
+    ('API Error: 402 {"detail":{"reason":"quota_exhausted"}}', "quota"),
     ("prompt is too long: 250000 tokens", "context_too_long"),
     ("ConnectError: getaddrinfo failed", "network"),
     ("something odd", "unknown"),

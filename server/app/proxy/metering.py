@@ -123,3 +123,55 @@ def estimate_cost_usd(model: str, usage: Usage) -> float:
     # invoice is worse than a missing one, and the gap is visible in the admin
     # dashboard.
     return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Quota points
+# ---------------------------------------------------------------------------
+#
+# The quota is sold in points. A task costs its model's weight in points, taken
+# when the task starts: one point is one task on the baseline model, and a model
+# whose typical task costs twelve times as much costs twelve points. Charging at
+# the start keeps the number predictable -- the user sees "12 点/任务" before
+# sending, not a bill afterwards -- and the per-task call cap
+# (MAX_CALLS_PER_TASK) is what bounds a task that runs long.
+#
+# Weights are derived from DEFAULT_PRICES so they cannot drift from cost;
+# MODEL_WEIGHTS in the environment overrides individual prefixes when pricing is
+# a business decision rather than arithmetic.
+
+BASELINE_MODEL = "deepseek"
+
+# What an agent task on a spreadsheet typically uses: the loop re-sends the
+# growing context on every call, so input dominates.
+TYPICAL_TASK = Usage(input_tokens=60_000, output_tokens=3_000)
+
+
+def _price_ratio_weight(prefix: str) -> int:
+    baseline = estimate_cost_usd(BASELINE_MODEL, TYPICAL_TASK)
+    ratio = estimate_cost_usd(prefix, TYPICAL_TASK) / baseline
+    return max(1, int(ratio + 0.5))  # round half up; round() would round 2.5 to 2
+
+
+def model_weights(overrides: dict[str, int] | None = None) -> dict[str, int]:
+    """Points per task for every priced model prefix, overrides applied."""
+    weights = {prefix: _price_ratio_weight(prefix) for prefix in DEFAULT_PRICES}
+    weights.update(overrides or {})
+    return weights
+
+
+def model_weight(model: str, overrides: dict[str, int] | None = None) -> int:
+    """Points one task on ``model`` costs.
+
+    An unpriced model is charged as the most expensive priced one: charging it
+    one point would let an expensive model run at the baseline rate until
+    someone noticed, while an over-charge is visible in the model picker at once
+    and is fixed by adding the price.
+    """
+    weights = model_weights(overrides)
+    name = (model or "").lower()
+    # Longest prefix first, so an override for "claude-sonnet-5" beats "claude-sonnet".
+    for prefix in sorted(weights, key=len, reverse=True):
+        if name.startswith(prefix.lower()):
+            return weights[prefix]
+    return max(weights.values())

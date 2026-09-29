@@ -60,7 +60,7 @@ stdout 一行一个 JSON：
 
 ### error.code
 
-整轮错误（`kind: error`）：`auth`、`quota`、`task_limit`、`rate_limit`、`context_too_long`、
+整轮错误（`kind: error`）：`auth`、`quota_model`（剩余点数不够用所选模型）、`quota`、`task_limit`、`rate_limit`、`context_too_long`、
 `model_not_found`、`timeout`、`network`、`cli_missing`、`unknown`。分类规则在
 `src/DeepExcel.Sidecar/ui_events.py` 的 `_ERROR_RULES`。
 

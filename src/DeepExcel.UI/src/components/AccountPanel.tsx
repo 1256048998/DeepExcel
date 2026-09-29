@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { pointsForModel, pointsLabel } from '../utils/points'
 import { sendToHostWithResponse } from '../bridge'
 import { LogoMark } from './Logo'
 
@@ -14,14 +15,20 @@ interface Props {
   variant?: 'panel' | 'welcome'
   /** welcome：「使用自己的 API Key」——关掉欢迎页并打开模型设置 */
   onUseOwnKey?: () => void
+  /** 当前选中的模型名：托管模式下标出它每个任务扣几点 */
+  currentModel?: string | null
 }
 
 export interface Entitlement {
   plan: string
   status: string
+  // 单位是「点」：一个任务按所用模型扣点（服务端 proxy/metering.py），字段名是早先按次数计时留下的
   task_limit: number | null
   tasks_used: number
   tasks_remaining: number | null
+  /** 托管模式：每个任务扣几点，按模型名前缀；只做展示 */
+  model_weights?: Record<string, number> | null
+  model_weight_default?: number | null
 }
 
 export interface AccountStatus {
@@ -51,7 +58,35 @@ const STATE_LABELS: Record<AccountStatus['state'], string> = {
 /** 密码下限与服务端 RegisterRequest 保持一致 */
 const MIN_PASSWORD_LENGTH = 10
 
-export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel', onUseOwnKey }: Props) {
+// 托管模式：当前模型每个任务扣几点 + 各模型点数表（数都是服务端给的）
+function PointsRows({ weights, fallback, currentModel }: {
+  weights: Record<string, number>
+  fallback: number | null
+  currentModel: string | null
+}) {
+  const current = currentModel ? pointsForModel(currentModel, weights, fallback) : null
+  const table = Object.entries(weights).sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+  return (
+    <>
+      {currentModel && current !== null && (
+        <div className="account-row">
+          <span className="account-label">当前模型</span>
+          <span>{currentModel} · {pointsLabel(current)}</span>
+        </div>
+      )}
+      <div className="account-points">
+        <div className="account-points-hint">每个任务开始时按所用模型扣点，任务中途不会再扣；DeepSeek 一个任务 1 点。</div>
+        <div className="account-points-table">
+          {table.map(([prefix, n]) => (
+            <span key={prefix} className="account-points-chip">{prefix} <b>{n}</b></span>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
+export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel', onUseOwnKey, currentModel }: Props) {
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [mode, setMode] = useState<'signin' | 'register'>('signin')
   const [serverUrl, setServerUrl] = useState('')
@@ -364,9 +399,16 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
                     <div className="account-row">
                       <span className="account-label">本期额度</span>
                       <span>
-                        已用 {status.entitlement.tasks_used} / {status.entitlement.task_limit}
+                        已用 {status.entitlement.tasks_used} / {status.entitlement.task_limit} 点
                       </span>
                     </div>
+                  )}
+                  {status.mode === 'hosted' && status.entitlement.model_weights && (
+                    <PointsRows
+                      weights={status.entitlement.model_weights}
+                      fallback={status.entitlement.model_weight_default ?? null}
+                      currentModel={currentModel ?? null}
+                    />
                   )}
                 </>
               )}

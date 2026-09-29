@@ -38,22 +38,24 @@ from ..schemas import OrderCreate, OrderView, PlanView
 router = APIRouter(tags=["billing"])
 
 
-# Prices in cents. Per-task rather than per-token because a user can predict how
-# many tables they will process in a month and cannot predict tokens.
+# Prices in cents. Quotas are in points (task_limit): a task costs its model's
+# weight, one point on the baseline model (proxy/metering.py). Per-task rather
+# than per-token because a user can predict how many tables they will process in
+# a month and cannot predict tokens; weighted because models differ in cost.
 CATALOG: dict[str, dict] = {
     "free": {
         "label": "免费",
         "price_cents": 0,
         "task_limit": 50,
         "routing": RoutingMode.HOSTED,
-        "summary": "每月 50 次任务，用于试用",
+        "summary": "每月 50 点，用于试用（DeepSeek 一个任务 1 点）",
     },
     "pro": {
         "label": "专业版",
         "price_cents": 3900,
         "task_limit": 1000,
         "routing": RoutingMode.HOSTED,
-        "summary": "每月 1000 次任务",
+        "summary": "每月 1000 点（DeepSeek 一个任务 1 点，更贵的模型按成本多扣）",
     },
     "team": {
         "label": "团队版",

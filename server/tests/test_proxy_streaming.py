@@ -160,7 +160,9 @@ def test_the_users_key_is_never_forwarded_and_ours_is(hosted, monkeypatch):
     assert "authorization" not in {k.lower() for k in sent}
 
 
-def test_successful_call_consumes_one_task(hosted, monkeypatch):
+def test_successful_call_takes_the_tasks_points(hosted, monkeypatch):
+    from app.proxy.metering import model_weight
+
     client, token, user_id = hosted
     upstream = FakeUpstream([(200, STREAM_BODY, None)])
     _install(monkeypatch, upstream)
@@ -172,7 +174,9 @@ def test_successful_call_consumes_one_task(hosted, monkeypatch):
 
     with get_session_factory()() as db:
         entitlement = db.scalar(select(Entitlement).where(Entitlement.user_id == user_id))
-        assert entitlement.tasks_used == 1
+        # One task on claude-opus-5 costs that model's weight in points.
+        assert entitlement.tasks_used == model_weight("claude-opus-5")
+        assert model_weight("claude-opus-5") > 1
 
 
 def test_upstream_5xx_fails_over_to_the_next(hosted, monkeypatch):
@@ -293,4 +297,6 @@ def test_usage_endpoint_reports_what_was_metered(hosted, monkeypatch):
     assert usage["calls"] == 1
     assert usage["input_tokens"] == 1200
     assert usage["output_tokens"] == 350
-    assert usage["tasks_used"] == 1
+    from app.proxy.metering import model_weight
+    assert usage["tasks_used"] == model_weight("claude-opus-5")
+    assert usage["points"] == model_weight("claude-opus-5")

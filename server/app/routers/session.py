@@ -27,11 +27,14 @@ from ..deps import get_current_user
 from ..models import Entitlement, Installation, RoutingMode, User, utcnow
 from ..schemas import EndpointConfig, EntitlementView
 from ..security import ACCESS_AUDIENCE_PROXY, issue_access_token
+from ..proxy.metering import model_weights
 
 router = APIRouter(prefix="/api/v1/session", tags=["session"])
 
 
 def _entitlement_view(entitlement: Entitlement) -> EntitlementView:
+    weights = (model_weights(get_settings().model_weights)
+               if entitlement.routing_mode is RoutingMode.HOSTED else None)
     return EntitlementView(
         plan=entitlement.plan.value,
         status=entitlement.status.value,
@@ -40,6 +43,8 @@ def _entitlement_view(entitlement: Entitlement) -> EntitlementView:
         tasks_used=entitlement.tasks_used,
         tasks_remaining=entitlement.tasks_remaining,
         expires_at=entitlement.expires_at,
+        model_weights=weights,
+        model_weight_default=max(weights.values()) if weights else None,
     )
 
 
@@ -97,7 +102,7 @@ def resolve_endpoint(user: User, entitlement: Entitlement) -> EndpointConfig:
                 "reason": "quota_exhausted",
                 "task_limit": entitlement.task_limit,
                 "tasks_used": entitlement.tasks_used,
-                "message": "本期任务额度已用完。",
+                "message": "本期额度已用完。",
             },
         )
 

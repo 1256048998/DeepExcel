@@ -11,6 +11,7 @@ describe('errorActions', () => {
   it('points each class of error at the place that fixes it', () => {
     expect(errorActions({ code: 'model_not_found' }, true)).toEqual(['settings'])
     expect(errorActions({ code: 'quota' }, true)).toEqual(['account'])
+    expect(errorActions({ code: 'quota_model' }, true)).toEqual(['account'])
     expect(errorActions({ code: 'task_limit' }, true)).toEqual(['account'])
     expect(errorActions({ code: 'context_too_long' }, true)).toEqual(['new_chat'])
     expect(errorActions({ code: 'unknown', retryable: true, detail: 'Traceback…' }, true)).toEqual(['retry', 'copy_detail'])

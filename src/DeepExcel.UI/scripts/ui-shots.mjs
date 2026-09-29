@@ -152,6 +152,20 @@ const scenes = {
     await page.click('.model-picker-btn')
   },
 
+  // 托管模式的账号面板：额度按点显示，标出当前模型每个任务扣几点和各模型点数表（数都来自服务端）
+  'account-hosted': {
+    mock: 'hosted',
+    run: async ({ page }) => {
+      await page.click('.header-avatar')
+      await page.waitForSelector('.account-points-chip', { timeout: 3000 })
+      const text = await page.$eval('.account-panel, [class*="account"]', el => el.closest('[class*="overlay"]')?.textContent ?? el.textContent)
+      const problems = []
+      if (!/已用 \d+ \/ \d+ 点/.test(text)) problems.push('额度没有按点显示')
+      if (!/deepseek-v4-pro · 1 点\/任务/.test(text)) problems.push('没有标出当前模型的点数')
+      return problems
+    },
+  },
+
   // 数据与隐私：从「更多」打开，展开字段清单
   privacy: async ({ page }) => {
     await page.click('[aria-label="更多"]')
@@ -284,7 +298,8 @@ async function findOverflow(page) {
 
 async function main() {
   mkdirSync(outDir, { recursive: true })
-  const server = await createServer({ root, server: { port: 5199, strictPort: false }, logLevel: 'error' })
+  // port 0：让系统挑空闲端口。固定端口会撞上 Windows 动态保留的端口段（Hyper-V / WinNAT，EACCES）
+  const server = await createServer({ root, server: { port: 0 }, logLevel: 'error' })
   await server.listen()
   const base = server.resolvedUrls.local[0]
   const browser = await chromium.launch({ channel: 'msedge', headless: true })

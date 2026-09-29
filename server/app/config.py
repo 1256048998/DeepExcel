@@ -8,6 +8,7 @@ provider key (BYOK), and setting it is what turns on hosted routing.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 from dataclasses import dataclass, field
@@ -35,6 +36,27 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_weights(name: str) -> dict[str, int]:
+    """Model-prefix -> points-per-task overrides, as a JSON object.
+
+    Example: MODEL_WEIGHTS='{"claude-opus": 40, "deepseek": 1}'. A malformed
+    value stops startup: a pricing mistake should fail loudly, not bill wrongly.
+    """
+    raw = _env(name)
+    if raw is None:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a JSON object, got {raw!r}") from exc
+    if not isinstance(parsed, dict) or not all(
+        isinstance(k, str) and k and isinstance(v, int) and not isinstance(v, bool) and v >= 1
+        for k, v in parsed.items()
+    ):
+        raise RuntimeError(f"{name} must map model prefixes to integers >= 1, got {raw!r}")
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -79,6 +101,10 @@ class Settings:
     max_calls_per_task: int = field(
         default_factory=lambda: _env_int("MAX_CALLS_PER_TASK", 150)
     )
+
+    # Points per task by model prefix, overriding the price-derived defaults
+    # (proxy/metering.py, model_weights).
+    model_weights: dict[str, int] = field(default_factory=lambda: _env_weights("MODEL_WEIGHTS"))
 
     # First admin is created from the environment on startup, never through a
     # public endpoint.

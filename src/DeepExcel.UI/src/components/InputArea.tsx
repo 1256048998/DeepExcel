@@ -72,6 +72,9 @@ interface Props {
   onModelChange?: (provider: string, model: string) => void
   // ★ 模型弹层底部「管理模型与密钥」：打开模型配置
   onManageModels?: () => void
+  // 托管模式：服务端给的每任务点数，模型弹层里逐个标出
+  modelWeights?: Record<string, number> | null
+  modelWeightDefault?: number | null
   // 权限模式：点按钮或 Shift+Tab 轮换（任务进行中也能切，立即生效）
   permissionMode?: PermissionMode
   onPermissionModeChange?: (mode: PermissionMode) => void
@@ -99,7 +102,7 @@ export function InputArea({
   attachments = [], onDeleteAttachment,
   permissionPending = false,
   prompts = [], onCreatePrompt,
-  modelOptions = [], selectedModel, onModelChange, onManageModels,
+  modelOptions = [], selectedModel, onModelChange, onManageModels, modelWeights, modelWeightDefault,
   permissionMode = 'default', onPermissionModeChange,
   selection, onDismissSelection,
 }: Props) {
@@ -327,6 +330,8 @@ export function InputArea({
               onChange={onModelChange}
               disabled={disabled}
               onManage={onManageModels}
+              weights={modelWeights}
+              weightDefault={modelWeightDefault}
             />
           )}
           {disabled && allowQueue && value.trim() && (

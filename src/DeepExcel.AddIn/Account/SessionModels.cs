@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 
 namespace DeepExcel.AddIn.Account
@@ -55,6 +56,18 @@ namespace DeepExcel.AddIn.Account
 
         [JsonPropertyName("tasks_remaining")]
         public int? TasksRemaining { get; set; }
+
+        /// <summary>
+        /// Hosted only: points one task costs, by model-name prefix. Passed to the
+        /// panel as-is for display next to each model; the charge itself is the
+        /// server's (proxy/metering.py). Null for BYOK.
+        /// </summary>
+        [JsonPropertyName("model_weights")]
+        public Dictionary<string, int> ModelWeights { get; set; }
+
+        /// <summary>Points for a model matching no prefix above (hosted only).</summary>
+        [JsonPropertyName("model_weight_default")]
+        public int? ModelWeightDefault { get; set; }
     }
 
     /// <summary>

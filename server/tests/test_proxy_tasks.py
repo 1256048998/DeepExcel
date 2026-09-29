@@ -30,7 +30,9 @@ def _tool_result_turn():
     ]}
 
 
-def _post(client, token, messages, trace=None, model="claude-opus-5"):
+# The baseline model: one task is one point, so these tests count tasks directly.
+# Weighting by model is covered in test_proxy_points.py.
+def _post(client, token, messages, trace=None, model="deepseek-v4-pro"):
     headers = {"Authorization": f"Bearer {token}"}
     if trace is not None:
         headers["x-trace-id"] = trace

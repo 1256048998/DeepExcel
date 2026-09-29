@@ -18,7 +18,7 @@ export function errorActions(error: ErrorLike, canRetry: boolean): ErrorAction[]
   const actions: ErrorAction[] = []
   if (error.retryable && canRetry) actions.push('retry')
   if (error.code === 'auth' || error.code === 'model_not_found') actions.push('settings')
-  if (error.code === 'quota' || error.code === 'task_limit') actions.push('account')
+  if (error.code === 'quota' || error.code === 'quota_model' || error.code === 'task_limit') actions.push('account')
   if (error.code === 'context_too_long') actions.push('new_chat')
   if (error.detail) actions.push('copy_detail')
   return actions

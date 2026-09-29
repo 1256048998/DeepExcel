@@ -295,7 +295,7 @@ function Users() {
               <td>
                 {user.entitlement?.task_limit === null || user.entitlement == null
                   ? '不限'
-                  : `${user.entitlement.tasks_used} / ${user.entitlement.task_limit}`}
+                  : `${user.entitlement.tasks_used} / ${user.entitlement.task_limit} 点`}
               </td>
               <td className="muted">{formatTime(user.created_at)}</td>
               <td>
