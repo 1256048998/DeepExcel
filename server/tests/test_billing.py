@@ -8,12 +8,34 @@ on a channel later does not also mean debugging entitlements for the first time.
 from __future__ import annotations
 
 import datetime as dt
+import os
 
+import pytest
 from sqlalchemy import select
 
+from app import config
 from app.db import get_session_factory
 from app.models import Entitlement, RoutingMode
-from tests.conftest import admin_token, auth_headers, register
+from tests.conftest import ADMIN_EMAIL, ADMIN_PASSWORD, admin_token, auth_headers, register
+
+HOSTED_URL = "https://api.deepexcel.example/v1"
+
+
+# Pro and team route through the hosted proxy, and the server will neither sell
+# nor activate them while there is none (the last tests in this file). So the
+# activation mechanics are tested against a deployment where hosting exists.
+@pytest.fixture
+def client(make_client):
+    return make_client(HOSTED_PROXY_BASE_URL=HOSTED_URL)
+
+
+@pytest.fixture
+def admin_client(make_client):
+    return make_client(
+        HOSTED_PROXY_BASE_URL=HOSTED_URL,
+        BOOTSTRAP_ADMIN_EMAIL=ADMIN_EMAIL,
+        BOOTSTRAP_ADMIN_PASSWORD=ADMIN_PASSWORD,
+    )
 
 
 def test_plans_are_published_so_pricing_needs_no_client_release(client):
@@ -190,3 +212,51 @@ def test_users_cannot_activate_their_own_orders(client):
         f"/admin/api/orders/{order['order_no']}/mark-paid", headers=auth_headers(tokens)
     )
     assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Hosted plans before hosting exists
+# ---------------------------------------------------------------------------
+
+def test_hosted_plans_are_not_sold_before_hosting_exists(make_client):
+    """Activating pro or team routes the account through our proxy. Selling one
+    with no proxy configured means the customer pays and then cannot work."""
+    client = make_client()
+    tokens = register(client)
+
+    for plan in ["pro", "team"]:
+        response = client.post("/api/v1/orders", json={"plan": plan}, headers=auth_headers(tokens))
+        assert response.status_code == 409
+        assert response.json()["detail"]["reason"] == "hosted_routing_unavailable"
+
+    # Their traffic never touches us, so byok needs nothing we lack.
+    byok = client.post("/api/v1/orders", json={"plan": "byok"}, headers=auth_headers(tokens))
+    assert byok.status_code == 201
+    assert client.get("/api/v1/orders", headers=auth_headers(tokens)).json()[0]["plan"] == "byok"
+
+
+def test_a_pending_hosted_order_is_not_activated_once_hosting_is_gone(admin_client):
+    """An order placed while hosting existed, marked paid after it was withdrawn:
+    refused, and nothing about the account changes."""
+    tokens = register(admin_client)
+    headers = auth_headers(tokens)
+    user_id = admin_client.get("/api/v1/auth/me", headers=headers).json()["id"]
+    ops = admin_token(admin_client)
+    order = admin_client.post("/api/v1/orders", json={"plan": "pro"}, headers=headers).json()
+
+    os.environ.pop("HOSTED_PROXY_BASE_URL")
+    config.reset_settings_for_tests()
+
+    response = admin_client.post(f"/admin/api/orders/{order['order_no']}/mark-paid", headers=ops)
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "hosted_routing_unavailable"
+
+    assert admin_client.get("/admin/api/orders", headers=ops).json()[0]["status"] == "pending"
+    with get_session_factory()() as db:
+        entitlement = db.scalar(select(Entitlement).where(Entitlement.user_id == user_id))
+        assert entitlement.plan.value == "beta"
+        assert entitlement.routing_mode is RoutingMode.BYOK
+    actions = [row["action"] for row in admin_client.get("/admin/api/audit", headers=ops).json()]
+    assert "order.mark_paid" not in actions
+    # And the user can still work.
+    assert admin_client.get("/api/v1/session/endpoint", headers=headers).json()["mode"] == "byok"

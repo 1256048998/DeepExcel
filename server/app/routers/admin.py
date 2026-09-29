@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import get_db
 from ..deps import get_current_admin
 from ..models import (
@@ -201,6 +202,18 @@ def update_entitlement(
     entitlement = user.entitlement
     if entitlement is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User has no entitlement")
+    if payload.routing_mode == "hosted" and not get_settings().hosted_routing_available:
+        # Checked before anything is applied, so a refused request changes
+        # nothing. The session endpoint would answer this user 503 from their
+        # next refresh on -- one dropdown away from locking a customer out.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "reason": "hosted_routing_unavailable",
+                "message": "托管转发尚未开通（服务端未配置 HOSTED_PROXY_BASE_URL），"
+                           "切过去该用户会立即无法使用。",
+            },
+        )
 
     changes: dict[str, object] = {}
     if payload.plan is not None:

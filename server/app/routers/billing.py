@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import get_db
 from ..deps import get_current_admin, get_current_user
 from ..models import (
@@ -73,6 +74,22 @@ CATALOG: dict[str, dict] = {
 }
 
 
+def _require_deliverable(plan_key: str, message: str) -> None:
+    """Refuses a hosted plan while this deployment cannot host anyone.
+
+    Activating one switches the account to hosted routing, and with no proxy
+    configured the session endpoint then answers that user 503: the customer
+    who just paid could no longer work at all. So the plan is neither sold nor
+    activated until hosting exists, and byok stays available throughout.
+    """
+    plan = CATALOG[plan_key]
+    if plan["routing"] is RoutingMode.HOSTED and not get_settings().hosted_routing_available:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "hosted_routing_unavailable", "message": message.format(label=plan["label"])},
+        )
+
+
 @router.get("/api/v1/plans", response_model=list[PlanView])
 def list_plans() -> list[PlanView]:
     """Published so the client can render pricing without shipping a build."""
@@ -99,6 +116,7 @@ def create_order(
     if plan is None or plan["price_cents"] == 0:
         # The free tier is granted, not purchased.
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无效的套餐")
+    _require_deliverable(payload.plan, "{label}需要托管转发，托管尚未开通，暂时只能购买「自带密钥」版。")
 
     order = Order(
         order_no=utcnow().strftime("%Y%m%d") + secrets.token_hex(6).upper(),
@@ -174,6 +192,9 @@ def mark_paid(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订单不存在")
     if order.status is OrderStatus.PAID:
         return order
+    # The order may predate hosting being withdrawn, or this check.
+    _require_deliverable(
+        order.plan.value, "{label}需要托管转发，托管尚未开通。现在标记已支付，该用户会立即无法使用。")
 
     order.channel = "manual"
     activate(db, order)

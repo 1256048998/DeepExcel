@@ -33,9 +33,10 @@
 
 **M6 切换客户端零改动**——这一条有测试守着：`tests/test_endpoint_routing.py::test_flipping_to_hosted_requires_no_client_change`。
 
-两个刻意的行为：
+三个刻意的行为：
 
-- **权益配置为 hosted 但服务端没配代理地址 → 503，不静默降级为 byok。** hosted 用户本地没有配供应商 Key，悄悄给 byok 会让他们看到一堆无法诊断的鉴权错误，真正的原因（我们的部署）反而不可见。
+- **没配代理地址时，谁也进不了 hosted。** 管理员把出口切到托管、专业版 / 团队版下单、给这两档的订单标记已支付，都返回 409 `hosted_routing_unavailable`，什么都不改。以前这三条路都通，结果是用户（包括刚付完钱的）下次刷新出口配置就被 503 挡住、完全用不了。「自带密钥」档不受影响。锁定测试：`test_nobody_is_routed_to_a_proxy_that_does_not_exist`、`test_hosted_plans_are_not_sold_before_hosting_exists`。
+- **权益配置为 hosted 但服务端没配代理地址 → 503，不静默降级为 byok。** 上一条挡住了新进入，这条处理代理被撤掉时已经在 hosted 的人。hosted 用户本地没有配供应商 Key，悄悄给 byok 会让他们看到一堆无法诊断的鉴权错误，真正的原因（我们的部署）反而不可见。
 - **配额只对 hosted 生效。** BYOK 用户直接付钱给供应商，对他们计数等于为我们没承载的流量收费。
 
 ## 本地运行

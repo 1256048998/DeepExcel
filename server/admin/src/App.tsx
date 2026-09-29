@@ -17,6 +17,22 @@ function formatTime(value: string | null): string {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
+// 与 server/app/routers/billing.py 的 CATALOG 一致：这两档付费后走托管转发。
+// 这里只用来提前说明，真正拦截的是服务端。
+const HOSTED_PLANS = new Set(['pro', 'team'])
+
+// 托管转发是否已开通。null 表示还没问到：此时什么都不禁用，服务端的 409 兜底。
+function useHostedAvailable(): boolean | null {
+  const [available, setAvailable] = useState<boolean | null>(null)
+  useEffect(() => {
+    api
+      .meta()
+      .then((meta) => setAvailable(meta.hosted_routing_available))
+      .catch(() => setAvailable(null))
+  }, [])
+  return available
+}
+
 function formatMoney(cents: number, currency: string): string {
   return `${currency === 'CNY' ? '¥' : '$'}${(cents / 100).toFixed(2)}`
 }
@@ -202,6 +218,7 @@ function Users() {
   const [users, setUsers] = useState<User[]>([])
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
+  const hostedAvailable = useHostedAvailable()
 
   const load = useCallback(async (q?: string) => {
     try {
@@ -260,14 +277,20 @@ function Users() {
               <td>{PLAN_LABELS[user.entitlement?.plan ?? ''] ?? user.entitlement?.plan ?? '—'}</td>
               <td>
                 <select
-                  value={(user.entitlement as { routing_mode?: string })?.routing_mode ?? 'byok'}
+                  value={user.entitlement?.routing_mode ?? 'byok'}
                   onChange={(e) =>
                     void act(api.updateEntitlement(user.id, { routing_mode: e.target.value }))
                   }
                 >
                   <option value="byok">自带密钥</option>
-                  <option value="hosted">托管转发</option>
+                  {/* 托管没开时切过去，这个用户下次刷新出口配置就会被拒、完全用不了 */}
+                  <option value="hosted" disabled={hostedAvailable === false}>
+                    {hostedAvailable === false ? '托管转发（未开通）' : '托管转发'}
+                  </option>
                 </select>
+                {hostedAvailable === false && user.entitlement?.routing_mode === 'hosted' && (
+                  <div className="warn">托管未开通，该用户现在无法使用，请切回自带密钥</div>
+                )}
               </td>
               <td>
                 {user.entitlement?.task_limit === null || user.entitlement == null
@@ -396,6 +419,7 @@ function Invites() {
 function Orders() {
   const [orders, setOrders] = useState<Order[]>([])
   const [error, setError] = useState('')
+  const hostedAvailable = useHostedAvailable()
 
   const load = useCallback(async () => {
     try {
@@ -416,6 +440,12 @@ function Orders() {
         支付渠道尚未接入（微信支付 / 支付宝都需要企业商户号）。收到款后在这里手工标记为已支付，
         权益会立即生效。每次标记都会写入审计日志。
       </p>
+      {hostedAvailable === false && (
+        <p className="hint warn">
+          托管转发尚未开通：专业版 / 团队版付费后走托管，现在标记已支付会让用户立即无法使用，
+          所以暂不能标记，服务端也不再接受这两档的新订单。「自带密钥」不受影响。
+        </p>
+      )}
       {error && <p className="error">{error}</p>}
       <table>
         <thead>
@@ -441,16 +471,23 @@ function Orders() {
               </td>
               <td className="muted">{formatTime(order.created_at)}</td>
               <td>
-                {order.status === 'pending' && (
-                  <button
-                    onClick={async () => {
-                      await api.markPaid(order.order_no)
-                      await load()
-                    }}
-                  >
-                    标记已支付
-                  </button>
-                )}
+                {order.status === 'pending' &&
+                  (hostedAvailable === false && HOSTED_PLANS.has(order.plan) ? (
+                    <span className="muted">托管未开通</span>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.markPaid(order.order_no)
+                          await load()
+                        } catch (e) {
+                          setError(e instanceof Error ? e.message : '操作失败')
+                        }
+                      }}
+                    >
+                      标记已支付
+                    </button>
+                  ))}
               </td>
             </tr>
           ))}

@@ -59,6 +59,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 export interface Entitlement {
   plan: string
   status: string
+  routing_mode: string
   task_limit: number | null
   tasks_used: number
   tasks_remaining: number | null
@@ -121,7 +122,15 @@ export interface AuditEntry {
   created_at: string
 }
 
+export interface Meta {
+  invite_required: boolean
+  // 服务端没配托管转发时为 false。这时切到托管、或给专业版 / 团队版标记已支付，
+  // 服务端都会拒绝（409）——界面据此提前说清楚，而不是让人点了才报错。
+  hosted_routing_available: boolean
+}
+
 export const api = {
+  meta: () => request<Meta>('/api/v1/meta'),
   login: (email: string, password: string) =>
     request<{ access_token: string; expires_at: number }>('/admin/api/auth/login', {
       method: 'POST',

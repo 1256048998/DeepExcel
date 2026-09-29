@@ -113,15 +113,55 @@ def test_hosted_without_configured_proxy_fails_loudly(admin_client):
     A hosted user has no local provider key. Quietly answering "byok" would
     leave them with authentication errors pointing at a provider they never
     configured, and the real cause -- our deployment -- would be invisible.
+
+    Nobody can be routed to a proxy that is not configured (next test), so the
+    way into this state is the proxy being withdrawn after users were moved.
     """
+    import os
+
+    from app import config
+
     tokens = register(admin_client)
     headers = auth_headers(tokens)
     user_id = admin_client.get("/api/v1/auth/me", headers=headers).json()["id"]
+    os.environ["HOSTED_PROXY_BASE_URL"] = HOSTED_URL
+    config.reset_settings_for_tests()
     set_routing_mode(admin_client, admin_token(admin_client), user_id, "hosted")
+
+    os.environ.pop("HOSTED_PROXY_BASE_URL")
+    config.reset_settings_for_tests()
 
     response = admin_client.get("/api/v1/session/endpoint", headers=headers)
     assert response.status_code == 503
     assert response.json()["detail"]["reason"] == "hosted_routing_unavailable"
+
+
+def test_nobody_is_routed_to_a_proxy_that_does_not_exist(admin_client):
+    """The admin dropdown used to allow it, and the user's next endpoint
+    refresh answered 503: one click away from locking a customer out."""
+    tokens = register(admin_client)
+    headers = auth_headers(tokens)
+    user_id = admin_client.get("/api/v1/auth/me", headers=headers).json()["id"]
+    ops = admin_token(admin_client)
+
+    response = admin_client.post(
+        f"/admin/api/users/{user_id}/entitlement",
+        # Combined with another change, to show a refusal applies nothing.
+        json={"routing_mode": "hosted", "task_limit": 5},
+        headers=ops,
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["reason"] == "hosted_routing_unavailable"
+
+    after = admin_client.get("/api/v1/session/endpoint", headers=headers)
+    assert after.status_code == 200
+    assert after.json()["mode"] == "byok"
+    assert after.json()["entitlement"]["task_limit"] is None
+    actions = [row["action"] for row in admin_client.get("/admin/api/audit", headers=ops).json()]
+    assert "entitlement.update" not in actions
+
+    # Moving someone back to byok never needs anything we lack.
+    set_routing_mode(admin_client, ops, user_id, "byok")
 
 
 def test_inactive_entitlement_is_payment_required(admin_client):

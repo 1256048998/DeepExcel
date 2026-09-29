@@ -100,7 +100,7 @@ def create_app() -> FastAPI:
         """What this deployment expects of a client, without a client release."""
         return {
             "invite_required": settings.require_invite_code,
-            "hosted_routing_available": bool(settings.hosted_proxy_base_url),
+            "hosted_routing_available": settings.hosted_routing_available,
             "telemetry_enabled": settings.telemetry_enabled,
             "update_feed_available": bool(settings.update_manifest_dir),
             "min_client_version": "0.5.0",

@@ -155,21 +155,25 @@ def seed() -> None:
                         json={"plan": plan, "months": months})["order_no"]
 
         call("POST", f"/admin/api/orders/{order('wangfang', 'byok', 12)}/mark-paid", admin)
-        call("POST", f"/admin/api/orders/{order('chenjing', 'pro', 1)}/mark-paid", admin)
-        order("liuyang", "pro", 3)
-        order("sunli", "team", 1)
+        order("chenjing", "byok", 1)
         call("POST", f"/admin/api/users/{ids['zhouqiang']}/status", admin, json={"status": "disabled"})
+        print(f"Seeded {len(PEOPLE)} users, {len(invites)} invites, 2 orders.")
 
-        # A paid pro plan switches the account to hosted routing. Report what
-        # that user's client is told right now. Only tokens are printed: the
-        # messages are Chinese and a Windows console may not be able to encode them.
-        endpoint = client.get("/api/v1/session/endpoint",
-                              headers={"Authorization": f"Bearer {tokens['chenjing']}"})
-        body = endpoint.json()
-        detail = body.get("detail")
-        outcome = body.get("mode") or (detail.get("reason") if isinstance(detail, dict) else detail)
-        print(f"Seeded {len(PEOPLE)} users, {len(invites)} invites, 4 orders.")
-        print(f"chenjing (paid pro) GET /api/v1/session/endpoint -> {endpoint.status_code} {outcome}")
+        # Unless this server has hosting configured, both of these must be
+        # refused: either one would leave the user unable to work.
+        checks = {
+            "order pro": client.post("/api/v1/orders", json={"plan": "pro"},
+                                     headers={"Authorization": f"Bearer {tokens['liuyang']}"}),
+            "route to hosted": client.post(f"/admin/api/users/{ids['sunli']}/entitlement",
+                                           json={"routing_mode": "hosted"},
+                                           headers={"Authorization": f"Bearer {admin}"}),
+        }
+        for name, response in checks.items():
+            # Only the reason token: the messages are Chinese, and a Windows
+            # console may not be able to encode them.
+            detail = response.json().get("detail")
+            reason = detail.get("reason") if isinstance(detail, dict) else "accepted"
+            print(f"{name} -> {response.status_code} {reason}")
 
 
 def _usage(rng: random.Random, now: dt.datetime, version: str) -> list[dict]:

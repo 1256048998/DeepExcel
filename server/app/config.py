@@ -124,6 +124,16 @@ class Settings:
             object.__setattr__(self, "jwt_secret", secrets.token_urlsafe(48))
 
     @property
+    def hosted_routing_available(self) -> bool:
+        """Whether this deployment can carry a hosted user's model traffic.
+
+        Every path that would put a user on hosted routing checks this first:
+        a hosted user has no provider key of their own, so routing them to a
+        proxy that does not exist leaves them unable to work at all.
+        """
+        return bool(self.hosted_proxy_base_url)
+
+    @property
     def is_production(self) -> bool:
         return self.environment.lower() in {"production", "prod"}
 

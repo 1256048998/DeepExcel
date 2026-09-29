@@ -59,7 +59,7 @@ def resolve_endpoint(user: User, entitlement: Entitlement) -> EndpointConfig:
         )
 
     wants_hosted = entitlement.routing_mode is RoutingMode.HOSTED
-    proxy_configured = bool(settings.hosted_proxy_base_url)
+    proxy_configured = settings.hosted_routing_available
 
     if wants_hosted and not proxy_configured:
         # Do NOT silently fall back to BYOK. A user provisioned for hosted has
