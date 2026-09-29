@@ -31,6 +31,7 @@ from ..models import (
     RoutingMode,
     TelemetryEvent,
     User,
+    _as_utc,
     utcnow,
 )
 from ..schemas import (
@@ -225,12 +226,15 @@ def update_entitlement(
     if payload.routing_mode is not None:
         entitlement.routing_mode = RoutingMode(payload.routing_mode)
         changes["routing_mode"] = payload.routing_mode
-    if payload.task_limit is not None:
+    # For these two null is a value -- "unlimited", "never expires" -- so the
+    # question is whether the field was sent at all, not whether it is null.
+    # Otherwise a limit or an expiry, once set, could never be lifted.
+    if "task_limit" in payload.model_fields_set:
         entitlement.task_limit = payload.task_limit
         changes["task_limit"] = payload.task_limit
-    if payload.expires_at is not None:
+    if "expires_at" in payload.model_fields_set:
         entitlement.expires_at = payload.expires_at
-        changes["expires_at"] = payload.expires_at.isoformat()
+        changes["expires_at"] = payload.expires_at.isoformat() if payload.expires_at else None
 
     _audit(db, admin, "entitlement.update", user.email, changes)
     return user
@@ -403,7 +407,7 @@ def audit_log(
             "action": row.action,
             "target": row.target,
             "detail": json.loads(row.detail) if row.detail else None,
-            "created_at": row.created_at,
+            "created_at": _as_utc(row.created_at),
         }
         for row in rows
     ]
