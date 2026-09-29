@@ -6,6 +6,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "src/DeepExcel.UI"],
       "port": 5173
+    },
+    {
+      "name": "server-api",
+      "runtimeExecutable": "server/.venv/Scripts/python.exe",
+      "runtimeArgs": ["server/scripts/dev_server.py"],
+      "port": 8000
+    },
+    {
+      "name": "admin-console",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "server/admin"],
+      "port": 8080
     }
   ]
 }

@@ -51,6 +51,17 @@ python -m venv .venv
 
 打开 http://127.0.0.1:8000/docs。
 
+### 本地预览运营后台
+
+```bash
+.venv/Scripts/python.exe scripts/dev_server.py        # API，自动生成管理员账号
+.venv/Scripts/python.exe scripts/dev_server.py seed   # 灌演示数据（另开一个终端）
+npm run dev --prefix admin                            # 后台界面 http://localhost:8080
+```
+
+管理员账号写在 `server/.dev/admin.json`，数据库也在这个目录（已 gitignore），删掉目录即重来。
+`.claude/launch.json` 里的 `server-api` / `admin-console` 就是前后两条。
+
 ```bash
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```

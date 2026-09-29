@@ -5,3 +5,5 @@
 backups/
 __pycache__/
 .pytest_cache/
+# server/scripts/dev_server.py: local SQLite database and generated operator credentials
+.dev/
