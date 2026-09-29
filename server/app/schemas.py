@@ -9,9 +9,20 @@ configuration change rather than a client release.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+def _utc(value: dt.datetime) -> dt.datetime:
+    """Everything is stored in UTC, but SQLite hands it back naive. Say so on
+    the wire: a client parses a naive ISO string as its own local time, which
+    put every time in the admin console hours off and moved expiry dates."""
+    return value.replace(tzinfo=dt.timezone.utc) if value.tzinfo is None else value
+
+
+# For timestamps in responses.
+UtcDateTime = Annotated[dt.datetime, AfterValidator(_utc)]
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +73,7 @@ class EntitlementView(BaseModel):
     task_limit: int | None
     tasks_used: int
     tasks_remaining: int | None
-    expires_at: dt.datetime | None
+    expires_at: UtcDateTime | None
 
 
 class UserView(BaseModel):
@@ -72,7 +83,7 @@ class UserView(BaseModel):
     email: str
     display_name: str | None
     status: str
-    created_at: dt.datetime
+    created_at: UtcDateTime
     entitlement: EntitlementView | None = None
 
 
@@ -163,9 +174,9 @@ class InviteCodeView(BaseModel):
     note: str | None
     max_uses: int
     used_count: int
-    expires_at: dt.datetime | None
+    expires_at: UtcDateTime | None
     disabled: bool
-    created_at: dt.datetime
+    created_at: UtcDateTime
 
 
 class UserStatusUpdate(BaseModel):
@@ -173,6 +184,9 @@ class UserStatusUpdate(BaseModel):
 
 
 class EntitlementUpdate(BaseModel):
+    """Only the fields sent are changed. task_limit and expires_at accept an
+    explicit null, meaning unlimited / never expires."""
+
     plan: Literal["beta", "free", "pro", "team", "byok"] | None = None
     status: Literal["active", "expired", "suspended"] | None = None
     routing_mode: Literal["byok", "hosted"] | None = None
@@ -223,5 +237,5 @@ class OrderView(BaseModel):
     currency: str
     status: str
     channel: str | None
-    created_at: dt.datetime
-    paid_at: dt.datetime | None
+    created_at: UtcDateTime
+    paid_at: UtcDateTime | None

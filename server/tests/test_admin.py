@@ -279,3 +279,60 @@ def test_tool_errors_export_groups_by_tool_and_code(admin_client):
 def test_tool_errors_export_is_admin_only(admin_client):
     user_headers = auth_headers(register(admin_client))
     assert admin_client.get("/admin/api/tool-errors", headers=user_headers).status_code == 401
+
+
+def test_limits_and_expiry_can_be_lifted_again(admin_client):
+    """null is a value for these two: without it, a limit or an expiry an
+    operator set by hand could never be removed."""
+    tokens = register(admin_client)
+    headers = auth_headers(tokens)
+    user_id = admin_client.get("/api/v1/auth/me", headers=headers).json()["id"]
+    ops = admin_token(admin_client)
+    url = f"/admin/api/users/{user_id}/entitlement"
+
+    set_both = admin_client.post(url, json={
+        "task_limit": 10, "expires_at": "2030-01-01T00:00:00+00:00",
+    }, headers=ops).json()["entitlement"]
+    assert set_both["task_limit"] == 10
+    assert set_both["expires_at"].startswith("2030-01-01")
+
+    # Omitted means untouched.
+    unchanged = admin_client.post(url, json={"plan": "pro"}, headers=ops).json()["entitlement"]
+    assert unchanged["plan"] == "pro"
+    assert unchanged["task_limit"] == 10
+    assert unchanged["expires_at"].startswith("2030-01-01")
+
+    lifted = admin_client.post(url, json={"task_limit": None, "expires_at": None},
+                               headers=ops).json()["entitlement"]
+    assert lifted["task_limit"] is None
+    assert lifted["expires_at"] is None
+    assert lifted["plan"] == "pro"
+
+    audit = admin_client.get("/admin/api/audit", headers=ops).json()[0]
+    assert audit["detail"] == {"task_limit": None, "expires_at": None}
+
+
+def test_timestamps_say_they_are_utc(admin_client):
+    """SQLite returns naive datetimes. Sent as-is, the console parsed them as
+    local time: every time was hours off and an expiry set to Dec 31 showed as
+    Jan 1."""
+    import datetime as dt
+
+    tokens = register(admin_client)
+    user_id = admin_client.get("/api/v1/auth/me", headers=auth_headers(tokens)).json()["id"]
+    ops = admin_token(admin_client)
+    admin_client.post(f"/admin/api/users/{user_id}/entitlement",
+                      json={"expires_at": "2030-01-01T07:59:59+00:00"}, headers=ops)
+    admin_client.post("/admin/api/invites", json={}, headers=ops)
+
+    user = admin_client.get("/admin/api/users", headers=ops).json()[0]
+    stamps = [
+        user["created_at"],
+        user["entitlement"]["expires_at"],
+        admin_client.get("/admin/api/invites", headers=ops).json()[0]["created_at"],
+        admin_client.get("/admin/api/audit", headers=ops).json()[0]["created_at"],
+    ]
+    for stamp in stamps:
+        parsed = dt.datetime.fromisoformat(stamp)
+        assert parsed.utcoffset() == dt.timedelta(0), stamp
+    assert dt.datetime.fromisoformat(stamps[1]) == dt.datetime(2030, 1, 1, 7, 59, 59, tzinfo=dt.timezone.utc)

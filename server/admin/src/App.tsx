@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { api, ApiError, getToken, setToken } from './api'
-import type { AuditEntry, InviteCode, Order, Stats, User } from './api'
+import type { AuditEntry, Entitlement, InviteCode, Order, Stats, User } from './api'
 
 type Tab = 'dashboard' | 'users' | 'invites' | 'orders' | 'audit'
 
@@ -214,32 +214,171 @@ function Card({ label, value, highlight, warn }: {
 
 // ---------------------------------------------------------------------------
 
+const PAGE_SIZE = 50
+
+const ENTITLEMENT_STATUS_LABELS: Record<string, string> = {
+  active: '有效',
+  expired: '已过期',
+  suspended: '已暂停',
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleDateString('zh-CN')
+}
+
+// <input type="date"> 用本地日期，和上面的显示保持一致
+function toDateInput(value: string | null): string {
+  if (!value) return ''
+  const date = new Date(value)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+// 到期日当天（本地时间）结束前都算有效
+function endOfDay(date: string): string {
+  return new Date(`${date}T23:59:59`).toISOString()
+}
+
+function EntitlementEditor({ entitlement, onSave, onCancel }: {
+  entitlement: Entitlement
+  onSave: (patch: Record<string, unknown>) => Promise<boolean>
+  onCancel: () => void
+}) {
+  const [plan, setPlan] = useState(entitlement.plan)
+  const [status, setStatus] = useState(entitlement.status)
+  const [limit, setLimit] = useState(entitlement.task_limit === null ? '' : String(entitlement.task_limit))
+  const [expiry, setExpiry] = useState(toDateInput(entitlement.expires_at))
+  const [busy, setBusy] = useState(false)
+  const [problem, setProblem] = useState('')
+
+  const save = async () => {
+    const newLimit = limit.trim() === '' ? null : Number(limit)
+    if (newLimit !== null && (!Number.isInteger(newLimit) || newLimit < 0)) {
+      setProblem('额度填 0 或正整数；留空表示不限')
+      return
+    }
+    // 只发改了的字段：服务端只改收到的字段，null 对额度和到期表示"不限"
+    const patch: Record<string, unknown> = {}
+    if (plan !== entitlement.plan) patch.plan = plan
+    if (status !== entitlement.status) patch.status = status
+    if (newLimit !== entitlement.task_limit) patch.task_limit = newLimit
+    if (expiry !== toDateInput(entitlement.expires_at)) patch.expires_at = expiry ? endOfDay(expiry) : null
+    if (Object.keys(patch).length === 0) {
+      onCancel()
+      return
+    }
+    setBusy(true)
+    setProblem('')
+    await onSave(patch)
+    setBusy(false)
+  }
+
+  return (
+    <div className="editor">
+      <label>
+        套餐
+        <select value={plan} onChange={(e) => setPlan(e.target.value)} disabled={busy}>
+          {Object.entries(PLAN_LABELS).map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        权益状态
+        <select value={status} onChange={(e) => setStatus(e.target.value)} disabled={busy}>
+          {Object.entries(ENTITLEMENT_STATUS_LABELS).map(([key, label]) => (
+            <option key={key} value={key}>{label}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        每月额度（次）
+        <input
+          type="number"
+          min={0}
+          placeholder="不限"
+          value={limit}
+          onChange={(e) => setLimit(e.target.value)}
+          disabled={busy}
+        />
+      </label>
+      <label>
+        到期日
+        <input type="date" value={expiry} onChange={(e) => setExpiry(e.target.value)} disabled={busy} />
+      </label>
+      <div className="editor-actions">
+        <button onClick={() => void save()} disabled={busy}>{busy ? '保存中…' : '保存'}</button>
+        <button onClick={onCancel} disabled={busy}>取消</button>
+      </div>
+      {problem && <p className="error">{problem}</p>}
+      <p className="hint">
+        额度留空 = 不限，到期日留空 = 不过期。这里改套餐不收费、也不改出口，适合手工赠送或补偿；
+        用户付费请走订单。额度只对托管转发的用户生效，已用次数不会被清零。每次保存都记入审计。
+      </p>
+    </div>
+  )
+}
+
 function Users() {
   const [users, setUsers] = useState<User[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  const [page, setPage] = useState(0)
   const [query, setQuery] = useState('')
+  const [search, setSearch] = useState('')
+  const [editing, setEditing] = useState<number | null>(null)
   const [error, setError] = useState('')
   const hostedAvailable = useHostedAvailable()
 
-  const load = useCallback(async (q?: string) => {
+  const load = useCallback(async () => {
     try {
-      setUsers(await api.users(q))
+      // 多取一条来判断有没有下一页：接口不返回总数
+      const rows = await api.users(search, page * PAGE_SIZE, PAGE_SIZE + 1)
+      setUsers(rows.slice(0, PAGE_SIZE))
+      setHasMore(rows.length > PAGE_SIZE)
       setError('')
     } catch (e) {
       setError(e instanceof Error ? e.message : '加载失败')
     }
-  }, [])
+  }, [search, page])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const act = async (work: Promise<unknown>) => {
+  const runSearch = () => {
+    setEditing(null)
+    const next = query.trim()
+    if (page === 0 && next === search) void load()
+    else {
+      setPage(0)
+      setSearch(next)
+    }
+  }
+
+  const goTo = (target: number) => {
+    setEditing(null)
+    setPage(target)
+  }
+
+  const act = async (work: Promise<unknown>): Promise<boolean> => {
     try {
       await work
-      await load(query)
+      await load()
+      return true
     } catch (e) {
       setError(e instanceof Error ? e.message : '操作失败')
+      return false
     }
+  }
+
+  const toggleStatus = (user: User) => {
+    if (
+      user.status === 'active' &&
+      !window.confirm(`停用 ${user.email}？\n\n该用户会立即退出登录，恢复之前无法使用。`)
+    ) {
+      return
+    }
+    void act(api.setUserStatus(user.id, user.status === 'active' ? 'disabled' : 'active'))
   }
 
   return (
@@ -249,9 +388,9 @@ function Users() {
           placeholder="按邮箱搜索"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && void load(query)}
+          onKeyDown={(e) => e.key === 'Enter' && runSearch()}
         />
-        <button onClick={() => void load(query)}>搜索</button>
+        <button onClick={runSearch}>搜索</button>
       </div>
       {error && <p className="error">{error}</p>}
 
@@ -268,52 +407,95 @@ function Users() {
           </tr>
         </thead>
         <tbody>
-          {users.map((user) => (
-            <tr key={user.id}>
-              <td>{user.email}</td>
-              <td className={user.status === 'active' ? 'ok' : 'warn'}>
-                {user.status === 'active' ? '正常' : '已停用'}
-              </td>
-              <td>{PLAN_LABELS[user.entitlement?.plan ?? ''] ?? user.entitlement?.plan ?? '—'}</td>
-              <td>
-                <select
-                  value={user.entitlement?.routing_mode ?? 'byok'}
-                  onChange={(e) =>
-                    void act(api.updateEntitlement(user.id, { routing_mode: e.target.value }))
-                  }
-                >
-                  <option value="byok">自带密钥</option>
-                  {/* 托管没开时切过去，这个用户下次刷新出口配置就会被拒、完全用不了 */}
-                  <option value="hosted" disabled={hostedAvailable === false}>
-                    {hostedAvailable === false ? '托管转发（未开通）' : '托管转发'}
-                  </option>
-                </select>
-                {hostedAvailable === false && user.entitlement?.routing_mode === 'hosted' && (
-                  <div className="warn">托管未开通，该用户现在无法使用，请切回自带密钥</div>
+          {users.map((user) => {
+            const entitlement = user.entitlement
+            const expired =
+              entitlement?.expires_at != null && new Date(entitlement.expires_at) <= new Date()
+            return (
+              <Fragment key={user.id}>
+                <tr>
+                  <td>{user.email}</td>
+                  <td className={user.status === 'active' ? 'ok' : 'warn'}>
+                    {user.status === 'active' ? '正常' : '已停用'}
+                  </td>
+                  <td>
+                    {PLAN_LABELS[entitlement?.plan ?? ''] ?? entitlement?.plan ?? '—'}
+                    {entitlement && entitlement.status !== 'active' && (
+                      <span className="warn">
+                        {' · '}
+                        {ENTITLEMENT_STATUS_LABELS[entitlement.status] ?? entitlement.status}
+                      </span>
+                    )}
+                    {entitlement?.expires_at && (
+                      <div className={expired ? 'warn' : 'muted'}>
+                        {expired ? '已于 ' : '到期 '}
+                        {formatDate(entitlement.expires_at)}
+                        {expired ? ' 到期' : ''}
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <select
+                      value={entitlement?.routing_mode ?? 'byok'}
+                      onChange={(e) =>
+                        void act(api.updateEntitlement(user.id, { routing_mode: e.target.value }))
+                      }
+                    >
+                      <option value="byok">自带密钥</option>
+                      {/* 托管没开时切过去，这个用户下次刷新出口配置就会被拒、完全用不了 */}
+                      <option value="hosted" disabled={hostedAvailable === false}>
+                        {hostedAvailable === false ? '托管转发（未开通）' : '托管转发'}
+                      </option>
+                    </select>
+                    {hostedAvailable === false && entitlement?.routing_mode === 'hosted' && (
+                      <div className="warn">托管未开通，该用户现在无法使用，请切回自带密钥</div>
+                    )}
+                  </td>
+                  <td>
+                    {entitlement?.task_limit === null || entitlement == null
+                      ? '不限'
+                      : `${entitlement.tasks_used} / ${entitlement.task_limit}`}
+                  </td>
+                  <td className="muted">{formatTime(user.created_at)}</td>
+                  <td className="actions">
+                    {entitlement && (
+                      <button onClick={() => setEditing(editing === user.id ? null : user.id)}>
+                        {editing === user.id ? '收起' : '编辑'}
+                      </button>
+                    )}
+                    <button onClick={() => toggleStatus(user)}>
+                      {user.status === 'active' ? '停用' : '恢复'}
+                    </button>
+                  </td>
+                </tr>
+                {editing === user.id && entitlement && (
+                  <tr>
+                    <td colSpan={7}>
+                      <EntitlementEditor
+                        entitlement={entitlement}
+                        onCancel={() => setEditing(null)}
+                        onSave={async (patch) => {
+                          const ok = await act(api.updateEntitlement(user.id, patch))
+                          if (ok) setEditing(null)
+                          return ok
+                        }}
+                      />
+                    </td>
+                  </tr>
                 )}
-              </td>
-              <td>
-                {user.entitlement?.task_limit === null || user.entitlement == null
-                  ? '不限'
-                  : `${user.entitlement.tasks_used} / ${user.entitlement.task_limit}`}
-              </td>
-              <td className="muted">{formatTime(user.created_at)}</td>
-              <td>
-                <button
-                  onClick={() =>
-                    void act(
-                      api.setUserStatus(user.id, user.status === 'active' ? 'disabled' : 'active'),
-                    )
-                  }
-                >
-                  {user.status === 'active' ? '停用' : '恢复'}
-                </button>
-              </td>
-            </tr>
-          ))}
+              </Fragment>
+            )
+          })}
         </tbody>
       </table>
       {users.length === 0 && <p className="muted">没有用户</p>}
+      {(page > 0 || hasMore) && (
+        <div className="pager">
+          <button disabled={page === 0} onClick={() => goTo(page - 1)}>上一页</button>
+          <span className="muted">第 {page + 1} 页</span>
+          <button disabled={!hasMore} onClick={() => goTo(page + 1)}>下一页</button>
+        </div>
+      )}
     </div>
   )
 }
@@ -397,8 +579,19 @@ function Invites() {
                 {!invite.disabled && (
                   <button
                     onClick={async () => {
-                      await api.disableInvite(invite.id)
-                      await load()
+                      if (
+                        !window.confirm(
+                          `停用邀请码 ${invite.code}？\n\n已经用它注册的用户不受影响，但这个码不能再用来注册。`,
+                        )
+                      ) {
+                        return
+                      }
+                      try {
+                        await api.disableInvite(invite.id)
+                        await load()
+                      } catch (e) {
+                        setError(e instanceof Error ? e.message : '操作失败')
+                      }
                     }}
                   >
                     停用
@@ -477,6 +670,16 @@ function Orders() {
                   ) : (
                     <button
                       onClick={async () => {
+                        const plan = PLAN_LABELS[order.plan] ?? order.plan
+                        if (
+                          !window.confirm(
+                            `确认已收到 ${formatMoney(order.amount_cents, order.currency)}？\n\n` +
+                              `订单 ${order.order_no}：${plan} ${order.months} 个月。标记后权益立即生效，` +
+                              '记入审计日志，无法撤销。',
+                          )
+                        ) {
+                          return
+                        }
                         try {
                           await api.markPaid(order.order_no)
                           await load()
@@ -502,13 +705,19 @@ function Orders() {
 
 function Audit() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    api.audit().then(setEntries).catch(() => setEntries([]))
+    // 加载失败要说出来：显示成"暂无记录"会让人以为什么都没发生过
+    api
+      .audit()
+      .then(setEntries)
+      .catch((e) => setError(e instanceof Error ? e.message : '加载失败'))
   }, [])
 
   return (
     <div>
+      {error && <p className="error">{error}</p>}
       <p className="hint">所有管理操作都会记录在这里——"是谁禁用了这个账号"需要有答案。</p>
       <table>
         <thead>
@@ -532,7 +741,7 @@ function Audit() {
           ))}
         </tbody>
       </table>
-      {entries.length === 0 && <p className="muted">暂无记录</p>}
+      {entries.length === 0 && !error && <p className="muted">暂无记录</p>}
     </div>
   )
 }

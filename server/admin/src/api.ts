@@ -138,8 +138,11 @@ export const api = {
     }),
   me: () => request<{ id: number; email: string }>('/admin/api/auth/me'),
   stats: () => request<Stats>('/admin/api/stats'),
-  users: (query?: string) =>
-    request<User[]>(`/admin/api/users${query ? `?q=${encodeURIComponent(query)}` : ''}`),
+  users: (query = '', offset = 0, limit = 50) => {
+    const params = new URLSearchParams({ offset: String(offset), limit: String(limit) })
+    if (query) params.set('q', query)
+    return request<User[]>(`/admin/api/users?${params}`)
+  },
   setUserStatus: (id: number, status: 'active' | 'disabled') =>
     request<User>(`/admin/api/users/${id}/status`, {
       method: 'POST',

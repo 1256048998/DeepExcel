@@ -105,3 +105,12 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
 }
 /* 需要人注意的说明（例如托管未开通时的订单页），与普通灰色说明区分 */
 .hint.warn { color: #b26a00; }
+
+/* 用户行内展开的权益编辑 */
+.editor { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; padding: 6px 0; }
+.editor label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.editor-actions { display: flex; gap: 8px; }
+.editor .hint, .editor .error { flex-basis: 100%; margin: 0; }
+td.actions { white-space: nowrap; }
+td.actions button + button { margin-left: 6px; }
+.pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
