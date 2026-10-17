@@ -242,15 +242,75 @@ end;
 // ---------------------------------------------------------------------------
 // HKLM residual detection (legacy machine-wide install via register.ps1)
 // ---------------------------------------------------------------------------
-function HklmResidualExists(): Boolean;
+// Every key here is owned exclusively by DeepExcel, so deleting it cannot
+// affect other software. Both registry views matter: 32-bit Excel reads the
+// WOW6432Node copy. Same list as RegistryRepair.HklmResidualPaths.
+const
+  HklmResidualCount = 4;
+
+function HklmResidualPath(const index: Integer): string;
 begin
-  Result :=
-    RegKeyExists(HKLM, 'SOFTWARE\Classes\CLSID\{#MainClsid}') or
-    RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Classes\CLSID\{#MainClsid}') or
-    RegKeyExists(HKLM, 'SOFTWARE\Classes\CLSID\{#TaskPaneClsid}') or
-    RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Classes\CLSID\{#TaskPaneClsid}') or
-    RegKeyExists(HKLM, 'SOFTWARE\Microsoft\Office\Excel\Addins\{#MainProgId}') or
-    RegKeyExists(HKLM, 'SOFTWARE\Microsoft\Office\16.0\Excel\Addins\{#MainProgId}');
+  if index = 0 then
+    Result := 'SOFTWARE\Classes\CLSID\{#MainClsid}'
+  else if index = 1 then
+    Result := 'SOFTWARE\Classes\CLSID\{#TaskPaneClsid}'
+  else if index = 2 then
+    Result := 'SOFTWARE\Microsoft\Office\Excel\Addins\{#MainProgId}'
+  else
+    Result := 'SOFTWARE\Microsoft\Office\16.0\Excel\Addins\{#MainProgId}';
+end;
+
+function HklmResidualExists(): Boolean;
+var
+  i: Integer;
+begin
+  Result := False;
+  for i := 0 to HklmResidualCount - 1 do
+    if RegKeyExists(HKLM64, HklmResidualPath(i)) or RegKeyExists(HKLM32, HklmResidualPath(i)) then
+    begin
+      Result := True;
+      Exit;
+    end;
+end;
+
+procedure AppendRegDelete(var command: string; const path, view: string);
+begin
+  if command <> '' then
+    command := command + ' & ';
+  command := command + 'reg.exe delete "HKLM\' + path + '" /f /reg:' + view;
+end;
+
+// The old dialog only told the user to "ask an administrator", which nobody
+// outside IT knows how to act on. Instead, elevate ONLY the deletion of these
+// keys: one UAC prompt runs reg.exe as admin while Setup itself stays in the
+// invoking user's context, so the install still lands in the right account
+// (running the whole installer from an admin account would not).
+function TryCleanHklmResidual(): Boolean;
+var
+  i: Integer;
+  command: string;
+  errorCode: Integer;
+begin
+  command := '';
+  for i := 0 to HklmResidualCount - 1 do
+  begin
+    if RegKeyExists(HKLM64, HklmResidualPath(i)) then
+      AppendRegDelete(command, HklmResidualPath(i), '64');
+    if RegKeyExists(HKLM32, HklmResidualPath(i)) then
+      AppendRegDelete(command, HklmResidualPath(i), '32');
+  end;
+  Log('Cleaning legacy HKLM registration: ' + command);
+  // `&` rather than `&&`: when both views alias one key, the second delete
+  // fails harmlessly. Success is judged by re-reading the registry, not by
+  // any exit code.
+  if not ShellExec('runas', ExpandConstant('{cmd}'), '/c ' + command, '', SW_HIDE,
+                   ewWaitUntilTerminated, errorCode) then
+    Log(Format('Elevated HKLM cleanup did not run (error %d).', [errorCode]));
+  Result := not HklmResidualExists();
+  if Result then
+    Log('Legacy HKLM registration removed.')
+  else
+    Log('Legacy HKLM registration still present after cleanup attempt.');
 end;
 
 // ---------------------------------------------------------------------------
@@ -583,6 +643,7 @@ end;
 function InitializeSetup(): Boolean;
 var
   ec: Integer;
+  hklmCleaned: Boolean;
 begin
   // Always register Excel. Some enterprise/MSI/non-default Office installs
   // omit App Paths; the old detection then silently skipped Excel while Setup
@@ -603,15 +664,31 @@ begin
     Exit;
   end;
 
-  // 2) Old machine-wide registration shadows the per-user one. Do not continue
-  //    unless this process can clean it after the user accepts the wizard.
+  // 2) Old machine-wide registration shadows the per-user one, so installing
+  //    on top of it would "succeed" while Excel keeps loading the old DLL.
+  //    Offer to remove it; continue only once it is really gone.
   if HklmResidualExists() then
   begin
-    MsgBox('检测到旧版“机器级(管理员)”注册残留，它会覆盖本次用户级注册。' + #13#10 +
-           '请让管理员先卸载旧版或清理旧版机器级注册，然后由当前用户正常运行本安装程序。' + #13#10 +
-           '不要用另一个管理员账户运行本安装程序，否则会安装到错误的用户账户。', mbCriticalError, MB_OK);
-    Result := False;
-    Exit;
+    // A silent run (the auto-updater) has nobody to approve a UAC prompt.
+    if IsSilentRun() then
+    begin
+      Log('Legacy HKLM registration present; a silent install cannot request elevation.');
+      Result := False;
+      Exit;
+    end;
+    hklmCleaned := False;
+    if MsgBox('这台电脑上有旧版 DeepExcel 留下的“机器级”注册信息。不清理的话，Excel 会继续加载旧版，新版装上也不生效。' + #13#10 + #13#10 +
+              '点“是”立即清理：Windows 会弹出一次管理员授权，只用于删除 DeepExcel 自己的旧注册项，不会改动其他软件。清理后照常安装到当前账户。',
+              mbConfirmation, MB_YESNO) = IDYES then
+      hklmCleaned := TryCleanHklmResidual();
+    if not hklmCleaned then
+    begin
+      MsgBox('旧版注册信息没有清理掉，安装已停止（可能是取消了管理员授权）。' + #13#10 + #13#10 +
+             '请重新运行本安装程序，在 Windows 弹出授权时点“是”；如果要求输入管理员密码，请找电脑管理员当场输入。' + #13#10 +
+             '请用你自己的账户运行安装程序，不要切换到管理员账户运行，否则 DeepExcel 会装到管理员账户里。', mbCriticalError, MB_OK);
+      Result := False;
+      Exit;
+    end;
   end;
 
   // 3) WebView2 runtime warning (install is attempted after files are copied).

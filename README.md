@@ -360,7 +360,7 @@ cp dist/update.json /srv/deepexcel/updates/stable.json
 | 诊断码 | 含义 |
 | --- | --- |
 | `E-REG-002` | 32 位视图缺少 COM 注册，32 位 Excel 无法加载 |
-| `E-REG-005` | 存在机器级（HKLM）注册残留，会覆盖用户级注册，需管理员清理 |
+| `E-REG-005` | 存在机器级（HKLM）注册残留，会覆盖用户级注册；重新运行安装程序，按提示授权一次管理员权限即可自动清理 |
 | `E-REG-006` | 注册指向旧版本 DLL |
 | `E-ACT-001` / `E-ACT-002` | 64 位 / 32 位进程中 COM 激活失败 |
 | `E-ENV-001` / `E-ENV-002` | 缺少 .NET Framework 4.8 / WebView2 运行时 |
