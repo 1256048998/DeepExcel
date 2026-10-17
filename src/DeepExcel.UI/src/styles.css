@@ -3929,12 +3929,6 @@ details[open] > summary .chevron-icon {
   color: var(--de-text-secondary);
 }
 
-.account-mono {
-  font-family: ui-monospace, Consolas, monospace;
-  font-size: var(--de-fs-sm);
-  word-break: break-all;
-}
-
 .account-ok { color: var(--de-success); }
 .account-warn { color: var(--de-warning); }
 
@@ -3995,37 +3989,6 @@ details[open] > summary .chevron-icon {
   color: var(--de-danger);
   font-size: var(--de-fs-sm);
 }
-
-/* 已知服务器地址：收成一行 */
-.account-server-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-  font-size: var(--de-fs-sm);
-  color: var(--de-text-secondary);
-}
-.account-server-label { flex: none; font-weight: 500; }
-.account-server-url {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--de-font-mono);
-  color: var(--de-text-tertiary);
-}
-.account-link {
-  flex: none;
-  padding: 0;
-  background: none;
-  border: none;
-  color: var(--de-brand);
-  font-family: var(--de-font);
-  font-size: var(--de-fs-sm);
-  cursor: pointer;
-}
-.account-link:hover { text-decoration: underline; }
 
 .account-submit {
   width: 100%;

@@ -55,6 +55,8 @@ namespace DeepExcel.AddIn.Config
         public UISettings UI { get; set; } = new();
         /// <summary>★ 自动更新。旧 config.json 无此字段时用默认值（开启，但 FeedUrl 为空即不生效）。</summary>
         public UpdateSettings Update { get; set; } = new();
+        /// <summary>★ 账号服务。旧 config.json 无此字段时用默认值（内置地址）。</summary>
+        public AccountSettings Account { get; set; } = new();
 
         public static AppConfig CreateDefault()
         {
@@ -212,6 +214,24 @@ namespace DeepExcel.AddIn.Config
         /// <summary>签名更新清单的 https 地址，例如 https://api.example.com/api/v1/updates/latest。</summary>
         public string FeedUrl { get; set; } = "";
         public string Channel { get; set; } = "stable";
+    }
+
+    /// <summary>
+    /// ★ 账号服务地址。
+    ///
+    /// 用户不该看到、也不该填"服务器地址"：面板只问邮箱和密码，地址用内置的。
+    /// ServerUrl 留空即用 DefaultServerUrl，私有部署时在 config.json 里填自己的。
+    /// 只在用户打开登录 / 注册时才会联系它，没登录过的安装不会主动连。
+    /// </summary>
+    public class AccountSettings
+    {
+        public const string DefaultServerUrl = "https://deepexcel.657890.xyz";
+        public string ServerUrl { get; set; } = "";
+
+        public string ResolveServerUrl()
+        {
+            return string.IsNullOrWhiteSpace(ServerUrl) ? DefaultServerUrl : ServerUrl.Trim();
+        }
     }
 
     public class UISettings

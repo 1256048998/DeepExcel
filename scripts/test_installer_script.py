@@ -201,6 +201,14 @@ def main():
           "ExitProcess@kernel32.dll" in iss and "ExitProcess(4)" in iss)
     check("the failure exit happens after rollback, in ssDone",
           iss.index("PostInstallFailed := True") < iss.index("ExitProcess(4)"))
+    # A WPS-only machine must not end on "安装未完成", but detected Excel still
+    # fails loudly: detection only decides fatality, it never skips Excel.
+    check("Excel failure is fatal only when Excel was detected",
+          re.search(r"if ExcelInstalled then\s*begin\s*PostInstallFailed := True;", iss) is not None
+          and "ExcelNotActivated := not ExcelInstalled;" in iss,
+          "a WPS-only install would end on a red failure dialog")
+    check("Excel is still always registered regardless of detection",
+          "ExcelEnabled := True;" in iss)
 
     # ---- sandbox verification script stays parseable ----------------------
     # verify-install-sandbox.ps1 is UTF-8 without a BOM, and Windows PowerShell

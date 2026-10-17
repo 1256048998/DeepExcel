@@ -41,6 +41,22 @@ namespace DeepExcel.AddIn.Bridge
             return AccountSession;
         }
 
+        /// <summary>
+        /// The account server the panel did not ask for. The panel no longer
+        /// shows a server field; an explicit server_url is still honoured so a
+        /// private deployment can be driven from the bridge.
+        /// </summary>
+        private static string ResolveServerUrl(Message msg)
+        {
+            var explicitUrl = ReadString(msg, "server_url");
+            if (!string.IsNullOrWhiteSpace(explicitUrl))
+            {
+                return explicitUrl.Trim();
+            }
+            return ConfigManager.Instance.Current?.Account?.ResolveServerUrl()
+                ?? AccountSettings.DefaultServerUrl;
+        }
+
         /// <summary>Reads an optional string field, tolerating a missing payload.</summary>
         private static string ReadString(Message msg, string name)
         {
@@ -131,11 +147,7 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         private string HandleAccountServerMeta(Message msg)
         {
-            var serverUrl = ReadString(msg, "server_url");
-            if (string.IsNullOrWhiteSpace(serverUrl))
-            {
-                return MakeError("请填写服务器地址");
-            }
+            var serverUrl = ResolveServerUrl(msg);
 
             try
             {
@@ -158,19 +170,18 @@ namespace DeepExcel.AddIn.Bridge
             catch (Exception ex)
             {
                 Logger.Instance.Error("MessageBridge", "HandleAccountServerMeta failed", ex);
-                return MakeError("无法连接该服务器地址");
+                return MakeError("暂时连不上账号服务，请检查网络后重试");
             }
         }
 
         private string HandleAccountSignIn(Message msg)
         {
-            var serverUrl = ReadString(msg, "server_url");
+            var serverUrl = ResolveServerUrl(msg);
             var email = ReadString(msg, "email");
             var password = ReadString(msg, "password");
-            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(email) ||
-                string.IsNullOrEmpty(password))
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password))
             {
-                return MakeError("请填写服务器地址、邮箱和密码");
+                return MakeError("请填写邮箱和密码");
             }
 
             try
@@ -196,14 +207,13 @@ namespace DeepExcel.AddIn.Bridge
 
         private string HandleAccountRegister(Message msg)
         {
-            var serverUrl = ReadString(msg, "server_url");
+            var serverUrl = ResolveServerUrl(msg);
             var email = ReadString(msg, "email");
             var password = ReadString(msg, "password");
             var inviteCode = ReadString(msg, "invite_code");
-            if (string.IsNullOrWhiteSpace(serverUrl) || string.IsNullOrWhiteSpace(email) ||
-                string.IsNullOrEmpty(password))
+            if (string.IsNullOrWhiteSpace(email) || string.IsNullOrEmpty(password))
             {
-                return MakeError("请填写服务器地址、邮箱和密码");
+                return MakeError("请填写邮箱和密码");
             }
 
             try

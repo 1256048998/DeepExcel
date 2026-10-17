@@ -100,13 +100,10 @@ function PointsRows({ weights, fallback, currentModel }: {
 export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel', onUseOwnKey, currentModel }: Props) {
   const [status, setStatus] = useState<AccountStatus | null>(null)
   const [mode, setMode] = useState<'signin' | 'register'>('signin')
-  const [serverUrl, setServerUrl] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [inviteCode, setInviteCode] = useState('')
   const [inviteRequired, setInviteRequired] = useState<boolean | null>(null)
-  // 已经知道服务器地址时收成一行「服务器 xxx · 更改」，不让它占表单最显眼的位置
-  const [editServer, setEditServer] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   // 托管模式下的实际用量，来自代理——它是权威计数点
@@ -132,7 +129,6 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
       const next = resp?.payload as AccountStatus
       if (next) {
         applyStatus(next)
-        if (next.server_url) setServerUrl(next.server_url)
         if (next.mode === 'hosted') {
           try {
             const u = await sendToHostWithResponse(
@@ -153,6 +149,22 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
     }
   }, [applyStatus])
 
+  /**
+   * 是否需要邀请码由服务端决定，不在客户端硬编码。
+   * 这样改注册策略不需要重新发版。服务器地址内置在加载项里，面板不再让用户填。
+   */
+  const probeServer = useCallback(async () => {
+    try {
+      const resp = await sendToHostWithResponse(
+        { type: 'account_server_meta', payload: {} },
+        'account_server_meta',
+      )
+      setInviteRequired(Boolean(resp?.payload?.invite_required))
+    } catch {
+      setInviteRequired(null)
+    }
+  }, [])
+
   useEffect(() => {
     if (open) {
       setError('')
@@ -160,31 +172,13 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
     }
   }, [open, loadStatus])
 
-  /**
-   * 是否需要邀请码由服务端决定，不在客户端硬编码。
-   * 这样改注册策略不需要重新发版。
-   */
-  const probeServer = useCallback(async (url: string) => {
-    if (!url.trim()) {
-      setInviteRequired(null)
-      return
-    }
-    try {
-      const resp = await sendToHostWithResponse(
-        { type: 'account_server_meta', payload: { server_url: url.trim() } },
-        'account_server_meta',
-      )
-      setInviteRequired(Boolean(resp?.payload?.invite_required))
-      setError('')
-    } catch {
-      setInviteRequired(null)
-    }
-  }, [])
+  useEffect(() => {
+    if (open && mode === 'register' && inviteRequired === null) void probeServer()
+  }, [open, mode, inviteRequired, probeServer])
 
   const submit = async () => {
     setError('')
 
-    if (!serverUrl.trim()) return setError('请填写服务器地址')
     if (!email.trim()) return setError('请填写邮箱')
     if (mode === 'register' && password.length < MIN_PASSWORD_LENGTH) {
       return setError(`密码至少 ${MIN_PASSWORD_LENGTH} 位`)
@@ -197,7 +191,6 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
         {
           type: mode === 'signin' ? 'account_sign_in' : 'account_register',
           payload: {
-            server_url: serverUrl.trim(),
             email: email.trim(),
             password,
             invite_code: inviteCode.trim() || undefined,
@@ -236,7 +229,6 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
   if (!open) return null
 
   const signedIn = status?.state === 'signedin' || status?.state === 'offline'
-  const knownServer = !!status?.server_url && serverUrl === status.server_url
 
   const form = (
     <div className="account-form">
@@ -270,27 +262,6 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
           注册
         </button>
       </div>
-
-      {knownServer && !editServer ? (
-        <div className="account-server-line">
-          <span className="account-server-label">服务器</span>
-          <span className="account-server-url" title={serverUrl}>{serverUrl}</span>
-          <button type="button" className="account-link" onClick={() => setEditServer(true)}>更改</button>
-        </div>
-      ) : (
-        <label>
-          服务器地址
-          <input
-            className="config-input"
-            type="text"
-            value={serverUrl}
-            placeholder="https://api.deepexcel.com"
-            onChange={(e) => setServerUrl(e.target.value)}
-            onBlur={(e) => void probeServer(e.target.value)}
-            disabled={busy}
-          />
-        </label>
-      )}
 
       <label>
         邮箱
@@ -393,10 +364,6 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
               <div className="account-row">
                 <span className="account-label">账号</span>
                 <span>{status.email}</span>
-              </div>
-              <div className="account-row">
-                <span className="account-label">服务器</span>
-                <span className="account-mono">{status.server_url}</span>
               </div>
               {status.entitlement && (
                 <>

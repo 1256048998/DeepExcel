@@ -148,6 +148,7 @@ var
   InstallCompleted: Boolean;
   PostInstallFailed: Boolean;
   PostInstallError: string;
+  ExcelNotActivated: Boolean;
   PreviousRegistrationExists: Boolean;
   PreviousMainAssembly: string;
   PreviousMainCodeBase: string;
@@ -681,9 +682,22 @@ begin
       // Excel with no add-in registered: exactly the v0.4.11..v0.4.17 failure
       // mode, hidden behind a successful exit code. Silent/IT deployments and
       // CI see only the exit code, so it has to tell the truth.
-      PostInstallFailed := True;
-      PostInstallError := errorMessage;
-      Log('Excel post-install step failed; Excel registration rolled back: ' + errorMessage);
+      //
+      // Except when no Excel was detected at all. A WPS-only machine cannot
+      // activate the Excel COM add-in by definition, and failing the whole
+      // install there showed a red "安装未完成" over a WPS add-in that was
+      // working. Detection is not trusted to SKIP Excel (see InitializeSetup),
+      // only to decide whether its failure is fatal; ssDone tells the user to
+      // run Repair if they do have Excel.
+      ExcelNotActivated := not ExcelInstalled;
+      if ExcelInstalled then
+      begin
+        PostInstallFailed := True;
+        PostInstallError := errorMessage;
+        Log('Excel post-install step failed; Excel registration rolled back: ' + errorMessage);
+      end;
+      if ExcelNotActivated then
+        Log('Excel not detected and Excel activation failed; continuing for WPS: ' + errorMessage);
     end;
 
     // WPS is activated in its own try block, NOT chained after the Excel work.
@@ -743,7 +757,13 @@ begin
     // was a crash-looking dialog at the very end. For an unsigned installer the
     // user has already had to click through SmartScreen; ending on that box
     // makes a successful install look broken.
-    if not IsSilentRun() then
+    if ExcelNotActivated and (not IsSilentRun()) then
+      MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
+             '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +
+             '这台电脑上没有检测到 Microsoft Excel，Excel 版暂未启用。' + #13#10 +
+             '如果你其实装了 Excel 却看不到 DeepExcel 选项卡，' + #13#10 +
+             '请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复。', mbInformation, MB_OK);
+    if (not ExcelNotActivated) and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
              '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);
