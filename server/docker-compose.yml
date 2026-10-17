@@ -76,13 +76,18 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    entrypoint: >
-      sh -c 'while true; do
-        pg_dump -h db -U ${POSTGRES_USER:-deepexcel} -d ${POSTGRES_DB:-deepexcel}
-          | gzip > /backups/deepexcel-$$(date +%%Y%%m%%d-%%H%%M%%S).sql.gz;
-        find /backups -name "deepexcel-*.sql.gz" -mtime +14 -delete;
-        sleep 86400;
-      done'
+    # Literal block, not a folded `>` scalar: folding keeps the newline before a
+    # more-indented line, so the old `pg_dump ...` / `| gzip` split reached sh as
+    # two statements and the container crash-looped without ever backing up.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        while true; do
+          pg_dump -h db -U ${POSTGRES_USER:-deepexcel} -d ${POSTGRES_DB:-deepexcel} | gzip > /backups/deepexcel-$$(date +%Y%m%d-%H%M%S).sql.gz
+          find /backups -name "deepexcel-*.sql.gz" -mtime +14 -delete
+          sleep 86400
+        done
 
 volumes:
   pgdata:

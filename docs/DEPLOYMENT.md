@@ -122,7 +122,47 @@ python scripts\package_release.py --version 0.4.17 --force-unsigned
 powershell -ExecutionPolicy Bypass -File scripts\verify-install-sandbox.ps1 -Launch -NoPause
 ```
 
-注意 Windows Sandbox 里**没有 Office**，所以它覆盖不了任何依赖 Excel 的步骤（上面第 3 条）。它能验的是 SHA-256、静默安装、注册表写入和卸载残留。
+注意 Windows Sandbox 里**没有 Office**，所以它覆盖不了任何依赖 Excel 的步骤（上面第 3 条）。它能验的是 SHA-256、静默安装、注册表写入和卸载残留。没有 Excel 时安装器按「仅 WPS」处理（退出码 0），所以沙箱里 COM 注册 / LoadBehavior / Repair --verify 这 4 项失败是预期的。
+
+**2026-10 起沙箱有两个坑：**
+
+1. **LogonCommand 不执行。** 沙箱窗口开着，但里面没有任何 PowerShell 进程，`result.txt` 永远不出现。改用 `wsb` 命令行直接在沙箱里跑访客脚本：
+
+   ```bash
+   wsb list                                   # 拿到沙箱 id
+   wsb exec --id <id> -r ExistingLogin -c "cmd /c powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe -NoPause > C:\DeepExcelVerify\_run.log 2>&1"
+   ```
+
+2. **沙箱镜像默认开着「智能应用控制」（Smart App Control）**，未签名安装器直接被拦（`An Application Control policy has blocked this file`，CodeIntegrity 日志事件 3118）。先在沙箱里关掉再跑：
+
+   ```bash
+   wsb exec --id <id> -r System -c "cmd /c reg add HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy /v VerifiedAndReputablePolicyState /t REG_DWORD /d 0 /f & CiTool.exe --refresh"
+   ```
+
+   这不只是沙箱的问题：**任何开着智能应用控制的 Windows 11 都会这样拦未签名安装包，而且没有「仍要运行」**。在买代码签名证书之前，遇到这种用户只能请对方在「Windows 安全中心 → 应用和浏览器控制 → 智能应用控制」里关掉。
+
+## 账号服务线上部署
+
+| 项 | 值 |
+| --- | --- |
+| 地址 | `https://deepexcel.657890.xyz`（客户端内置，`AccountSettings.DefaultServerUrl`） |
+| 主机 | 跑 `*.657890.xyz` cloudflared 隧道的那台 VPS（与 AgenticCLM、NoBuddy 遥测共用；本机 `~/.ssh/known_hosts` 里有它）。下文记作 `<vps>` |
+| 目录 | `/opt/deepexcel/server`（`git archive HEAD:server` 解出来的） |
+| 密钥 | 同目录 `.env`（600 权限，含数据库密码、JWT 密钥、首个管理员账号）。**不入库** |
+| 端口 | API 只绑 `127.0.0.1:18100`；8000/8080 在这台机器上被占用，见 `docker-compose.override.yml` |
+| 入口 | 主机上的 cloudflared 隧道，`/etc/cloudflared/config.yml` 里的 `deepexcel.657890.xyz` 规则；DNS 由 `cloudflared tunnel route dns` 建的 CNAME |
+| 备份 | `backups/` 下每日 `pg_dump`，保留 14 天 |
+
+运营后台（`admin` 服务）默认不起：它要构建 Node 镜像，这台 2 GB 机器不划算。需要时 `docker compose --profile admin up -d admin`，再用 `ssh -L 18101:127.0.0.1:18101 root@<vps>` 在本机打开。
+
+更新服务端：
+
+```bash
+git archive --format=tar HEAD:server | ssh root@<vps> 'cd /opt/deepexcel/server && tar -xf -'
+ssh root@<vps> 'cd /opt/deepexcel/server && docker compose up -d --build'
+```
+
+`.env` 和 `docker-compose.override.yml` 不在仓库里，解包不会覆盖它们。
 
 ## 关键防退化约束
 
