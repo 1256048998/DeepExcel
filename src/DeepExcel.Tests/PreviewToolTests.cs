@@ -738,5 +738,100 @@ namespace DeepExcel.Tests
             Assert.Equal("1900-02-28", PreviewBuilder.SerialToDateText(59));
             Assert.Equal("1900-03-01", PreviewBuilder.SerialToDateText(61));
         }
+
+        // ------------------------------------------------------------------
+        // clean_data
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Clean_data_runs_operations_in_order_on_the_result_of_the_last()
+        {
+            // Trimming first turns two rows into duplicates; the second
+            // operation then deletes one. Previewing each operation against
+            // the original sheet would miss the deletion.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "姓名" },
+                new object[] { "张三 " },
+                new object[] { "张三" });
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1:A3", "operations", "[\"trim_spaces\", \"remove_duplicates\"]"));
+
+            Assert.True(preview.Previewable);
+            Assert.Equal(new[] { 2 }, preview.DeletedRows.ToArray());
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+        }
+
+        [Fact]
+        public void Clean_data_combines_value_changes_from_several_operations()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { " ¥1,200 " },
+                new object[] { "  北京   朝阳" });
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1:A2", "operations", new List<object> { "collapse_spaces", "clean_amount" }));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("1,200.00", At(preview, "A1").After);
+            // A whitespace-only change is quoted, as in collapse_spaces itself.
+            Assert.Equal("\"北京 朝阳\"", At(preview, "A2").After);
+        }
+
+        [Fact]
+        public void Clean_data_follows_rows_that_shift_up_into_the_range()
+        {
+            // delete_blank_rows pulls row 4 (outside the range) up into it;
+            // the following text_to_number then converts it. Addresses are
+            // given as they are before anything runs.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "1" },
+                new object[] { null },
+                new object[] { "2" },
+                new object[] { "3" });
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1:A3", "operations", "[\"delete_blank_rows\", \"text_to_number\"]"));
+
+            Assert.Equal(new[] { 2 }, preview.DeletedRows.ToArray());
+            Assert.Equal("3", At(preview, "A4").After);
+            Assert.NotNull(At(preview, "A1"));
+            Assert.Contains(preview.Warnings, w => w.Contains("执行前的位置"));
+        }
+
+        [Fact]
+        public void Clean_data_reports_highlighting_as_a_format_change()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { "a" }, new object[] { null });
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1:A2", "operations", "[\"highlight_missing\", \"no_such_op\"]"));
+
+            Assert.Equal(1, preview.AffectedCells);
+            Assert.Equal(ChangeKind.Format, At(preview, "A2").Kind);
+            Assert.Contains("黄色", At(preview, "A2").After);
+        }
+
+        [Fact]
+        public void Clean_data_without_operations_changes_nothing()
+        {
+            var sheet = new GridSheet().Set("A1", " x ");
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1", "operations", "[]"));
+
+            Assert.True(preview.IsNoOp);
+        }
+
+        [Fact]
+        public void Clean_data_carries_the_warnings_of_the_operations_it_runs()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "001", "x" },
+                new object[] { "001", "x" },
+                new object[] { 1500.0, null });
+            var preview = new PreviewBuilder(sheet).Build("clean_data",
+                Args("range_address", "A1:B3", "operations", "[\"remove_duplicates\", \"text_to_number\", \"unify_date\"]"));
+
+            Assert.Contains(preview.Warnings, w => w.Contains("最下面"));
+            Assert.Contains(preview.Warnings, w => w.Contains("前导零"));
+            Assert.Contains(preview.Warnings, w => w.Contains("不像日期"));
+            Assert.True(preview.RequiresConfirmation);
+        }
     }
 }

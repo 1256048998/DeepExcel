@@ -130,6 +130,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildRemoveDuplicates(toolName, args);
                     case "unify_date":
                         return BuildUnifyDate(toolName, args);
+                    case "clean_data":
+                        return BuildCleanData(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:

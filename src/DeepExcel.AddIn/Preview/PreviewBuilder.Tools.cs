@@ -370,9 +370,25 @@ namespace DeepExcel.AddIn.Preview
                 return preview;
             }
 
+            var outsideWarning = DataOutsideDeletedRows(target, grid, rows);
+            if (outsideWarning != null)
+            {
+                preview.Warnings.Add(outsideWarning);
+            }
+            preview.Warnings.Add("删除行会使下方所有行上移，引用这些行的公式可能失效");
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
+        /// Names deleted rows that hold data outside the range's columns, or
+        /// returns null when there is none.
+        /// </summary>
+        private string DataOutsideDeletedRows(Target target, Grid grid, IList<int> rows)
+        {
             var lastColumn = _reader.UsedColumnCount(target.Sheet);
             var outside = new List<string>();
-            if (lastColumn > grid.Rect.Col2 || grid.Rect.Col1 > 1)
+            if (rows.Count > 0 && (lastColumn > grid.Rect.Col2 || grid.Rect.Col1 > 1))
             {
                 var width = Math.Max(lastColumn, grid.Rect.Col2);
                 foreach (var row in rows)
@@ -390,14 +406,8 @@ namespace DeepExcel.AddIn.Preview
                     }
                 }
             }
-            if (outside.Count > 0)
-            {
-                preview.Warnings.Add(
-                    $"整行删除：{string.Join("；", outside.Take(5))}{(outside.Count > 5 ? $" 等 {outside.Count} 行" : "")}在区域外还有内容，会一并删掉");
-            }
-            preview.Warnings.Add("删除行会使下方所有行上移，引用这些行的公式可能失效");
-            Finalize(preview);
-            return preview;
+            if (outside.Count == 0) return null;
+            return $"整行删除：{string.Join("；", outside.Take(5))}{(outside.Count > 5 ? $" 等 {outside.Count} 行" : "")}在区域外还有内容，会一并删掉";
         }
 
         /// <summary>
