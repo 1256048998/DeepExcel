@@ -303,5 +303,26 @@ namespace DeepExcel.Tests
 
             Assert.True(preview.IsNoOp);
         }
+
+        // ------------------------------------------------------------------
+        // collapse_spaces
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Collapse_spaces_also_trims_the_edges_like_the_executor()
+        {
+            var sheet = new GridSheet().Set("A1", " 北京   朝阳 ").Set("A2", "上海 浦东").Set("A3", "");
+            var preview = new PreviewBuilder(sheet).Build("collapse_spaces", Args("range_address", "A1:A3"));
+
+            Assert.Equal(1, preview.AffectedCells);
+            Assert.Equal("\"北京 朝阳\"", At(preview, "A1").After);
+        }
+
+        [Fact]
+        public void Collapse_spaces_leaves_numbers_alone()
+        {
+            var sheet = new GridSheet().Set("A1", 3.0);
+            Assert.True(new PreviewBuilder(sheet).Build("collapse_spaces", Args("range_address", "A1")).IsNoOp);
+        }
     }
 }

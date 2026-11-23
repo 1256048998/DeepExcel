@@ -730,19 +730,11 @@ namespace DeepExcel.AddIn.Tools
 
                 foreach (Range cell in range.Cells)
                 {
-                    var val = cell.Value2;
-                    if (val != null && val is string s && !string.IsNullOrEmpty(s))
+                    var collapsed = CleaningRules.CollapseSpaces(cell.Value2);
+                    if (collapsed != null)
                     {
-                        string trimmed = s.Trim();
-                        while (trimmed.Contains("  "))
-                        {
-                            trimmed = trimmed.Replace("  ", " ");
-                        }
-                        if (trimmed != s)
-                        {
-                            cell.Value = trimmed;
-                            cleanedCount++;
-                        }
+                        cell.Value = collapsed;
+                        cleanedCount++;
                     }
                 }
 

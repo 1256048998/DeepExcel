@@ -98,6 +98,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildReplaceFormula(toolName, args);
                     case "trim_spaces":
                         return BuildPerCell(toolName, args, v => CleaningRules.TrimSpaces(v), Quoted);
+                    case "collapse_spaces":
+                        return BuildPerCell(toolName, args, v => CleaningRules.CollapseSpaces(v), Quoted);
                     default:
                         // Simulable in principle but not implemented yet.
                         // Claiming an empty change set would be a lie the user

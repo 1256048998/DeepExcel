@@ -22,5 +22,20 @@ namespace DeepExcel.AddIn.Tools
             var trimmed = s.Trim();
             return trimmed != s ? trimmed : null;
         }
+
+        /// <summary>
+        /// collapse_spaces: runs of spaces become one, and the edges are
+        /// trimmed as well. Text only.
+        /// </summary>
+        public static string CollapseSpaces(object value)
+        {
+            if (!(value is string s) || s.Length == 0) return null;
+            var collapsed = s.Trim();
+            while (collapsed.Contains("  "))
+            {
+                collapsed = collapsed.Replace("  ", " ");
+            }
+            return collapsed != s ? collapsed : null;
+        }
     }
 }
