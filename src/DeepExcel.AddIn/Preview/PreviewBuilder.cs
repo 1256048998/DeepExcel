@@ -194,6 +194,16 @@ namespace DeepExcel.AddIn.Preview
                 return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
             }
 
+            // As the sidecar sends it: JSON text, written from the top-left cell.
+            if (args.TryGetValue("values", out var raw) && raw is string json)
+            {
+                var rows = ParseJsonRows(json);
+                if (rows != null)
+                {
+                    return BuildJsonRangeWrite(toolName, target, rows);
+                }
+            }
+
             var values = FlattenValues(args);
             var preview = new ChangePreview { ToolName = toolName };
             var current = _reader.Read(target.Sheet, target.Address);

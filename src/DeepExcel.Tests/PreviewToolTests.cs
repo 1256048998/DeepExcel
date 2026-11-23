@@ -1109,5 +1109,54 @@ namespace DeepExcel.Tests
             Assert.Null(At(preview, "A2"));
             Assert.Equal("张三", At(preview, "A3").After);
         }
+
+        // ------------------------------------------------------------------
+        // write_range as the sidecar sends it
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Write_range_values_sent_as_json_text_fill_from_the_top_left_cell()
+        {
+            // The permission request carries values as raw JSON text, and the
+            // address is the top-left cell. Reading only that cell would report
+            // one change for a 2x2 write.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "old", "old" },
+                new object[] { "old", 5.0 });
+            var preview = new PreviewBuilder(sheet).Build("write_range",
+                Args("address", "A1", "values", "[[1, \"two\"], [true, 5]]"));
+
+            Assert.Equal(3, preview.AffectedCells);
+            Assert.Equal("1", At(preview, "A1").After);
+            Assert.Equal("two", At(preview, "B1").After);
+            Assert.Equal("TRUE", At(preview, "A2").After);
+            Assert.Null(At(preview, "B2"));
+        }
+
+        [Fact]
+        public void Write_range_clears_cells_a_short_row_leaves_out()
+        {
+            // The executor sizes the block by the first row and writes null
+            // where a later row is shorter.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "a", "b" },
+                new object[] { "c", "keep?" });
+            var preview = new PreviewBuilder(sheet).Build("write_range",
+                Args("address", "A1", "values", "[[\"a\", \"b\"], [\"c\"]]"));
+
+            Assert.Equal(ChangeKind.Clear, At(preview, "B2").Kind);
+            Assert.Equal(1, preview.AffectedCells);
+        }
+
+        [Fact]
+        public void Write_range_with_a_flat_json_list_writes_a_column()
+        {
+            var sheet = new GridSheet();
+            var preview = new PreviewBuilder(sheet).Build("write_range",
+                Args("address", "C3", "values", "[\"x\", \"y\"]"));
+
+            Assert.Equal("x", At(preview, "C3").After);
+            Assert.Equal("y", At(preview, "C4").After);
+        }
     }
 }

@@ -666,6 +666,108 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// write_range values as JSON text, read the way
+        /// ToolDispatcher.Extract2DArray reads them: an array of rows, where a
+        /// bare value stands for a one-cell row. Null when the text is not a
+        /// JSON array.
+        /// </summary>
+        internal static List<List<string>> ParseJsonRows(string json)
+        {
+            try
+            {
+                using (var doc = System.Text.Json.JsonDocument.Parse(json))
+                {
+                    if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+                    var rows = new List<List<string>>();
+                    foreach (var rowElement in doc.RootElement.EnumerateArray())
+                    {
+                        var row = new List<string>();
+                        if (rowElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            foreach (var cell in rowElement.EnumerateArray()) row.Add(JsonCell(cell));
+                        }
+                        else
+                        {
+                            row.Add(JsonCell(rowElement));
+                        }
+                        rows.Add(row);
+                    }
+                    return rows;
+                }
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+        }
+
+        private static string JsonCell(System.Text.Json.JsonElement element)
+        {
+            switch (element.ValueKind)
+            {
+                case System.Text.Json.JsonValueKind.String: return element.GetString();
+                case System.Text.Json.JsonValueKind.Number: return Stringify(element.GetDouble());
+                case System.Text.Json.JsonValueKind.True: return "TRUE";
+                case System.Text.Json.JsonValueKind.False: return "FALSE";
+                case System.Text.Json.JsonValueKind.Null: return null;
+                default: return element.GetRawText();
+            }
+        }
+
+        /// <summary>
+        /// write_range (MessageBridge.WriteRange): the block starts at the
+        /// address's top-left cell and is as wide as the first row; a shorter
+        /// later row, or a null, writes nothing into a cell -- which clears it.
+        /// </summary>
+        private ChangePreview BuildJsonRangeWrite(string toolName, Target target, List<List<string>> rows)
+        {
+            var preview = new ChangePreview { ToolName = toolName };
+            if (rows.Count == 0 || rows[0].Count == 0)
+            {
+                preview.Warnings.Add("values 为空，执行器会报错，不会改动任何格");
+                Finalize(preview);
+                return preview;
+            }
+            if (target.Rect == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "无法解析区域地址「" + target.Address + "」，已自动创建快照");
+            }
+
+            var topLeft = target.Rect.Value;
+            var block = new CellRect(topLeft.Sheet, topLeft.Row1, topLeft.Col1,
+                topLeft.Row1 + rows.Count - 1, topLeft.Col1 + rows[0].Count - 1);
+            var blockTarget = new Target { Sheet = target.Sheet, Address = LocalAddress(block), Rect = block };
+            var failed = ReadGrid(toolName, blockTarget, out var grid);
+            if (failed != null) return failed;
+
+            for (var r = 0; r < grid.Rows; r++)
+            {
+                for (var c = 0; c < grid.Cols; c++)
+                {
+                    var cell = grid[r, c];
+                    var after = c < rows[r].Count ? rows[r][c] : null;
+                    if (after != null)
+                    {
+                        AddChangeIfDifferent(preview, cell, after);
+                    }
+                    else if (!cell.IsEmpty)
+                    {
+                        preview.Changes.Add(new CellChange
+                        {
+                            Address = cell.Address,
+                            Before = Describe(cell),
+                            After = "",
+                            Kind = ChangeKind.Clear,
+                            OverwritesFormula = cell.HasFormula
+                        });
+                    }
+                }
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once
