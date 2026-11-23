@@ -118,7 +118,7 @@ namespace DeepExcel.Updater
                     "用法: DeepExcel.Updater.exe --stage <目录> --installed-version <版本>\n" +
                     "                            [--channel stable] [--wait-pid <pid>]\n" +
                     "                            [--wait-seconds 180] [--relaunch <exe>]\n" +
-                    "                            [--receipt-seconds 180]\n" +
+                    "                            [--receipt-seconds 180] [--record-attempt]\n" +
                     "                            [--notify] [--dry-run]\n" +
                     "  --notify   失败时弹窗告知用户；仅供面板发起的更新使用\n" +
                     "  --receipt-seconds  重启宿主后等新版本启动回执的秒数，超时且无人加载则回滚");
@@ -141,11 +141,7 @@ namespace DeepExcel.Updater
             if (options.TryGetValue("wait-pid", out string pidText) &&
                 int.TryParse(pidText, NumberStyles.None, CultureInfo.InvariantCulture, out int pid))
             {
-                int waitSeconds = DefaultWaitSeconds;
-                if (options.TryGetValue("wait-seconds", out string waitText))
-                {
-                    int.TryParse(waitText, NumberStyles.None, CultureInfo.InvariantCulture, out waitSeconds);
-                }
+                int waitSeconds = ReadSeconds(options, "wait-seconds", DefaultWaitSeconds);
                 // A recycled pid is possible in principle; the only consequence
                 // is waiting for an unrelated process and deferring the update,
                 // and the host-process sweep below is the check that matters.
@@ -209,7 +205,14 @@ namespace DeepExcel.Updater
                 ? "回滚包已验签：v" + rollback.Release.Version
                 : "没有可用的回滚包（" + rollback.Rejection + "）：" + rollback.Detail);
 
-            // 6. Install.
+            // 6. Install. On the exit path the attempt is counted here rather
+            //    than when the add-in launched this process: a user who cancels
+            //    Excel's save prompt leaves Excel running, this process gives up
+            //    waiting, and that must not count against the version.
+            if (options.ContainsKey("record-attempt"))
+            {
+                new UpdateJournal(stageRoot).RecordAttempt(check.Release.Version);
+            }
             int installerExit = RunInstaller(package, stage, InstallLogName);
             if (installerExit != 0)
             {
@@ -259,11 +262,16 @@ namespace DeepExcel.Updater
                 // 9. ...and only then is there anyone to say whether the new
                 //    version works. An installer returning 0 means the files
                 //    were copied, not that the result loads.
-                int receiptSeconds = ReadSeconds(options, "receipt-seconds", DefaultReceiptSeconds);
+                int receiptSeconds = ReadSeconds(
+                    options, "receipt-seconds", ReceiptVerifiedHost(host) ? DefaultReceiptSeconds : 0);
                 int waitSeconds = ReadSeconds(options, "wait-seconds", DefaultWaitSeconds);
                 if (!rollback.Accepted)
                 {
                     Log("没有回滚包，不等待启动回执");
+                }
+                else if (receiptSeconds <= 0)
+                {
+                    Log("不等待启动回执（" + Path.GetFileName(host) + " 未验证过启动回执）");
                 }
                 else if (!AwaitStartupReceipt(stageRoot, check.Release.Version, installedAtUtc,
                                               receiptSeconds, waitSeconds) &&
@@ -502,6 +510,21 @@ namespace DeepExcel.Updater
                 }
                 System.Threading.Thread.Sleep(1000);
             }
+        }
+
+        /// <summary>
+        /// Whether a relaunched host is known to write the startup receipt.
+        ///
+        /// Excel only, for now. WPS loads the same COM add-in, but whether it
+        /// raises OnStartupComplete for a user-started instance -- the point
+        /// where the receipt is written -- has not been seen on a real WPS. A
+        /// host that never writes the receipt would have every healthy update
+        /// rolled back, so WPS gets no watchdog until that is verified; it
+        /// still gets the installer-failure rollback.
+        /// </summary>
+        private static bool ReceiptVerifiedHost(string executable)
+        {
+            return string.Equals(Path.GetFileName(executable ?? ""), "EXCEL.EXE", StringComparison.OrdinalIgnoreCase);
         }
 
         private static int ReadSeconds(Dictionary<string, string> options, string name, int fallback)

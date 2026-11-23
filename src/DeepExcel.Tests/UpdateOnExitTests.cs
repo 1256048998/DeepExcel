@@ -163,7 +163,11 @@ namespace DeepExcel.Tests
             Assert.DoesNotContain("--notify", onExit);
             Assert.DoesNotContain("--relaunch", onExit);
             Assert.Contains("--wait-pid", onExit);
-            // The clicked path is unchanged.
+            // Counted by the updater once the installer really runs: closing
+            // Excel can still be cancelled at a save prompt.
+            Assert.Contains("--record-attempt", onExit);
+            // The clicked path is unchanged, and counts at launch as before.
+            Assert.DoesNotContain("--record-attempt", clicked);
             Assert.Contains("--notify", clicked);
             Assert.Contains("--relaunch \"C:\\Office\\EXCEL.EXE\"", clicked);
         }

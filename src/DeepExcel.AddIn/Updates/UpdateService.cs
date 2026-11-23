@@ -545,8 +545,14 @@ namespace DeepExcel.AddIn.Updates
                 // Counted here, not when the updater reports back — by then this
                 // process is gone. An installer killed by antivirus, a crash, a
                 // silent failure: all of them still burn an attempt, which is
-                // what stops the offer from repeating forever.
-                _journal.RecordAttempt(staged.Release.Version);
+                // what stops the offer from repeating forever. The exit path
+                // passes --record-attempt instead and the updater counts it once
+                // the installer really starts: closing Excel can still be
+                // cancelled at a save prompt, and that is not a failed install.
+                if (userInitiated)
+                {
+                    _journal.RecordAttempt(staged.Release.Version);
+                }
                 Logger.Instance.Info(
                     LogCategory,
                     string.Format(CultureInfo.InvariantCulture,
@@ -652,6 +658,10 @@ namespace DeepExcel.AddIn.Updates
                 {
                     arguments.Append(" --relaunch \"").Append(hostExecutable).Append("\"");
                 }
+            }
+            else
+            {
+                arguments.Append(" --record-attempt");
             }
             return arguments.ToString();
         }

@@ -74,8 +74,18 @@ namespace DeepExcel.AddIn.Updates
         public static UpdateCheckResult Load(
             string stageDirectory, string installedVersion, string channel, IManifestVerifier verifier)
         {
-            string manifestPath = Path.Combine(stageDirectory, ManifestFileName);
-            string manifestJson;
+            UpdateCheckResult unreadable = ReadManifest(stageDirectory, out string manifestJson);
+            return unreadable ?? UpdateManifest.Evaluate(manifestJson, installedVersion, channel, verifier);
+        }
+
+        /// <summary>
+        /// Reads a stage's manifest with the size cap applied. Returns a
+        /// rejection when it is missing, oversized or unreadable, else null.
+        /// </summary>
+        private static UpdateCheckResult ReadManifest(string directory, out string manifestJson)
+        {
+            manifestJson = null;
+            string manifestPath = Path.Combine(directory, ManifestFileName);
             try
             {
                 var info = new FileInfo(manifestPath);
@@ -89,17 +99,12 @@ namespace DeepExcel.AddIn.Updates
                     return UpdateCheckResult.Reject(UpdateRejection.TooLarge, "更新清单过大。");
                 }
                 manifestJson = File.ReadAllText(manifestPath, new UTF8Encoding(false));
+                return null;
             }
-            catch (IOException ex)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
             {
                 return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "读取更新清单失败：" + ex.Message);
             }
-            catch (UnauthorizedAccessException ex)
-            {
-                return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "读取更新清单失败：" + ex.Message);
-            }
-
-            return UpdateManifest.Evaluate(manifestJson, installedVersion, channel, verifier);
         }
 
         /// <summary>Confirms the file on disk is byte-for-byte what the manifest promised.</summary>
@@ -219,7 +224,9 @@ namespace DeepExcel.AddIn.Updates
                 string incoming = target + PartialSuffix;
                 if (Directory.Exists(incoming)) Directory.Delete(incoming, recursive: true);
                 Directory.CreateDirectory(incoming);
-                File.Copy(Path.Combine(source, PackageFileName), Path.Combine(incoming, PackageFileName));
+                // Moved, not copied: the stage is pruned at the next check anyway,
+                // and a full installer is too big to duplicate during startup.
+                File.Move(Path.Combine(source, PackageFileName), Path.Combine(incoming, PackageFileName));
                 File.Copy(Path.Combine(source, ManifestFileName), Path.Combine(incoming, ManifestFileName));
                 // The copy is what will be run, so the copy is what gets checked.
                 if (!LoadVerified(incoming, version, channel, verifier).Accepted)
@@ -270,7 +277,7 @@ namespace DeepExcel.AddIn.Updates
             if (directory == null)
             {
                 return UpdateCheckResult.Reject(
-                    UpdateRejection.MalformedJson, "没有 v" + installedVersion + " 的回滚包。");
+                    UpdateRejection.NoRollbackPackage, "没有 v" + installedVersion + " 的回滚包。");
             }
             return LoadVerified(directory, installedVersion, channel, verifier);
         }
@@ -278,24 +285,10 @@ namespace DeepExcel.AddIn.Updates
         private static UpdateCheckResult LoadVerified(
             string directory, string installedVersion, string channel, IManifestVerifier verifier)
         {
-            string manifestPath = Path.Combine(directory, ManifestFileName);
-            string manifestJson;
-            try
+            UpdateCheckResult unreadable = ReadManifest(directory, out string manifestJson);
+            if (unreadable != null)
             {
-                var info = new FileInfo(manifestPath);
-                if (!info.Exists)
-                {
-                    return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "缺少回滚清单。");
-                }
-                if (info.Length > UpdateManifest.MaxManifestBytes)
-                {
-                    return UpdateCheckResult.Reject(UpdateRejection.TooLarge, "回滚清单过大。");
-                }
-                manifestJson = File.ReadAllText(manifestPath, new UTF8Encoding(false));
-            }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
-            {
-                return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "读取回滚清单失败：" + ex.Message);
+                return unreadable;
             }
 
             UpdateCheckResult result = UpdateManifest.EvaluateInstalled(

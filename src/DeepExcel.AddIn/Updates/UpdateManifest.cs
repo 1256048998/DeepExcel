@@ -30,6 +30,8 @@ namespace DeepExcel.AddIn.Updates
         ManualUpgradeRequired,
         /// <summary>A rollback manifest for a version other than the one that was installed.</summary>
         VersionMismatch,
+        /// <summary>No rollback package is kept for the installed version (normal after a manual install).</summary>
+        NoRollbackPackage,
     }
 
     /// <summary>An authenticated, newer release the client may install.</summary>

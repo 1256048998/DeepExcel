@@ -147,6 +147,7 @@ namespace DeepExcel.Tests
                     // a manifest from the feed is never judged that way.
                     // Covered by UpdateRollbackTests.
                     nameof(UpdateRejection.VersionMismatch),
+                    nameof(UpdateRejection.NoRollbackPackage),
                 };
 
                 var missing = new List<string>();

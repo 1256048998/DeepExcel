@@ -126,7 +126,7 @@ def build_stub_host(workspace, name, receipt_root=None, version="0.6.0", lease_r
 
     With receipt_root it does what the add-in does once its bridge is up --
     writes started.json -- and without it, it is a new version that never got
-    that far. With lease_root it holds a lease for ten seconds without ever
+    that far. With lease_root it holds a lease for eight seconds without ever
     reporting: DeepExcel loaded, but not (yet) working.
     """
     body = ""
@@ -134,7 +134,7 @@ def build_stub_host(workspace, name, receipt_root=None, version="0.6.0", lease_r
         body += (
             "using (var lease = new System.IO.FileStream(@\"%s\", System.IO.FileMode.Create, "
             "System.IO.FileAccess.ReadWrite, System.IO.FileShare.Read, 256, "
-            "System.IO.FileOptions.DeleteOnClose)) { System.Threading.Thread.Sleep(10000); }"
+            "System.IO.FileOptions.DeleteOnClose)) { System.Threading.Thread.Sleep(8000); }"
             % os.path.join(lease_root, "leases", "77777.lease").replace('"', '""'))
     if receipt_root:
         body += (
@@ -509,6 +509,48 @@ def main():
                                 extra=["--relaunch", mute, "--receipt-seconds", "30"])
         check(code == EXIT_INSTALLED and time.monotonic() - started < 15,
               "without a rollback package the updater does not wait for a receipt (exit %d)" % code)
+
+        # WPS has not been seen writing the receipt yet, so relaunching WPS
+        # gets no watchdog: a host that never reports would otherwise have
+        # every healthy update rolled back.
+        wps = stage(workspace, "receipt-wps", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(wps), "leases"))
+        wps_slot = stage(workspace, "receipt-wps", key_path, version="0.5.0", package=stub,
+                         slot="rollback")
+        wps_dir = os.path.join(workspace, "wps-host")
+        os.makedirs(wps_dir)
+        wps_host = os.path.join(wps_dir, "et.exe")
+        shutil.copy2(mute, wps_host)
+        code, output = run_real(updater, wps, extra=["--relaunch", wps_host])
+        check(code == EXIT_INSTALLED and not os.path.isfile(os.path.join(wps_slot, "ran.txt")),
+              "a relaunched WPS gets no receipt watchdog (exit %d)" % code)
+
+        print("\n==> Attempt counting on the exit path")
+        journal_path = lambda d: os.path.join(stage_root(d), "journal.json")
+        counted = stage(workspace, "attempt-counted", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(counted), "leases"))
+        run_real(updater, counted, extra=["--record-attempt"])
+        attempts = {}
+        if os.path.isfile(journal_path(counted)):
+            with open(journal_path(counted), encoding="utf-8") as stream:
+                attempts = json.load(stream)
+        check(attempts.get("version") == "0.6.0" and attempts.get("attempts") == 1,
+              "--record-attempt counts the attempt when the installer runs (%s)" % attempts)
+
+        deferred = stage(workspace, "attempt-deferred", key_path, package=stub)
+        deferred_leases = os.path.join(stage_root(deferred), "leases")
+        os.makedirs(deferred_leases)
+        with open(os.path.join(deferred_leases, "%d.lease" % os.getpid()), "w") as holder:
+            code, _ = run_real(updater, deferred, extra=["--record-attempt"])
+        check(code == EXIT_HOST_RUNNING and not os.path.isfile(journal_path(deferred)),
+              "a deferred install on the exit path costs no attempt (exit %d)" % code)
+
+        # The busy host above is still holding its lease; let it finish so the
+        # workspace can actually be removed.
+        busy_lease = os.path.join(stage_root(busy), "leases", "77777.lease")
+        deadline = time.monotonic() + 15
+        while os.path.exists(busy_lease) and time.monotonic() < deadline:
+            time.sleep(0.5)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
