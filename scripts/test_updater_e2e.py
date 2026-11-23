@@ -121,6 +121,40 @@ def build_stub_installer(workspace, exit_code=0, name="stub"):
         return stream.read()
 
 
+def build_stub_host(workspace, name, receipt_root=None, version="0.6.0", lease_root=None):
+    """Stands in for the Excel the updater relaunches.
+
+    With receipt_root it does what the add-in does once its bridge is up --
+    writes started.json -- and without it, it is a new version that never got
+    that far. With lease_root it holds a lease for ten seconds without ever
+    reporting: DeepExcel loaded, but not (yet) working.
+    """
+    body = ""
+    if lease_root:
+        body += (
+            "using (var lease = new System.IO.FileStream(@\"%s\", System.IO.FileMode.Create, "
+            "System.IO.FileAccess.ReadWrite, System.IO.FileShare.Read, 256, "
+            "System.IO.FileOptions.DeleteOnClose)) { System.Threading.Thread.Sleep(10000); }"
+            % os.path.join(lease_root, "leases", "77777.lease").replace('"', '""'))
+    if receipt_root:
+        body += (
+            "System.IO.File.WriteAllText(@\"%s\", "
+            "\"{\\\"version\\\":\\\"%s\\\",\\\"pid\\\":1,\\\"utc\\\":\\\"\" + "
+            "System.DateTime.UtcNow.ToString(\"o\") + \"\\\"}\");"
+            % (os.path.join(receipt_root, "started.json").replace('"', '""'), version))
+    source = os.path.join(workspace, name + ".cs")
+    with open(source, "w", encoding="utf-8") as stream:
+        stream.write("class Host { static int Main() { %s return 0; } }\n" % body)
+    output = os.path.join(workspace, name + ".exe")
+    result = subprocess.run(
+        [CSC, "/nologo", "/target:exe", "/out:" + output,
+         "/reference:" + os.path.join(FRAMEWORK, "mscorlib.dll"), source],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if result.returncode != 0:
+        raise RuntimeError("Host stub build failed:\n%s\n%s" % (result.stdout, result.stderr))
+    return output
+
+
 def stage(workspace, name, private_key_path, version="0.6.0", package=b"pretend installer bytes",
           channel="stable", minimum=None, slot=None):
     """Writes a signed stage. slot="rollback" writes the rollback package instead."""
@@ -400,6 +434,81 @@ def main():
         code, output = run_real(updater, elsewhere)
         check(code == EXIT_INSTALLER_FAILED and not os.path.isfile(os.path.join(older, "ran.txt")),
               "a rollback package for another version is not used (exit %d)" % code)
+
+        print("\n==> Startup receipt after relaunch")
+        # The installer succeeded and the relaunched host reports that the new
+        # version came up: nothing to undo.
+        healthy = stage(workspace, "receipt-ok", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(healthy), "leases"))
+        kept = stage(workspace, "receipt-ok", key_path, version="0.5.0", package=stub,
+                     slot="rollback")
+        host = build_stub_host(workspace, "host-ok", receipt_root=stage_root(healthy))
+        code, output = run_real(updater, healthy,
+                                extra=["--relaunch", host, "--receipt-seconds", "20"])
+        check(code == EXIT_INSTALLED,
+              "a relaunched host that reports in keeps the new version (exit %d)" % code)
+        check("已正常启动" in output, "the startup receipt is what the updater waited for")
+        check(not os.path.isfile(os.path.join(kept, "ran.txt")),
+              "a healthy start never runs the rollback installer")
+
+        # The installer succeeded but the new version never reported a start:
+        # put the old one back.
+        silent = stage(workspace, "receipt-missing", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(silent), "leases"))
+        restored = stage(workspace, "receipt-missing", key_path, version="0.5.0", package=stub,
+                         slot="rollback")
+        mute = build_stub_host(workspace, "host-mute")
+        code, output = run_real(updater, silent,
+                                extra=["--relaunch", mute, "--receipt-seconds", "3"])
+        check(code == EXIT_ROLLED_BACK,
+              "no startup receipt rolls the new version back (exit %d)" % code)
+        check(os.path.isfile(os.path.join(restored, "ran.txt")),
+              "the previous version's installer ran")
+        note_path = os.path.join(stage_root(silent), "rolledback.json")
+        note = {}
+        if os.path.isfile(note_path):
+            with open(note_path, encoding="utf-8") as stream:
+                note = json.load(stream)
+        check(note.get("reason") == "no_startup_receipt",
+              "the rollback is attributed to the missing receipt (%s)" % note)
+        check(not os.path.isfile(os.path.join(stage_root(silent), "applied.json")),
+              "a rolled-back upgrade is not left behind as an applied upgrade")
+
+        # A receipt from before the install proves nothing about the new build.
+        stale = stage(workspace, "receipt-stale", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(stale), "leases"))
+        stale_slot = stage(workspace, "receipt-stale", key_path, version="0.5.0", package=stub,
+                           slot="rollback")
+        with open(os.path.join(stage_root(stale), "started.json"), "w", encoding="utf-8") as stream:
+            json.dump({"version": "0.6.0", "pid": 1, "utc": "2026-01-01T00:00:00.0000000Z"}, stream)
+        code, output = run_real(updater, stale,
+                                extra=["--relaunch", mute, "--receipt-seconds", "3"])
+        check(code == EXIT_ROLLED_BACK and os.path.isfile(os.path.join(stale_slot, "ran.txt")),
+              "a receipt older than the install does not count (exit %d)" % code)
+
+        # The new DeepExcel is loaded (a lease is held) but never reports. Its
+        # files are locked, so a rollback installer could only half-work: the
+        # updater waits, then leaves the new version alone.
+        busy = stage(workspace, "receipt-busy", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(busy), "leases"))
+        busy_slot = stage(workspace, "receipt-busy", key_path, version="0.5.0", package=stub,
+                          slot="rollback")
+        holder_host = build_stub_host(workspace, "host-busy", lease_root=stage_root(busy))
+        code, output = run_real(updater, busy,
+                                extra=["--relaunch", holder_host, "--receipt-seconds", "2",
+                                       "--wait-seconds", "3"])
+        check(code == EXIT_INSTALLED and not os.path.isfile(os.path.join(busy_slot, "ran.txt")),
+              "a loaded but silent new version is never reinstalled underneath (exit %d)" % code)
+        check("保留新版本" in output, "the updater says why it left the new version alone")
+
+        # Nothing to go back to, so nothing to wait for.
+        unguarded = stage(workspace, "receipt-noslot", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(unguarded), "leases"))
+        started = time.monotonic()
+        code, output = run_real(updater, unguarded,
+                                extra=["--relaunch", mute, "--receipt-seconds", "30"])
+        check(code == EXIT_INSTALLED and time.monotonic() - started < 15,
+              "without a rollback package the updater does not wait for a receipt (exit %d)" % code)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

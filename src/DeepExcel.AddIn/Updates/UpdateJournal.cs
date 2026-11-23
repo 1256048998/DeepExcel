@@ -33,6 +33,14 @@ namespace DeepExcel.AddIn.Updates
         public string ReasonCode { get; set; }
     }
 
+    /// <summary>The last time a build of the add-in started far enough to be usable.</summary>
+    public sealed class StartupReceipt
+    {
+        public string Version { get; set; }
+        public int ProcessId { get; set; }
+        public DateTime WrittenAtUtc { get; set; }
+    }
+
     /// <summary>
     /// The pieces of update state that have to outlive a process.
     ///
@@ -64,6 +72,7 @@ namespace DeepExcel.AddIn.Updates
         public const string JournalFileName = "journal.json";
         public const string ReceiptFileName = "applied.json";
         public const string RollbackFileName = "rolledback.json";
+        public const string StartupReceiptFileName = "started.json";
 
         /// <summary>
         /// Three, then stop asking.
@@ -200,6 +209,57 @@ namespace DeepExcel.AddIn.Updates
                 FailedVersion = failed,
                 ReasonCode = GetString(state, "reason"),
             };
+        }
+
+        /// <summary>
+        /// Written by the add-in on every start that got as far as a working
+        /// bridge. Overwritten each time, never consumed: the updater only asks
+        /// "has this version started since I installed it?".
+        /// </summary>
+        public void WriteStartupReceipt(string version)
+        {
+            int pid;
+            try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; }
+            catch (Exception) { pid = 0; }
+            WriteObject(Path.Combine(_root, StartupReceiptFileName), new Dictionary<string, object>
+            {
+                ["version"] = version ?? "",
+                ["pid"] = pid,
+                ["utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+            });
+        }
+
+        public StartupReceipt ReadStartupReceipt()
+        {
+            Dictionary<string, object> state = ReadObject(Path.Combine(_root, StartupReceiptFileName));
+            string version = GetString(state, "version");
+            if (string.IsNullOrEmpty(version) ||
+                !DateTime.TryParse(GetString(state, "utc"), CultureInfo.InvariantCulture,
+                                   DateTimeStyles.RoundtripKind, out DateTime written))
+            {
+                return null;
+            }
+            return new StartupReceipt
+            {
+                Version = version,
+                ProcessId = (int)Math.Max(0, Math.Min(int.MaxValue, GetInt64(state, "pid"))),
+                WrittenAtUtc = written.ToUniversalTime(),
+            };
+        }
+
+        /// <summary>
+        /// Whether <paramref name="version"/> has reported a successful start
+        /// at or after <paramref name="sinceUtc"/>. Compared as versions, since
+        /// the running build says "0.6.2.0" and its manifest said "0.6.2".
+        /// </summary>
+        public bool HasStartedSince(string version, DateTime sinceUtc)
+        {
+            StartupReceipt receipt = ReadStartupReceipt();
+            return receipt != null &&
+                   ReleaseVersion.TryParse(receipt.Version, out ReleaseVersion started) &&
+                   ReleaseVersion.TryParse(version, out ReleaseVersion wanted) &&
+                   started == wanted &&
+                   receipt.WrittenAtUtc >= sinceUtc.ToUniversalTime();
         }
 
         // ------------------------------------------------------------------

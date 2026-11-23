@@ -101,6 +101,12 @@ namespace DeepExcel.AddIn.Bridge
             {
                 UpdateService service = Updates;
 
+                // First, and synchronously: reaching this line means the bridge
+                // constructed, which is what "the new version works" means to an
+                // updater that just relaunched Excel and is waiting to hear it.
+                // A few hundred bytes; it does not slow startup.
+                service.RecordSuccessfulStart();
+
                 // Runs even when updating is switched off or unconfigured: the
                 // receipt records an upgrade that already happened, and it is
                 // the only evidence that the update path works end to end.

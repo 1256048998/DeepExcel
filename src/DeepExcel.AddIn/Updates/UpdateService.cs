@@ -131,6 +131,26 @@ namespace DeepExcel.AddIn.Updates
         }
 
         /// <summary>
+        /// The startup receipt: this build got as far as a working bridge.
+        ///
+        /// An updater that just installed this version and relaunched Excel is
+        /// waiting for exactly this file; without it, it puts the previous
+        /// version back. Written regardless of whether updating is enabled --
+        /// the updater that is waiting does not care how it was configured.
+        /// </summary>
+        public void RecordSuccessfulStart()
+        {
+            try
+            {
+                _journal.WriteStartupReceipt(InstalledVersion);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning(LogCategory, "写入启动回执失败：" + ex.Message);
+            }
+        }
+
+        /// <summary>
         /// Reports, once, that the updater had to put this version back.
         ///
         /// The failed version keeps its attempt count, so it is offered again

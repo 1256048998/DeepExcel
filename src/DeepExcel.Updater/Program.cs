@@ -30,11 +30,14 @@ namespace DeepExcel.Updater
     ///
     /// When the installer fails and the previous version's installer is kept
     /// in updates\rollback\ (and still verifies), that installer is run to put
-    /// the working version back -- see <see cref="RollBack"/>.
+    /// the working version back -- see <see cref="RollBack"/>. The same happens
+    /// when the install succeeded but the relaunched Excel never produced the
+    /// new version's startup receipt (see <see cref="AwaitStartupReceipt"/>).
     ///
     /// Exit codes: 0 installed, 2 usage, 3 stage rejected, 4 digest mismatch,
     /// 5 host still running, 6 installer failed, 7 unexpected error,
-    /// 8 installer failed and the previous version was restored.
+    /// 8 the new version failed (to install, or to start) and the previous
+    /// version was restored.
     /// </summary>
     public static class Program
     {
@@ -50,6 +53,14 @@ namespace DeepExcel.Updater
         private const int DefaultWaitSeconds = 180;
         private const int InstallerTimeoutSeconds = 900;
         private const int InstallerTimedOut = -1;
+
+        /// <summary>
+        /// How long a relaunched Excel gets to report that the new version
+        /// started. Three minutes: a cold Excel start plus WebView2 on a slow
+        /// laptop is tens of seconds, and a false alarm costs a needless
+        /// rollback, so the margin is generous.
+        /// </summary>
+        private const int DefaultReceiptSeconds = 180;
 
         private const string InstallLogName = "install.log";
         private const string RollbackLogName = "rollback-install.log";
@@ -107,8 +118,10 @@ namespace DeepExcel.Updater
                     "用法: DeepExcel.Updater.exe --stage <目录> --installed-version <版本>\n" +
                     "                            [--channel stable] [--wait-pid <pid>]\n" +
                     "                            [--wait-seconds 180] [--relaunch <exe>]\n" +
+                    "                            [--receipt-seconds 180]\n" +
                     "                            [--notify] [--dry-run]\n" +
-                    "  --notify   失败时弹窗告知用户；仅供面板发起的更新使用");
+                    "  --notify   失败时弹窗告知用户；仅供面板发起的更新使用\n" +
+                    "  --receipt-seconds  重启宿主后等新版本启动回执的秒数，超时且无人加载则回滚");
                 return ExitUsage;
             }
 
@@ -219,6 +232,7 @@ namespace DeepExcel.Updater
                 return ExitInstallerFailed;
             }
             Log("安装成功：v" + check.Release.Version);
+            DateTime installedAtUtc = DateTime.UtcNow;
 
             // 7. Leave a note for the build that is about to replace this one.
             //
@@ -239,9 +253,29 @@ namespace DeepExcel.Updater
             }
 
             // 8. Put the user back where they were. Never fatal.
-            if (options.TryGetValue("relaunch", out string host) && !string.IsNullOrWhiteSpace(host))
+            if (options.TryGetValue("relaunch", out string host) && !string.IsNullOrWhiteSpace(host) &&
+                Relaunch(host))
             {
-                Relaunch(host);
+                // 9. ...and only then is there anyone to say whether the new
+                //    version works. An installer returning 0 means the files
+                //    were copied, not that the result loads.
+                int receiptSeconds = ReadSeconds(options, "receipt-seconds", DefaultReceiptSeconds);
+                int waitSeconds = ReadSeconds(options, "wait-seconds", DefaultWaitSeconds);
+                if (!rollback.Accepted)
+                {
+                    Log("没有回滚包，不等待启动回执");
+                }
+                else if (!AwaitStartupReceipt(stageRoot, check.Release.Version, installedAtUtc,
+                                              receiptSeconds, waitSeconds) &&
+                         RollBack(stage, rollback.Release, installedVersion, check.Release.Version,
+                                  "no_startup_receipt"))
+                {
+                    ReportFailure(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "DeepExcel v{0} 安装后没能正常启动，已自动恢复到 v{1}。请重新打开 Excel。",
+                        check.Release.Version, rollback.Release.Version));
+                    return ExitRolledBack;
+                }
             }
 
             // The staging directory is not deleted here: this executable is
@@ -380,7 +414,12 @@ namespace DeepExcel.Updater
             Log("回滚成功：已恢复 v" + previous.Version);
             try
             {
-                new UpdateJournal(stageRoot).WriteRollback(restoredVersion, failedVersion, reasonCode);
+                var journal = new UpdateJournal(stageRoot);
+                // The upgrade receipt, if this run wrote one, is now false: left
+                // in place, the restored version would report the failed one as
+                // installed and count it as an upgrade.
+                journal.TakeReceipt();
+                journal.WriteRollback(restoredVersion, failedVersion, reasonCode);
             }
             catch (Exception ex)
             {
@@ -421,14 +460,68 @@ namespace DeepExcel.Updater
             }
         }
 
-        private static void Relaunch(string executable)
+        /// <summary>
+        /// Waits for the new version's startup receipt. True when it arrived.
+        ///
+        /// False -- roll back -- only once the receipt window has passed AND no
+        /// process holds a lease: a holder means some process has the new
+        /// DeepExcel loaded, whose files the rollback installer could not
+        /// replace, and which may yet report in (a slow first start). So with a
+        /// holder this keeps waiting, for at most <paramref name="waitSeconds"/>
+        /// more, and then leaves the new version alone rather than fight it.
+        /// </summary>
+        private static bool AwaitStartupReceipt(
+            string stageRoot, string version, DateTime installedAtUtc, int receiptSeconds, int waitSeconds)
+        {
+            var journal = new UpdateJournal(stageRoot);
+            DateTime receiptDeadline = DateTime.UtcNow.AddSeconds(receiptSeconds);
+            DateTime giveUp = receiptDeadline.AddSeconds(waitSeconds);
+            Log("等待 v" + version + " 的启动回执（最多 " + receiptSeconds + " 秒）");
+
+            while (true)
+            {
+                if (journal.HasStartedSince(version, installedAtUtc))
+                {
+                    Log("启动回执：v" + version + " 已正常启动");
+                    return true;
+                }
+                DateTime now = DateTime.UtcNow;
+                if (now >= receiptDeadline)
+                {
+                    IList<LeaseHolder> holders = UpdateLease.FindHolders(stageRoot);
+                    if (holders.Count == 0)
+                    {
+                        Log("超时未收到启动回执，且没有进程加载着 DeepExcel");
+                        return false;
+                    }
+                    if (now >= giveUp)
+                    {
+                        Log("仍有进程加载着 DeepExcel 却没有启动回执；不回滚，保留新版本");
+                        return true;
+                    }
+                }
+                System.Threading.Thread.Sleep(1000);
+            }
+        }
+
+        private static int ReadSeconds(Dictionary<string, string> options, string name, int fallback)
+        {
+            if (options.TryGetValue(name, out string text) &&
+                int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int seconds))
+            {
+                return seconds;
+            }
+            return fallback;
+        }
+
+        private static bool Relaunch(string executable)
         {
             try
             {
                 if (!File.Exists(executable))
                 {
                     Log("宿主程序不存在，跳过重启：" + executable);
-                    return;
+                    return false;
                 }
                 // No document arguments: reopening the user's workbooks is their
                 // call, and getting it wrong means reopening the wrong file.
@@ -438,10 +531,12 @@ namespace DeepExcel.Updater
                     UseShellExecute = true,
                 })?.Dispose();
                 Log("已重新启动 " + executable);
+                return true;
             }
             catch (Exception ex)
             {
                 Log("重新启动失败：" + ex.Message);
+                return false;
             }
         }
 
