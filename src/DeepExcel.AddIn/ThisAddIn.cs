@@ -126,6 +126,8 @@ namespace DeepExcel.AddIn
             try
             {
                 Log("OnConnection started, connectMode=" + connectMode);
+                // 更新租约：告诉更新程序"本进程加载着 DeepExcel"，取代按进程名判断
+                DeepExcel.AddIn.Updates.UpdateHostHooks.OnAddInLoaded();
                 _excelApp = (Microsoft.Office.Interop.Excel.Application)application;
                 Log("Application object stored, type=" + (application == null ? "null" : application.GetType().FullName));
 

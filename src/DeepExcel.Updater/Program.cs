@@ -163,11 +163,11 @@ namespace DeepExcel.Updater
                 return ExitInstalled;
             }
 
-            // 4. Refuse while any host application still holds the files. This
-            //    also covers the second Excel window the user forgot about, and
-            //    it sits here rather than earlier so a bad package is reported
-            //    as a bad package instead of as "please close Excel".
-            string running = FindRunningHost();
+            // 4. Refuse while any process still has DeepExcel loaded. This also
+            //    covers the second Excel window the user forgot about, and it
+            //    sits here rather than earlier so a bad package is reported as a
+            //    bad package instead of as "please close Excel".
+            string running = FindRunningHost(StageRootOf(stage));
             if (running != null)
             {
                 Log("检测到仍在运行的宿主进程：" + running);
@@ -196,8 +196,7 @@ namespace DeepExcel.Updater
             // to answer -- has no source of truth anywhere.
             try
             {
-                string stageRoot = Path.GetDirectoryName(stage.TrimEnd(
-                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                string stageRoot = StageRootOf(stage);
                 new UpdateJournal(stageRoot).WriteReceipt(installedVersion, check.Release.Version);
                 Log("已写入升级回执到 " + stageRoot);
             }
@@ -244,7 +243,53 @@ namespace DeepExcel.Updater
             }
         }
 
-        private static string FindRunningHost()
+        private static string StageRootOf(string stage)
+        {
+            return Path.GetDirectoryName(stage.TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        }
+
+        /// <summary>
+        /// The process that still has DeepExcel loaded, or null.
+        ///
+        /// Asks the leases first: every process that loads the add-in holds one,
+        /// so this names exactly the processes that would make the install fail
+        /// -- and not WPS Writer, or an Excel with DeepExcel switched off, which
+        /// the old name check blocked on forever. Only when no lease directory
+        /// exists at all (a build from before leases) does it fall back to
+        /// matching process names, because "no leases recorded" is not evidence
+        /// that nothing is running.
+        /// </summary>
+        private static string FindRunningHost(string stageRoot)
+        {
+            if (UpdateLease.IsTracked(stageRoot))
+            {
+                IList<LeaseHolder> holders = UpdateLease.FindHolders(stageRoot);
+                if (holders.Count == 0)
+                {
+                    Log("租约检查：没有进程加载着 DeepExcel");
+                    return null;
+                }
+                LeaseHolder first = holders[0];
+                Log(string.Format(
+                    CultureInfo.InvariantCulture, "租约检查：进程 {0}（{1}）仍加载着 DeepExcel",
+                    first.ProcessId, first.ProcessName ?? "?"));
+                return DisplayName(first.ProcessName);
+            }
+
+            Log("未找到租约目录，按进程名判断宿主是否在运行");
+            return FindHostByName();
+        }
+
+        private static string DisplayName(string processName)
+        {
+            if (string.Equals(processName, "EXCEL", StringComparison.OrdinalIgnoreCase)) return "Excel";
+            if (string.Equals(processName, "et", StringComparison.OrdinalIgnoreCase)) return "WPS 表格";
+            if (string.Equals(processName, "wps", StringComparison.OrdinalIgnoreCase)) return "WPS";
+            return string.IsNullOrEmpty(processName) ? "Excel / WPS" : processName;
+        }
+
+        private static string FindHostByName()
         {
             foreach (string name in HostProcessNames)
             {

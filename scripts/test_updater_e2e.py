@@ -36,7 +36,7 @@ FRAMEWORK = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319"
 UPDATER_DIR = os.path.join(ROOT, "src", "DeepExcel.Updater")
 UPDATES_DIR = os.path.join(ROOT, "src", "DeepExcel.AddIn", "Updates")
 SHARED_SOURCES = ["ReleaseVersion.cs", "UpdateSigning.cs", "UpdateManifest.cs",
-                  "UpdateStage.cs", "UpdateJournal.cs"]
+                  "UpdateStage.cs", "UpdateJournal.cs", "UpdateLease.cs"]
 
 EXIT_INSTALLED = 0
 EXIT_USAGE = 2
@@ -154,6 +154,21 @@ def run_updater(updater, stage_dir, installed="0.5.0", extra=None):
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
+def stage_root(stage_dir):
+    """The directory holding the version directories, the journal and the leases."""
+    return os.path.dirname(stage_dir.rstrip("\\/"))
+
+
+def run_real(updater, stage_dir, installed="0.5.0", extra=None, timeout=120):
+    """Runs the updater for real: no --dry-run, so the installer is executed."""
+    command = [updater, "--stage", stage_dir, "--installed-version", installed]
+    if extra:
+        command += extra
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout,
+                            encoding="utf-8", errors="replace")
+    return result.returncode, (result.stdout or "") + (result.stderr or "")
+
+
 def main():
     if not os.path.isfile(CSC):
         print("ERROR: Roslyn compiler not found: %s" % CSC, file=sys.stderr)
@@ -262,32 +277,61 @@ def main():
         # of truth for "how many clients took the update" -- so the one code
         # path nobody could see is also the one that answers the only question
         # the feature has to answer.
+        #
+        # The stage root gets a lease directory, as it does on any machine
+        # where this build of the add-in has loaded. With leases the updater
+        # asks "does anything have DeepExcel loaded?" rather than "is any
+        # process called EXCEL / et / wps running?", so this now runs on a
+        # developer machine with Excel or WPS open instead of being skipped.
         print("\n==> Real install (stub installer)")
-        applied = stage(workspace, "applied", key_path,
-                        package=build_stub_installer(workspace))
-        result = subprocess.run(
-            [updater, "--stage", applied, "--installed-version", "0.5.0"],
-            capture_output=True, text=True, timeout=120,
-            encoding="utf-8", errors="replace")
+        stub = build_stub_installer(workspace)
+        applied = stage(workspace, "applied", key_path, package=stub)
+        os.makedirs(os.path.join(stage_root(applied), "leases"))
+        code, output = run_real(updater, applied)
+        check(code == EXIT_INSTALLED,
+              "a staged update installs end to end (exit %d)" % code)
+        check("租约检查" in output, "the host check is answered by the leases")
+        receipt_path = os.path.join(stage_root(applied), "applied.json")
+        check(os.path.isfile(receipt_path),
+              "the updater leaves an upgrade receipt beside the version directories")
+        if os.path.isfile(receipt_path):
+            with open(receipt_path, encoding="utf-8") as stream:
+                receipt = json.load(stream)
+            check(receipt.get("from") == "0.5.0" and receipt.get("to") == "0.6.0",
+                  "the receipt names both versions (%s -> %s)"
+                  % (receipt.get("from"), receipt.get("to")))
 
-        if result.returncode == EXIT_HOST_RUNNING:
-            # Excel or WPS is open on this machine, and the updater correctly
-            # refuses to install underneath it. Not a failure.
-            print("  skip  receipt check -- a host application is running "
-                  "(the updater refused, which is correct)")
-        else:
-            check(result.returncode == EXIT_INSTALLED,
-                  "a staged update installs end to end (exit %d)" % result.returncode)
-            receipt_path = os.path.join(
-                os.path.dirname(applied.rstrip("\\/")), "applied.json")
-            check(os.path.isfile(receipt_path),
-                  "the updater leaves an upgrade receipt beside the version directories")
-            if os.path.isfile(receipt_path):
-                with open(receipt_path, encoding="utf-8") as stream:
-                    receipt = json.load(stream)
-                check(receipt.get("from") == "0.5.0" and receipt.get("to") == "0.6.0",
-                      "the receipt names both versions (%s -> %s)"
-                      % (receipt.get("from"), receipt.get("to")))
+        print("\n==> File leases")
+        # A process holding its lease open is a process with DeepExcel loaded.
+        # Python's open() shares read and write but not delete -- the same
+        # property the add-in's own lease relies on.
+        held = stage(workspace, "lease-held", key_path, package=stub)
+        lease_dir = os.path.join(stage_root(held), "leases")
+        os.makedirs(lease_dir)
+        lease_path = os.path.join(lease_dir, "%d.lease" % os.getpid())
+        with open(lease_path, "w", encoding="utf-8") as holder:
+            holder.write("EXCEL 0.5.0")
+            holder.flush()
+            code, output = run_real(updater, held)
+        check(code == EXIT_HOST_RUNNING,
+              "a held lease defers the install (exit %d)" % code)
+        check(not os.path.isfile(os.path.join(stage_root(held), "applied.json")),
+              "a deferred install writes no receipt")
+
+        # Now closed: what a machine that lost power leaves behind.
+        code, output = run_real(updater, held)
+        check(code == EXIT_INSTALLED,
+              "a lease nobody holds is stale and does not block (exit %d)" % code)
+        check(not os.path.exists(lease_path), "the stale lease is cleaned up")
+
+        # A stage root without a lease directory was never seen by a build
+        # that writes leases; the updater must not read that as "nothing runs".
+        legacy = stage(workspace, "lease-legacy", key_path, package=stub)
+        code, output = run_real(updater, legacy)
+        check("按进程名判断" in output,
+              "without a lease directory the updater falls back to process names")
+        check(code in (EXIT_INSTALLED, EXIT_HOST_RUNNING),
+              "the fallback either installs or defers, never crashes (exit %d)" % code)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
