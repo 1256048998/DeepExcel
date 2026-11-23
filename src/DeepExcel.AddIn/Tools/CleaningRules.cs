@@ -55,6 +55,26 @@ namespace DeepExcel.AddIn.Tools
             return cleaned != s ? cleaned : null;
         }
 
+        /// <summary>Number format clean_amount applies to what it converts.</summary>
+        public const string AmountFormat = "#,##0.00";
+
+        /// <summary>
+        /// clean_amount: currency symbols, thousands separators and 元/圆
+        /// stripped, then parsed as a number. Text only; text that does not
+        /// parse is left alone.
+        /// </summary>
+        public static double? CleanAmount(object value)
+        {
+            if (!(value is string s) || s.Length == 0) return null;
+            var cleaned = s
+                .Replace("¥", "").Replace("￥", "")
+                .Replace("$", "").Replace("€", "").Replace("£", "")
+                .Replace(",", "").Replace("，", "")
+                .Replace("元", "").Replace("圆", "")
+                .Trim();
+            return double.TryParse(cleaned, out var number) ? number : (double?)null;
+        }
+
         public static bool IsSpecialChar(char c)
         {
             if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;

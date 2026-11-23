@@ -344,5 +344,36 @@ namespace DeepExcel.Tests
             Assert.Equal("\"单价100\"", At(preview, "A1").After);
             Assert.Equal("\"备注[U+0007]\"", At(preview, "A2").Before);
         }
+
+        // ------------------------------------------------------------------
+        // clean_amount
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Clean_amount_shows_the_number_as_it_will_be_displayed()
+        {
+            var sheet = new GridSheet()
+                .Set("B1", "金额")
+                .Set("B2", "¥1,234.5")
+                .Set("B3", "2,000元")
+                .Set("B4", 88.0);
+            var preview = new PreviewBuilder(sheet).Build("clean_amount", Args("range_address", "B1:B4"));
+
+            // The executor applies #,##0.00 to what it converts.
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("¥1,234.5", At(preview, "B2").Before);
+            Assert.Equal("1,234.50", At(preview, "B2").After);
+            Assert.Equal("2,000.00", At(preview, "B3").After);
+            Assert.Null(At(preview, "B4"));
+        }
+
+        [Fact]
+        public void Clean_amount_says_which_text_it_could_not_read_as_money()
+        {
+            var sheet = new GridSheet().Set("B1", "金额").Set("B2", "¥5").Set("B3", "待定");
+            var preview = new PreviewBuilder(sheet).Build("clean_amount", Args("range_address", "B1:B3"));
+
+            Assert.Contains(preview.Warnings, w => w.Contains("2 个文本格") && w.Contains("B1"));
+        }
     }
 }

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using DeepExcel.AddIn.Tools;
 
 namespace DeepExcel.AddIn.Preview
@@ -65,7 +67,8 @@ namespace DeepExcel.AddIn.Preview
         /// </summary>
         private ChangePreview BuildPerCell(
             string toolName, IDictionary<string, object> args,
-            Func<object, object> rule, Func<object, string> show)
+            Func<object, object> rule, Func<object, string> show,
+            Func<Grid, IEnumerable<string>> warnings = null)
         {
             var target = ResolveTarget(args, "range_address", "address", "range");
             if (target == null)
@@ -90,8 +93,34 @@ namespace DeepExcel.AddIn.Preview
                     OverwritesFormula = cell.HasFormula
                 });
             }
+            if (warnings != null)
+            {
+                preview.Warnings.AddRange(warnings(grid));
+            }
             Finalize(preview);
             return preview;
+        }
+
+        private static string ShowAmount(object value)
+        {
+            return value is double number
+                ? number.ToString(CleaningRules.AmountFormat, CultureInfo.InvariantCulture)
+                : Stringify(value);
+        }
+
+        /// <summary>
+        /// Text clean_amount will leave as it is. Usually a header, sometimes
+        /// an amount written in a way the rule does not read ("约 5 万") --
+        /// worth naming, since the user asked for the column to be cleaned.
+        /// </summary>
+        private static IEnumerable<string> AmountsLeftAsText(Grid grid)
+        {
+            var skipped = grid.Cells
+                .Where(c => RawValue(c) is string s && s.Length > 0 && CleaningRules.CleanAmount(s) == null)
+                .ToList();
+            if (skipped.Count == 0) yield break;
+            var examples = string.Join("、", skipped.Take(3).Select(c => c.Address + "「" + Clip((string)RawValue(c)) + "」"));
+            yield return $"{skipped.Count} 个文本格不是可识别的金额，保持原样（{examples}）";
         }
 
         /// <summary>

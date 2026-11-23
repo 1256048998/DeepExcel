@@ -575,22 +575,12 @@ namespace DeepExcel.AddIn.Tools
 
                 foreach (Range cell in range.Cells)
                 {
-                    var val = cell.Value2;
-                    if (val != null && val is string s && !string.IsNullOrEmpty(s))
+                    var amount = CleaningRules.CleanAmount(cell.Value2);
+                    if (amount != null)
                     {
-                        string cleaned = s
-                            .Replace("¥", "").Replace("￥", "")
-                            .Replace("$", "").Replace("€", "").Replace("£", "")
-                            .Replace(",", "").Replace("，", "")
-                            .Replace("元", "").Replace("圆", "")
-                            .Trim();
-
-                        if (double.TryParse(cleaned, out double num))
-                        {
-                            cell.Value = num;
-                            cell.NumberFormat = "#,##0.00";
-                            cleanedCount++;
-                        }
+                        cell.Value = amount.Value;
+                        cell.NumberFormat = CleaningRules.AmountFormat;
+                        cleanedCount++;
                     }
                 }
 
