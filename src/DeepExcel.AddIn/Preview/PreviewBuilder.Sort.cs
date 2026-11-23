@@ -8,11 +8,19 @@ namespace DeepExcel.AddIn.Preview
 {
     /// <summary>
     /// sort_data (ExcelActions.SortData): rows of the range reordered by one
-    /// column with Range.Sort -- pinyin order for text, header row optional.
+    /// column with Range.Sort -- text in the user locale's order (pinyin under a
+    /// Chinese locale), header row optional.
     /// </summary>
     public sealed partial class PreviewBuilder
     {
-        private static readonly CompareInfo PinyinOrder = CultureInfo.GetCultureInfo("zh-CN").CompareInfo;
+        /// <summary>
+        /// Text order as Excel sorts it on this machine. xlPinYin gives pinyin
+        /// order only under a Chinese locale; under en-US the same call sorts
+        /// 张/李/王/赵/陈 by code point (measured against real Excel), which is
+        /// what the user-locale collation gives here too. The add-in runs
+        /// inside EXCEL.EXE, whose culture is the user's locale.
+        /// </summary>
+        private static CompareInfo TextOrder => CultureInfo.CurrentCulture.CompareInfo;
 
         private ChangePreview BuildSortData(string toolName, IDictionary<string, object> args)
         {
@@ -162,7 +170,7 @@ namespace DeepExcel.AddIn.Preview
                 if (rank != 0) return _sign * rank;
                 int result;
                 if (x is double a && y is double b) result = a.CompareTo(b);
-                else if (x is string s && y is string t) result = PinyinOrder.Compare(s, t, CompareOptions.IgnoreCase);
+                else if (x is string s && y is string t) result = TextOrder.Compare(s, t, CompareOptions.IgnoreCase);
                 else if (x is bool p && y is bool q) result = p.CompareTo(q);
                 else result = 0;
                 return _sign * result;

@@ -1097,17 +1097,29 @@ namespace DeepExcel.Tests
         }
 
         [Fact]
-        public void Sort_data_orders_chinese_text_by_pinyin()
+        public void Sort_data_orders_chinese_text_by_pinyin_under_a_chinese_locale()
         {
-            // The executor sorts with SortMethod xlPinYin.
-            var sheet = new GridSheet().Rows("A1",
-                new object[] { "张三" }, new object[] { "王五" }, new object[] { "李四" });
-            var preview = new PreviewBuilder(sheet).Build("sort_data",
-                Args("range_address", "A1:A3", "sort_column", "A", "descending", false, "has_header", false));
+            // The executor sorts with SortMethod xlPinYin, which Excel honours
+            // under a Chinese locale. The preview follows the locale it runs in
+            // (inside EXCEL.EXE, the user's); PreviewExcelTests checks the
+            // match against real Excel on the machine at hand.
+            var original = System.Threading.Thread.CurrentThread.CurrentCulture;
+            System.Threading.Thread.CurrentThread.CurrentCulture = new System.Globalization.CultureInfo("zh-CN");
+            try
+            {
+                var sheet = new GridSheet().Rows("A1",
+                    new object[] { "张三" }, new object[] { "王五" }, new object[] { "李四" });
+                var preview = new PreviewBuilder(sheet).Build("sort_data",
+                    Args("range_address", "A1:A3", "sort_column", "A", "descending", false, "has_header", false));
 
-            Assert.Equal("李四", At(preview, "A1").After);
-            Assert.Null(At(preview, "A2"));
-            Assert.Equal("张三", At(preview, "A3").After);
+                Assert.Equal("李四", At(preview, "A1").After);
+                Assert.Null(At(preview, "A2"));
+                Assert.Equal("张三", At(preview, "A3").After);
+            }
+            finally
+            {
+                System.Threading.Thread.CurrentThread.CurrentCulture = original;
+            }
         }
 
         // ------------------------------------------------------------------
