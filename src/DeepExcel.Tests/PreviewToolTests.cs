@@ -861,5 +861,23 @@ namespace DeepExcel.Tests
 
             Assert.True(preview.IsNoOp);
         }
+
+        // ------------------------------------------------------------------
+        // unmerge_cells
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Unmerge_cells_changes_no_values_and_says_so()
+        {
+            // Range.UnMerge() leaves the content in the top-left cell; the
+            // other cells of a merged area are already empty. Nothing to ask.
+            var sheet = new GridSheet().Set("A1", "标题");
+            var preview = new PreviewBuilder(sheet).Build("unmerge_cells", Args("address", "A1:D1"));
+
+            Assert.True(preview.Previewable);
+            Assert.Equal(0, preview.AffectedCells);
+            Assert.False(PreviewPolicy.ShouldInterrupt(preview));
+            Assert.Contains(preview.Warnings, w => w.Contains("左上角"));
+        }
     }
 }

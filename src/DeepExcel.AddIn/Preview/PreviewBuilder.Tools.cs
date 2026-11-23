@@ -512,6 +512,24 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// unmerge_cells: Range.UnMerge() (ExcelActions.UnmergeCells) keeps
+        /// each merged area's content in its top-left cell, and the other cells
+        /// of a merged area hold nothing to begin with. No value changes, so
+        /// the workbook need not be read and there is nothing to confirm.
+        /// </summary>
+        private static ChangePreview BuildUnmergeCells(string toolName, IDictionary<string, object> args)
+        {
+            if (string.IsNullOrEmpty(GetString(args, "address") ?? GetString(args, "range_address")))
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var preview = new ChangePreview { ToolName = toolName };
+            preview.Warnings.Add("取消合并只改版式：内容留在原合并区域的左上角，不改动任何值");
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once
