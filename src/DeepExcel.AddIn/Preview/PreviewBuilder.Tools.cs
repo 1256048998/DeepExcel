@@ -146,6 +146,31 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// rename_columns: new_names written left to right into the range's
+        /// first row (DataCleaner.RenameColumns); names past the last column
+        /// are ignored. A null name clears the header.
+        /// </summary>
+        private ChangePreview BuildRenameColumns(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var names = GetStringArray(args, "new_names");
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            for (var c = 0; c < names.Count && c < grid.Cols; c++)
+            {
+                AddChangeIfDifferent(preview, grid[0, c], names[c] ?? "");
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

@@ -458,5 +458,49 @@ namespace DeepExcel.Tests
             Assert.Equal(1, preview.FormulasOverwritten);
             Assert.Equal("=IF(B2>0,B2,\"\")", At(preview, "A2").Before);
         }
+
+        // ------------------------------------------------------------------
+        // rename_columns
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Rename_columns_shows_each_header_that_changes()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "name", "amt", "date" },
+                new object[] { "张三", 5.0, "2026-01-01" });
+            // Arrays arrive from the sidecar as raw JSON text.
+            var preview = new PreviewBuilder(sheet).Build("rename_columns",
+                Args("range_address", "A1:C2", "new_names", "[\"姓名\", \"amt\", \"日期\"]"));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("name", At(preview, "A1").Before);
+            Assert.Equal("姓名", At(preview, "A1").After);
+            Assert.Null(At(preview, "B1"));
+            Assert.Equal("日期", At(preview, "C1").After);
+        }
+
+        [Fact]
+        public void Rename_columns_ignores_names_beyond_the_range()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { "a", "b" });
+            var preview = new PreviewBuilder(sheet).Build("rename_columns",
+                Args("range_address", "A1:B1", "new_names", new List<object> { "x", "y", "z" }));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Null(At(preview, "C1"));
+        }
+
+        [Fact]
+        public void Rename_columns_with_a_non_text_name_renames_nothing_like_the_executor()
+        {
+            // The executor reads new_names with JsonElement.GetString(), which
+            // throws on a number; the whole list is then dropped.
+            var sheet = new GridSheet().Rows("A1", new object[] { "a", "b" });
+            var preview = new PreviewBuilder(sheet).Build("rename_columns",
+                Args("range_address", "A1:B1", "new_names", "[\"x\", 2]"));
+
+            Assert.True(preview.IsNoOp);
+        }
     }
 }

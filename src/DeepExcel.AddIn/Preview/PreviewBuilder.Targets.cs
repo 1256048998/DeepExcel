@@ -144,6 +144,54 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// A list-of-text argument (new_names, operations), read the way
+        /// ToolDispatcher.GetArgArray reads it.
+        ///
+        /// The sidecar's permission request carries arrays as raw JSON text;
+        /// tests pass real lists. The executor calls GetString() on each JSON
+        /// element, which throws on anything but a string or null, and then
+        /// drops the whole list -- so a list with a number in it yields an
+        /// empty list here too.
+        /// </summary>
+        internal static List<string> GetStringArray(IDictionary<string, object> args, string key)
+        {
+            var list = new List<string>();
+            if (args == null || !args.TryGetValue(key, out var raw) || raw == null)
+            {
+                return list;
+            }
+            if (raw is string text)
+            {
+                try
+                {
+                    using (var doc = System.Text.Json.JsonDocument.Parse(text))
+                    {
+                        if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Array) return list;
+                        foreach (var item in doc.RootElement.EnumerateArray())
+                        {
+                            if (item.ValueKind == System.Text.Json.JsonValueKind.Null) list.Add(null);
+                            else if (item.ValueKind == System.Text.Json.JsonValueKind.String) list.Add(item.GetString());
+                            else return new List<string>();
+                        }
+                    }
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return new List<string>();
+                }
+                return list;
+            }
+            if (raw is System.Collections.IEnumerable sequence)
+            {
+                foreach (var item in sequence)
+                {
+                    list.Add(item?.ToString());
+                }
+            }
+            return list;
+        }
+
+        /// <summary>
         /// The value the executor will see. Readers that only fill in the
         /// display text (older fakes) are treated as holding that text.
         /// </summary>

@@ -106,6 +106,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildPerCell(toolName, args, v => CleaningRules.CleanAmount(v), ShowAmount, AmountsLeftAsText);
                     case "fill_blank_cells":
                         return BuildFillBlankCells(toolName, args);
+                    case "rename_columns":
+                        return BuildRenameColumns(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:
