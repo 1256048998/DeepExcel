@@ -301,6 +301,25 @@ namespace DeepExcel.AddIn.Preview
             }
 
             var preview = new ChangePreview { ToolName = toolName };
+
+            // The tool itself takes column (1-based number) and count.
+            var number = GetInt(args, "column");
+            if (number != null && GetString(args, "columns") == null)
+            {
+                var count = GetInt(args, "count") ?? 1;
+                if (number < 1 || count < 1)
+                {
+                    return ChangePreview.NotPreviewable(toolName, "列号参数无效");
+                }
+                for (var col = number.Value; col < number.Value + count && col <= Sidecar.CellRect.MaxColumn; col++)
+                {
+                    preview.DeletedColumns.Add(Sidecar.CellRect.ColumnName(col));
+                }
+                preview.Warnings.Add("删除列会使右侧所有列左移，引用这些列的公式可能失效");
+                Finalize(preview);
+                return preview;
+            }
+
             foreach (var part in columns.Split(',', ';'))
             {
                 var trimmed = part.Trim();

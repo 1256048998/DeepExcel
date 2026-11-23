@@ -1158,5 +1158,17 @@ namespace DeepExcel.Tests
             Assert.Equal("x", At(preview, "C3").After);
             Assert.Equal("y", At(preview, "C4").After);
         }
+
+        [Fact]
+        public void Delete_columns_reads_the_executors_column_number_and_count()
+        {
+            // The tool takes column (1-based number) and count; JSON numbers
+            // arrive as doubles.
+            var preview = new PreviewBuilder(new GridSheet()).Build("delete_columns",
+                Args("column", 3.0, "count", 2.0));
+
+            Assert.Equal(new[] { "C", "D" }, preview.DeletedColumns.ToArray());
+            Assert.Contains("删除 2 列", preview.Summary());
+        }
     }
 }
