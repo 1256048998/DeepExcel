@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using DeepExcel.AddIn.Tools;
 
 namespace DeepExcel.AddIn.Preview
 {
@@ -51,6 +52,62 @@ namespace DeepExcel.AddIn.Preview
             }
             Finalize(preview);
             return preview;
+        }
+
+        /// <summary>
+        /// A cleaning operation that rewrites cells one at a time with a rule
+        /// from <see cref="CleaningRules"/> -- the same rule DataCleaner runs.
+        ///
+        /// The rule sees the raw value, not the display text: the executor
+        /// reads Value2, so a formula whose result needs cleaning is rewritten
+        /// as a literal and loses its formula. That is reported as a formula
+        /// overwrite, with the formula text as the "before".
+        /// </summary>
+        private ChangePreview BuildPerCell(
+            string toolName, IDictionary<string, object> args,
+            Func<object, object> rule, Func<object, string> show)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            foreach (var cell in grid.Cells)
+            {
+                var raw = RawValue(cell);
+                var next = rule(raw);
+                if (next == null) continue;
+                preview.Changes.Add(new CellChange
+                {
+                    Address = cell.Address,
+                    Before = cell.HasFormula ? cell.Formula : show(raw),
+                    After = show(next),
+                    Kind = ChangeKind.Overwrite,
+                    OverwritesFormula = cell.HasFormula
+                });
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
+        /// Text with its edges visible. Whitespace changes are otherwise
+        /// invisible in the panel: "  张三 " → "张三" would read as no change.
+        /// </summary>
+        internal static string Quoted(object value)
+        {
+            return "\"" + Clip(value as string ?? Stringify(value)) + "\"";
+        }
+
+        internal static string Clip(string text)
+        {
+            const int max = 60;
+            if (text == null) return "";
+            return text.Length > max ? text.Substring(0, max) + "…" : text;
         }
     }
 }

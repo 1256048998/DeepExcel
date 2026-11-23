@@ -143,6 +143,17 @@ namespace DeepExcel.AddIn.Preview
             return topLeft == bottomRight ? topLeft : topLeft + ":" + bottomRight;
         }
 
+        /// <summary>
+        /// The value the executor will see. Readers that only fill in the
+        /// display text (older fakes) are treated as holding that text.
+        /// </summary>
+        internal static object RawValue(CellSnapshot cell)
+        {
+            if (cell == null) return null;
+            if (cell.Value != null) return cell.Value;
+            return string.IsNullOrEmpty(cell.Display) ? null : cell.Display;
+        }
+
         private static bool IsFormulaText(string text)
         {
             return !string.IsNullOrEmpty(text) && text.StartsWith("=", StringComparison.Ordinal);

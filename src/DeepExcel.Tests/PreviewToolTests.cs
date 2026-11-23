@@ -265,5 +265,43 @@ namespace DeepExcel.Tests
 
             Assert.False(preview.Previewable);
         }
+
+        // ------------------------------------------------------------------
+        // trim_spaces
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Trim_spaces_lists_padded_text_with_the_padding_visible()
+        {
+            var sheet = new GridSheet().Set("A1", "  张三 ").Set("A2", "李四").Set("A3", 12.0);
+            var preview = new PreviewBuilder(sheet).Build("trim_spaces", Args("range_address", "A1:A3"));
+
+            Assert.True(preview.Previewable);
+            Assert.Equal(1, preview.AffectedCells);
+            // Spaces are invisible in the panel, so both sides are quoted.
+            Assert.Equal("\"  张三 \"", At(preview, "A1").Before);
+            Assert.Equal("\"张三\"", At(preview, "A1").After);
+        }
+
+        [Fact]
+        public void Trim_spaces_flags_a_formula_whose_result_is_padded()
+        {
+            // The executor writes the trimmed result over the cell, so the
+            // formula is lost.
+            var sheet = new GridSheet().Set("B1", " x ", "=\" x \"");
+            var preview = new PreviewBuilder(sheet).Build("trim_spaces", Args("range_address", "B1"));
+
+            Assert.Equal(1, preview.FormulasOverwritten);
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+        }
+
+        [Fact]
+        public void Trim_spaces_on_clean_text_is_a_no_op()
+        {
+            var sheet = new GridSheet().Set("A1", "ok").Set("A2", null);
+            var preview = new PreviewBuilder(sheet).Build("trim_spaces", Args("range_address", "A1:A2"));
+
+            Assert.True(preview.IsNoOp);
+        }
     }
 }

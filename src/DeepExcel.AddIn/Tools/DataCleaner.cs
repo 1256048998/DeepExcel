@@ -179,10 +179,10 @@ namespace DeepExcel.AddIn.Tools
 
                 foreach (Range cell in range.Cells)
                 {
-                    var val = cell.Value2;
-                    if (val != null && val is string s && s != s.Trim())
+                    var trimmed = CleaningRules.TrimSpaces(cell.Value2);
+                    if (trimmed != null)
                     {
-                        cell.Value = s.Trim();
+                        cell.Value = trimmed;
                         trimmedCount++;
                     }
                 }
