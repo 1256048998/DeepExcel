@@ -537,25 +537,11 @@ namespace DeepExcel.AddIn.Tools
 
                 foreach (Range cell in range.Cells)
                 {
-                    var val = cell.Value2;
-                    if (val != null && val is string s && !string.IsNullOrEmpty(s))
+                    var cleaned = CleaningRules.RemoveSpecialChars(cell.Value2);
+                    if (cleaned != null)
                     {
-                        char[] arr = s.ToCharArray();
-                        List<char> result = new List<char>();
-                        foreach (char c in arr)
-                        {
-                            if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r')
-                                continue;
-                            if (c == '\u00A0')
-                                continue;
-                            result.Add(c);
-                        }
-                        string newVal = new string(result.ToArray());
-                        if (newVal != s)
-                        {
-                            cell.Value = newVal;
-                            cleanedCount++;
-                        }
+                        cell.Value = cleaned;
+                        cleanedCount++;
                     }
                 }
 

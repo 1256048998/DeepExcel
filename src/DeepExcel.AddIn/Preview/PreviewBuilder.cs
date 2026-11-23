@@ -100,6 +100,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildPerCell(toolName, args, v => CleaningRules.TrimSpaces(v), Quoted);
                     case "collapse_spaces":
                         return BuildPerCell(toolName, args, v => CleaningRules.CollapseSpaces(v), Quoted);
+                    case "remove_special_chars":
+                        return BuildPerCell(toolName, args, v => CleaningRules.RemoveSpecialChars(v), ShowSpecialChars);
                     default:
                         // Simulable in principle but not implemented yet.
                         // Claiming an empty change set would be a lie the user

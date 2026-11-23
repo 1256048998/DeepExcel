@@ -37,5 +37,28 @@ namespace DeepExcel.AddIn.Tools
             }
             return collapsed != s ? collapsed : null;
         }
+
+        /// <summary>
+        /// remove_special_chars: control characters other than tab and line
+        /// breaks, and non-breaking spaces. Text only.
+        /// </summary>
+        public static string RemoveSpecialChars(object value)
+        {
+            if (!(value is string s) || s.Length == 0) return null;
+            var kept = new System.Text.StringBuilder(s.Length);
+            foreach (var c in s)
+            {
+                if (IsSpecialChar(c)) continue;
+                kept.Append(c);
+            }
+            var cleaned = kept.ToString();
+            return cleaned != s ? cleaned : null;
+        }
+
+        public static bool IsSpecialChar(char c)
+        {
+            if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;
+            return c == '\u00A0';
+        }
     }
 }

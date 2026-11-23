@@ -103,6 +103,28 @@ namespace DeepExcel.AddIn.Preview
             return "\"" + Clip(value as string ?? Stringify(value)) + "\"";
         }
 
+        /// <summary>
+        /// Quoted, with each character remove_special_chars strips spelled out
+        /// as [U+XXXX] -- they are invisible by definition.
+        /// </summary>
+        internal static string ShowSpecialChars(object value)
+        {
+            var text = value as string ?? Stringify(value);
+            var shown = new System.Text.StringBuilder();
+            foreach (var c in text)
+            {
+                if (CleaningRules.IsSpecialChar(c))
+                {
+                    shown.Append("[U+").Append(((int)c).ToString("X4")).Append(']');
+                }
+                else
+                {
+                    shown.Append(c);
+                }
+            }
+            return Quoted(shown.ToString());
+        }
+
         internal static string Clip(string text)
         {
             const int max = 60;

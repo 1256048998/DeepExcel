@@ -324,5 +324,25 @@ namespace DeepExcel.Tests
             var sheet = new GridSheet().Set("A1", 3.0);
             Assert.True(new PreviewBuilder(sheet).Build("collapse_spaces", Args("range_address", "A1")).IsNoOp);
         }
+
+        // ------------------------------------------------------------------
+        // remove_special_chars
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Remove_special_chars_names_the_invisible_characters_it_removes()
+        {
+            var sheet = new GridSheet()
+                .Set("A1", "单价\u00A0100")
+                .Set("A2", "备注\u0007")
+                .Set("A3", "换行\n保留");
+            var preview = new PreviewBuilder(sheet).Build("remove_special_chars", Args("range_address", "A1:A3"));
+
+            // Tabs and line breaks are kept by the executor.
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("\"单价[U+00A0]100\"", At(preview, "A1").Before);
+            Assert.Equal("\"单价100\"", At(preview, "A1").After);
+            Assert.Equal("\"备注[U+0007]\"", At(preview, "A2").Before);
+        }
     }
 }
