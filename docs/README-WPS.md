@@ -93,7 +93,7 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 powershell -ExecutionPolicy Bypass -File scripts\try-wps-sandbox.ps1
 ```
 
-开一个 Windows Sandbox（内存上限 4 GB，`-MemoryMB` 可调），装好最新公开发布的 DeepExcel（从 GitHub
+开一个 Windows Sandbox（默认不限内存，`-MemoryMB` 可设上限），装好最新公开发布的 DeepExcel（从 GitHub
 Release 下载并核对 SHA-256；`-SetupPath dist\DeepExcel.Setup.exe` 换成本地构建），然后打开 WPS 表格。
 关掉沙箱窗口，WPS 和 DeepExcel 全部消失，本机不留任何东西。
 
@@ -103,6 +103,10 @@ Release 下载并核对 SHA-256；`-SetupPath dist\DeepExcel.Setup.exe` 换成�
 - 日志在 `dist\wps-sandbox\out\`（`guest.log` 末行 `RESULT: READY / FAILED`）。
 - 2026-11-23 实测：不装 WPS（`-SkipWps`）的整条链路已在真沙箱跑通；等 WPS 安装、缓存安装包、
   拉起 WPS 这几步还没有在真 WPS 上走过。
+- ⚠️ 同日在开发机上，沙箱**每次启动约 4 分钟就崩**（`The virtual machine or container exited
+  unexpectedly. (0x80370106)`），三次复现：`wsb start`+`connect` 带 4 GB 上限、`.wsb` 经 explorer
+  打开不限内存，结果一样，事件日志里只有虚拟网卡被拆除。10 月的验收跑能撑过整个 WPS 安装，
+  期间系统或沙箱组件有过更新，原因未定位。这台机器上 WPS 改为直接装本机来测。
 
 ### 真 WPS 待实测（目前只在假对象模型上验证）
 

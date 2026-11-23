@@ -34,8 +34,9 @@ param(
     [string]$SetupPath,
     # A WPS installer on the host. Optional: one is cached after the first run.
     [string]$WpsSetupPath,
-    # Sandbox RAM cap. Bounded on purpose: the point is not to slow the host.
-    [int]$MemoryMB = 4096,
+    # Sandbox RAM cap in MB; 0 leaves it to Windows Sandbox (dynamic memory).
+    # No cap by default: a 4096 cap was in place when the VM kept dying.
+    [int]$MemoryMB = 0,
     # Testing this script itself: install DeepExcel without waiting for WPS.
     [switch]$SkipWps
 )
@@ -150,22 +151,33 @@ function Start-Trial {
     Copy-Item $PSCommandPath (Join-Path $stage 'try-wps-sandbox.ps1') -Force
     Get-ChildItem $out -File -Filter '*.log' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-    # Single line, no double quotes: it travels as one native argument.
-    $config = "<Configuration><Networking>Enable</Networking><MemoryInMB>$MemoryMB</MemoryInMB>" +
-              "<MappedFolders>" +
-              "<MappedFolder><HostFolder>$stage</HostFolder><SandboxFolder>$GuestStage</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>" +
-              "<MappedFolder><HostFolder>$out</HostFolder><SandboxFolder>$GuestOut</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>" +
-              "</MappedFolders></Configuration>"
+    $memory = ''
+    if ($MemoryMB -gt 0) { $memory = "  <MemoryInMB>$MemoryMB</MemoryInMB>`r`n" }
+    $wsbFile = Join-Path $root 'try-wps.wsb'
+    @"
+<Configuration>
+  <Networking>Enable</Networking>
+$memory  <MappedFolders>
+    <MappedFolder><HostFolder>$stage</HostFolder><SandboxFolder>$GuestStage</SandboxFolder><ReadOnly>true</ReadOnly></MappedFolder>
+    <MappedFolder><HostFolder>$out</HostFolder><SandboxFolder>$GuestOut</SandboxFolder><ReadOnly>false</ReadOnly></MappedFolder>
+  </MappedFolders>
+</Configuration>
+"@ | Set-Content -LiteralPath $wsbFile -Encoding UTF8
 
-    Write-Host "启动沙箱（内存上限 $MemoryMB MB）..."
-    $start = Invoke-Wsb @('start', '--config', $config)
-    if (-not $start.Ok) { throw "沙箱启动失败：$($start.Output)" }
-    $id = [regex]::Match($start.Output, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}').Value
-    if (-not $id) { throw "没能从 wsb 输出里拿到沙箱 ID：$($start.Output)" }
+    # Opened through explorer, the same way double-clicking a .wsb works.
+    # `wsb start` + `wsb connect` was tried first and the VM died about four
+    # minutes in, twice, with 0x80370106 ("exited unexpectedly"); the .wsb
+    # route is what the release acceptance runs have used without that.
+    Write-Host '启动沙箱...'
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$wsbFile`""
 
-    # `wsb start` is headless: no window and no user logon until something
-    # connects, and every ExistingLogin exec fails with 0x80070520 until then.
-    Start-Process -FilePath 'wsb.exe' -ArgumentList 'connect', '--id', $id -WindowStyle Hidden
+    $id = $null
+    $deadline = (Get-Date).AddMinutes(3)
+    while (-not $id) {
+        if ((Get-Date) -gt $deadline) { throw '沙箱 3 分钟内没有启动。' }
+        Start-Sleep -Seconds 3
+        $id = [regex]::Match((Invoke-Wsb @('list')).Output, '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}').Value
+    }
 
     Write-Host '等待沙箱桌面就绪（通常 30-90 秒）...'
     $deadline = (Get-Date).AddMinutes(5)
