@@ -1009,5 +1009,105 @@ namespace DeepExcel.Tests
             Assert.True(preview.IsNoOp);
             Assert.Contains(preview.Warnings, w => w.Contains("row_count"));
         }
+
+        // ------------------------------------------------------------------
+        // sort_data
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Sort_data_shows_rows_moving_and_keeps_the_header_in_place()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "姓名", "金额" },
+                new object[] { "张三", 30.0 },
+                new object[] { "李四", 10.0 },
+                new object[] { "王五", 20.0 });
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:B4", "sort_column", "B", "descending", false, "has_header", true));
+
+            Assert.True(preview.Previewable);
+            Assert.Equal("李四", At(preview, "A2").After);
+            Assert.Equal("10", At(preview, "B2").After);
+            Assert.Equal("张三", At(preview, "A4").After);
+            Assert.Null(At(preview, "A1"));
+            Assert.Equal(6, preview.AffectedCells);
+            Assert.Contains(preview.Warnings, w => w.Contains("B 列") && w.Contains("升序"));
+        }
+
+        [Fact]
+        public void Sort_data_puts_numbers_before_text_and_blanks_last_like_excel()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { 3.0 }, new object[] { null }, new object[] { "b" }, new object[] { "A" }, new object[] { 1.0 });
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:A5", "sort_column", "A", "descending", true, "has_header", false));
+
+            // Ascending is numbers, text (case-blind), blanks. Descending
+            // reverses everything except that blanks stay last.
+            Assert.Equal("b", At(preview, "A1").After);
+            Assert.Equal("A", At(preview, "A2").After);
+            Assert.Equal("3", At(preview, "A3").After);
+            Assert.Equal("1", At(preview, "A4").After);
+            Assert.Equal(ChangeKind.Clear, At(preview, "A5").Kind);
+            Assert.DoesNotContain(preview.Warnings, w => w.Contains("表头"));
+        }
+
+        [Fact]
+        public void Sort_data_applies_the_executors_header_guess()
+        {
+            // has_header=false, but row 1 is all text over numbers: the
+            // executor sorts as if has_header were true.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "金额" }, new object[] { 3.0 }, new object[] { 1.0 });
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:A3", "sort_column", "A", "descending", false, "has_header", false));
+
+            Assert.Null(At(preview, "A1"));
+            Assert.Equal("1", At(preview, "A2").After);
+            Assert.Contains(preview.Warnings, w => w.Contains("表头"));
+        }
+
+        [Fact]
+        public void Sort_data_without_has_header_is_refused_by_the_executor()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { 2.0 }, new object[] { 1.0 });
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:A2", "sort_column", "A"));
+
+            Assert.True(preview.IsNoOp);
+            Assert.Contains(preview.Warnings, w => w.Contains("has_header"));
+        }
+
+        [Fact]
+        public void Sort_data_moves_formulas_with_their_rows()
+        {
+            var sheet = new GridSheet()
+                .Rows("A1", new object[] { 2.0 }, new object[] { 1.0 })
+                .Set("B1", 4.0, "=A1*2")
+                .Set("B2", 2.0, "=A2*2");
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:B2", "sort_column", "A", "descending", false, "has_header", false));
+
+            // Relative references follow the row, as Excel adjusts them: B1
+            // still reads =A1*2 afterwards, so its text is not a change.
+            Assert.Equal("1", At(preview, "A1").After);
+            Assert.Null(At(preview, "B1"));
+            Assert.Equal(0, preview.FormulasOverwritten);
+            Assert.Contains(preview.Warnings, w => w.Contains("公式"));
+        }
+
+        [Fact]
+        public void Sort_data_orders_chinese_text_by_pinyin()
+        {
+            // The executor sorts with SortMethod xlPinYin.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "张三" }, new object[] { "王五" }, new object[] { "李四" });
+            var preview = new PreviewBuilder(sheet).Build("sort_data",
+                Args("range_address", "A1:A3", "sort_column", "A", "descending", false, "has_header", false));
+
+            Assert.Equal("李四", At(preview, "A1").After);
+            Assert.Null(At(preview, "A2"));
+            Assert.Equal("张三", At(preview, "A3").After);
+        }
     }
 }

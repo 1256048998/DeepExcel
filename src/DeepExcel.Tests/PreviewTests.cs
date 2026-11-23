@@ -310,10 +310,10 @@ namespace DeepExcel.Tests
         [Fact]
         public void UnimplementedPreviewsAdmitItRatherThanReportingNoChanges()
         {
-            // sort_data is simulable in principle but not implemented. Claiming
-            // an empty change set would be a lie the user would act on.
+            // rollback needs confirmation but has no preview of its own yet.
+            // Claiming an empty change set would be a lie the user would act on.
             var preview = new PreviewBuilder(new FakeSheet())
-                .Build("sort_data", Args("address", "A1:F100"));
+                .Build("rollback", Args("snapshot_id", "abc"));
 
             Assert.False(preview.Previewable);
             Assert.True(PreviewPolicy.ShouldInterrupt(preview));
