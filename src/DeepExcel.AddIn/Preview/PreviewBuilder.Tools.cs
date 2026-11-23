@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using DeepExcel.AddIn.Sidecar;
 using DeepExcel.AddIn.Tools;
 
 namespace DeepExcel.AddIn.Preview
@@ -165,6 +166,62 @@ namespace DeepExcel.AddIn.Preview
             for (var c = 0; c < names.Count && c < grid.Cols; c++)
             {
                 AddChangeIfDifferent(preview, grid[0, c], names[c] ?? "");
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
+        /// merge_columns: each row's non-blank values joined with the delimiter
+        /// (default a space) and written to the target column -- the range's
+        /// first column unless target_column names another
+        /// (DataCleaner.MergeColumns). The source columns are not cleared.
+        /// </summary>
+        private ChangePreview BuildMergeColumns(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var delimiter = GetString(args, "delimiter") ?? " ";
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            // Which column receives the result, and what is there now.
+            var targetColumn = (GetString(args, "target_column") ?? "").Trim();
+            var destColumn = grid.Rect.Col1;
+            if (targetColumn.Length > 0)
+            {
+                if (!CellRect.TryParse(targetColumn + "1", null, out var col))
+                {
+                    return ChangePreview.NotPreviewable(toolName, "目标列「" + targetColumn + "」无法识别");
+                }
+                destColumn = col.Col1;
+            }
+            IReadOnlyList<CellSnapshot> dest;
+            if (destColumn >= grid.Rect.Col1 && destColumn <= grid.Rect.Col2)
+            {
+                dest = Enumerable.Range(0, grid.Rows).Select(r => grid[r, destColumn - grid.Rect.Col1]).ToList();
+            }
+            else
+            {
+                var letter = CellRect.ColumnName(destColumn);
+                dest = _reader.Read(target.Sheet, letter + grid.Rect.Row1 + ":" + letter + grid.Rect.Row2);
+                if (dest.Count < grid.Rows) return Unreadable(toolName);
+            }
+
+            var preview = new ChangePreview { ToolName = toolName };
+            for (var r = 0; r < grid.Rows; r++)
+            {
+                var parts = new List<string>();
+                for (var c = 0; c < grid.Cols; c++)
+                {
+                    var raw = RawValue(grid[r, c]);
+                    // Value2.ToString(), as the executor joins them.
+                    if (!CleaningRules.IsBlank(raw)) parts.Add(raw.ToString());
+                }
+                AddChangeIfDifferent(preview, dest[r], string.Join(delimiter, parts));
             }
             Finalize(preview);
             return preview;

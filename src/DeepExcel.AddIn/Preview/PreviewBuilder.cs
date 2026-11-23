@@ -108,6 +108,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildFillBlankCells(toolName, args);
                     case "rename_columns":
                         return BuildRenameColumns(toolName, args);
+                    case "merge_columns":
+                        return BuildMergeColumns(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:

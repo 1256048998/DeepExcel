@@ -502,5 +502,39 @@ namespace DeepExcel.Tests
 
             Assert.True(preview.IsNoOp);
         }
+
+        // ------------------------------------------------------------------
+        // merge_columns
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Merge_columns_writes_into_the_first_column_by_default()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "北京", "朝阳", "望京" },
+                new object[] { "上海", null, "浦东" });
+            var preview = new PreviewBuilder(sheet).Build("merge_columns",
+                Args("range_address", "A1:C2", "delimiter", "-"));
+
+            // Blank parts are skipped; the other columns are left as they are.
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("北京-朝阳-望京", At(preview, "A1").After);
+            Assert.Equal("上海-浦东", At(preview, "A2").After);
+        }
+
+        [Fact]
+        public void Merge_columns_into_a_column_outside_the_range_reads_that_column()
+        {
+            var sheet = new GridSheet()
+                .Rows("A1", new object[] { "a", "b" })
+                .Set("E1", "old", "=X1");
+            var preview = new PreviewBuilder(sheet).Build("merge_columns",
+                Args("range_address", "A1:B1", "target_column", "E"));
+
+            // Default delimiter is a space.
+            Assert.Equal("a b", At(preview, "E1").After);
+            Assert.Equal(1, preview.FormulasOverwritten);
+            Assert.Null(At(preview, "A1"));
+        }
     }
 }
