@@ -95,6 +95,10 @@ WPS_ITEMS = [
     # 只有 ribbon.xml 能渲染出选项卡，所有 JS 回调都是死的——选项卡在、
     # 图标不显示、点"打开面板"毫无反应。干净沙箱 + 真实 WPS 已复现。
     "jsplugins.xml",
+    # 加载项入口页。WPS 12.1.0.29690 找不到它会自己生成一个指向 js/main.js
+    # 的默认入口，main.js 永远不加载：选项卡在、没图标、按钮全是死的。
+    # 2026-11-23 真机复现并验证修复。
+    "index.html",
     "taskpane.html",
     "package.json",
     "sidecar-host.js",
@@ -136,6 +140,7 @@ WPS_REQUIRED_FILES = [
     # 这条守卫本来就是为了拦"WPS 资源缺失"，连 images/panel.svg 都列了，
     # 偏偏漏了加载项清单本身，于是缺失一路溜到用户机器上。
     "jsplugins.xml",
+    "index.html",
     "taskpane.html",
     "sidecar-host.js",
     "config-store.js",

@@ -91,6 +91,7 @@ $requiredFiles = @(
     "main.js",
     "ribbon.xml",
     "jsplugins.xml",
+    "index.html",
     "taskpane.html",
     "sidecar-host.js",
     "tool-dispatcher.js",
