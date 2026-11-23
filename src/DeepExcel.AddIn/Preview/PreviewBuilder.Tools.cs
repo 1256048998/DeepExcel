@@ -99,6 +99,53 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// fill_blank_cells: each column top to bottom, a blank cell takes the
+        /// last non-blank value above it (DataCleaner.FillBlankCells). Blanks
+        /// with nothing above stay blank. A formula showing "" counts as blank
+        /// and is replaced by a literal.
+        /// </summary>
+        private ChangePreview BuildFillBlankCells(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            var changes = new List<(int Row, int Col, CellChange Change)>();
+            for (var c = 0; c < grid.Cols; c++)
+            {
+                object last = null;
+                for (var r = 0; r < grid.Rows; r++)
+                {
+                    var cell = grid[r, c];
+                    var raw = RawValue(cell);
+                    if (!CleaningRules.IsBlank(raw))
+                    {
+                        last = raw;
+                        continue;
+                    }
+                    if (last == null) continue;
+                    changes.Add((r, c, new CellChange
+                    {
+                        Address = cell.Address,
+                        Before = Describe(cell),
+                        After = Stringify(last),
+                        Kind = cell.IsEmpty ? ChangeKind.Add : ChangeKind.Overwrite,
+                        OverwritesFormula = cell.HasFormula
+                    }));
+                }
+            }
+            // Listed row by row, the way the user reads the sheet.
+            preview.Changes.AddRange(changes.OrderBy(x => x.Row).ThenBy(x => x.Col).Select(x => x.Change));
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

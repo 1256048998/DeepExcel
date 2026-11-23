@@ -433,7 +433,7 @@ namespace DeepExcel.AddIn.Tools
                     {
                         var cell = (Range)range.Cells[r, c];
                         var val = cell.Value2;
-                        if (val == null || string.IsNullOrWhiteSpace(val.ToString()))
+                        if (CleaningRules.IsBlank(val))
                         {
                             if (lastValue != null)
                             {

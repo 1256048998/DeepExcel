@@ -112,6 +112,15 @@ namespace DeepExcel.AddIn.Tools
             return digits > 15;
         }
 
+        /// <summary>
+        /// Blank as fill_blank_cells and delete_blank_rows see it: nothing,
+        /// or only whitespace. A formula showing "" is blank too.
+        /// </summary>
+        public static bool IsBlank(object value)
+        {
+            return value == null || string.IsNullOrWhiteSpace(value.ToString());
+        }
+
         public static bool IsSpecialChar(char c)
         {
             if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;

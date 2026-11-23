@@ -414,5 +414,49 @@ namespace DeepExcel.Tests
             Assert.Contains(preview.Warnings, w => w.Contains("15 位"));
             Assert.True(PreviewPolicy.ShouldInterrupt(preview));
         }
+
+        // ------------------------------------------------------------------
+        // fill_blank_cells
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Fill_blank_cells_copies_the_nearest_value_above_in_each_column()
+        {
+            var sheet = new GridSheet()
+                .Rows("A1",
+                    new object[] { "华东", 1.0 },
+                    new object[] { null, null },
+                    new object[] { "  ", 3.0 },
+                    new object[] { "华南", null });
+            var preview = new PreviewBuilder(sheet).Build("fill_blank_cells", Args("range_address", "A1:B4"));
+
+            Assert.Equal(4, preview.AffectedCells);
+            Assert.Equal("华东", At(preview, "A2").After);
+            Assert.Equal(ChangeKind.Add, At(preview, "A2").Kind);
+            // Whitespace counts as blank and is overwritten.
+            Assert.Equal("华东", At(preview, "A3").After);
+            Assert.Equal(ChangeKind.Overwrite, At(preview, "A3").Kind);
+            Assert.Equal("1", At(preview, "B2").After);
+            Assert.Equal("3", At(preview, "B4").After);
+        }
+
+        [Fact]
+        public void Fill_blank_cells_leaves_blanks_with_nothing_above_them()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { null }, new object[] { "x" });
+            var preview = new PreviewBuilder(sheet).Build("fill_blank_cells", Args("range_address", "A1:A2"));
+
+            Assert.True(preview.IsNoOp);
+        }
+
+        [Fact]
+        public void Fill_blank_cells_overwrites_a_formula_that_shows_nothing()
+        {
+            var sheet = new GridSheet().Set("A1", "x").Set("A2", "", "=IF(B2>0,B2,\"\")");
+            var preview = new PreviewBuilder(sheet).Build("fill_blank_cells", Args("range_address", "A1:A2"));
+
+            Assert.Equal(1, preview.FormulasOverwritten);
+            Assert.Equal("=IF(B2>0,B2,\"\")", At(preview, "A2").Before);
+        }
     }
 }
