@@ -228,6 +228,77 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// split_text_to_columns: the range's first column is split on the
+        /// delimiter (default ",") and the parts written rightwards from it,
+        /// shorter rows padded with "" (DataCleaner.SplitTextToColumns).
+        ///
+        /// The parts go wherever the widest row reaches, whatever the range
+        /// says, so columns beyond it are read and anything there that gets
+        /// overwritten or cleared is called out.
+        /// </summary>
+        private ChangePreview BuildSplitText(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var delimiter = GetString(args, "delimiter") ?? ",";
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var split = new List<string[]>();
+            for (var r = 0; r < grid.Rows; r++)
+            {
+                var text = RawValue(grid[r, 0])?.ToString() ?? "";
+                split.Add(text.Split(new[] { delimiter }, StringSplitOptions.None));
+            }
+            var width = split.Max(parts => parts.Length);
+            var preview = new ChangePreview { ToolName = toolName };
+            if (width <= 1)
+            {
+                Finalize(preview);
+                return preview;
+            }
+
+            var block = new CellRect(grid.Rect.Sheet, grid.Rect.Row1, grid.Rect.Col1,
+                grid.Rect.Row2, grid.Rect.Col1 + width - 1);
+            var dest = _reader.Read(target.Sheet, LocalAddress(block));
+            if (dest.Count < grid.Rows * width) return Unreadable(toolName);
+
+            var spilled = 0;
+            for (var r = 0; r < grid.Rows; r++)
+            {
+                for (var c = 0; c < width; c++)
+                {
+                    var cell = dest[r * width + c];
+                    var after = c < split[r].Length ? split[r][c] : "";
+                    var before = Describe(cell);
+                    if (string.Equals(before, after, StringComparison.Ordinal)) continue;
+                    if (c > grid.Rect.Col2 - grid.Rect.Col1 && !cell.IsEmpty) spilled++;
+                    preview.Changes.Add(new CellChange
+                    {
+                        Address = cell.Address,
+                        Before = before,
+                        After = after,
+                        Kind = after.Length == 0 ? ChangeKind.Clear : cell.IsEmpty ? ChangeKind.Add : ChangeKind.Overwrite,
+                        OverwritesFormula = cell.HasFormula
+                    });
+                }
+            }
+            if (spilled > 0)
+            {
+                var first = CellRect.ColumnName(grid.Rect.Col2 + 1);
+                var last = CellRect.ColumnName(block.Col2);
+                var columns = first == last ? first + " 列" : first + " 列至 " + last + " 列";
+                preview.Warnings.Add($"拆分结果会写到区域右侧的 {columns}，其中 {spilled} 个原有内容的格会被覆盖或清空");
+                preview.RequiresConfirmation = true;
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

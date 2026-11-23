@@ -536,5 +536,55 @@ namespace DeepExcel.Tests
             Assert.Equal(1, preview.FormulasOverwritten);
             Assert.Null(At(preview, "A1"));
         }
+
+        // ------------------------------------------------------------------
+        // split_text_to_columns
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Split_text_writes_parts_rightwards_from_the_first_column()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "张三,销售,北京" },
+                new object[] { "李四,财务" });
+            var preview = new PreviewBuilder(sheet).Build("split_text_to_columns",
+                Args("range_address", "A1:A2", "delimiter", ","));
+
+            Assert.Equal("张三", At(preview, "A1").After);
+            Assert.Equal("销售", At(preview, "B1").After);
+            Assert.Equal("北京", At(preview, "C1").After);
+            Assert.Equal("财务", At(preview, "B2").After);
+            // C2 is written "" but was already empty: not a change.
+            Assert.Null(At(preview, "C2"));
+            Assert.Equal(5, preview.AffectedCells);
+        }
+
+        [Fact]
+        public void Split_text_calls_out_data_it_overwrites_to_the_right()
+        {
+            // The parts land in whatever columns follow, range or not.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "a;b;c", "keep?", "and me?" },
+                new object[] { "d", "x", null });
+            var preview = new PreviewBuilder(sheet).Build("split_text_to_columns",
+                Args("range_address", "A1:A2", "delimiter", ";"));
+
+            Assert.Equal("b", At(preview, "B1").After);
+            Assert.Equal("keep?", At(preview, "B1").Before);
+            // Shorter rows are padded with "": B2 is cleared.
+            Assert.Equal(ChangeKind.Clear, At(preview, "B2").Kind);
+            Assert.Contains(preview.Warnings, w => w.Contains("B 列") && w.Contains("C 列") && w.Contains("3 个"));
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+        }
+
+        [Fact]
+        public void Split_text_with_nothing_to_split_is_a_no_op()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { "abc" }, new object[] { "def" });
+            var preview = new PreviewBuilder(sheet).Build("split_text_to_columns",
+                Args("range_address", "A1:A2", "delimiter", ","));
+
+            Assert.True(preview.IsNoOp);
+        }
     }
 }
