@@ -107,7 +107,13 @@ $compileArgs = @(
     '/nowarn:CS1701'
 ) + $references + $sources
 
-& $csc $compileArgs 2>&1 | Where-Object { $_ -match 'error|warning CS' } | Select-Object -First 15
+# Pass the arguments through a response file. With ~100 facade references
+# and every test source as an absolute path, the command line passes Windows'
+# 32K limit from a deep checkout (a worktree under .claude\worktrees) and csc
+# never starts: "The filename or extension is too long".
+$responseFile = Join-Path $outDir 'tests.rsp'
+[IO.File]::WriteAllLines($responseFile, [string[]]$compileArgs)
+& $csc "@$responseFile" 2>&1 | Where-Object { $_ -match 'error|warning CS' } | Select-Object -First 15
 if ($LASTEXITCODE -ne 0) { throw "Test compilation failed (exit $LASTEXITCODE)" }
 
 # Test data lives next to the test assembly, not in the repository tree, so the
