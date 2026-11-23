@@ -476,6 +476,42 @@ namespace DeepExcel.AddIn.Preview
         private const double PlausibleDateTo = 73051;
 
         /// <summary>
+        /// merge_cells: Range.Merge() with alerts off (ExcelActions.MergeCells)
+        /// keeps the top-left cell's content and silently discards the rest.
+        /// Merging around a lone top-left value loses nothing.
+        /// </summary>
+        private ChangePreview BuildMergeCells(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "address", "range_address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            foreach (var cell in grid.Cells.Skip(1))
+            {
+                if (cell.IsEmpty) continue;
+                preview.Changes.Add(new CellChange
+                {
+                    Address = cell.Address,
+                    Before = Describe(cell),
+                    After = "",
+                    Kind = ChangeKind.Clear,
+                    OverwritesFormula = cell.HasFormula
+                });
+            }
+            if (preview.Changes.Count > 0)
+            {
+                preview.Warnings.Add($"合并后只保留左上角 {grid[0, 0].Address} 的内容，其余格的内容会被丢弃");
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

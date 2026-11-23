@@ -833,5 +833,33 @@ namespace DeepExcel.Tests
             Assert.Contains(preview.Warnings, w => w.Contains("不像日期"));
             Assert.True(preview.RequiresConfirmation);
         }
+
+        // ------------------------------------------------------------------
+        // merge_cells
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Merge_cells_lists_everything_but_the_top_left_as_lost()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "标题", "副标题" },
+                new object[] { null, 3.0 });
+            var preview = new PreviewBuilder(sheet).Build("merge_cells", Args("address", "A1:B2"));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal(ChangeKind.Clear, At(preview, "B1").Kind);
+            Assert.Equal("副标题", At(preview, "B1").Before);
+            Assert.Null(At(preview, "A1"));
+            Assert.Contains(preview.Warnings, w => w.Contains("A1"));
+        }
+
+        [Fact]
+        public void Merging_cells_that_only_hold_a_top_left_value_loses_nothing()
+        {
+            var sheet = new GridSheet().Set("A1", "标题");
+            var preview = new PreviewBuilder(sheet).Build("merge_cells", Args("address", "A1:D1"));
+
+            Assert.True(preview.IsNoOp);
+        }
     }
 }
