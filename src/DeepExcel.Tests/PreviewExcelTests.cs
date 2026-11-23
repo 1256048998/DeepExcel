@@ -31,6 +31,8 @@ namespace DeepExcel.Tests
 
         public Excel.Application App { get; private set; }
 
+        public int ProcessId => _pid;
+
         /// <summary>A new workbook whose sheets are named as given; the first is active.</summary>
         public Workbook NewBook(params string[] sheetNames)
         {
