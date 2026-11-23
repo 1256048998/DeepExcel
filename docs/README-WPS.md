@@ -87,6 +87,23 @@ powershell -ExecutionPolicy Bypass -File scripts\register-wps.ps1
 | 先读后写 / 读后被改检测 | ReadLedger | read-ledger.js（同一套规则） |
 | 其他工具 | 完整支持 | 完整支持 |
 
+### 在沙箱里试用（不在本机装 WPS）
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\try-wps-sandbox.ps1
+```
+
+开一个 Windows Sandbox（内存上限 4 GB，`-MemoryMB` 可调），装好最新公开发布的 DeepExcel（从 GitHub
+Release 下载并核对 SHA-256；`-SetupPath dist\DeepExcel.Setup.exe` 换成本地构建），然后打开 WPS 表格。
+关掉沙箱窗口，WPS 和 DeepExcel 全部消失，本机不留任何东西。
+
+- 第一次：沙箱里的浏览器打开 wps.cn，手动下载并安装 WPS。装好后安装包会被缓存到
+  `dist\wps-sandbox\stage\`，之后每次自动启动安装，只需点「立即安装」。
+- 本机 `Downloads` 里已有 `WPS*.exe`，或用 `-WpsSetupPath` 指定，可以跳过下载。
+- 日志在 `dist\wps-sandbox\out\`（`guest.log` 末行 `RESULT: READY / FAILED`）。
+- 2026-11-23 实测：不装 WPS（`-SkipWps`）的整条链路已在真沙箱跑通；等 WPS 安装、缓存安装包、
+  拉起 WPS 这几步还没有在真 WPS 上走过。
+
 ### 真 WPS 待实测（目前只在假对象模型上验证）
 
 开发机没有装 WPS，下面这些调用只用 node 脚本里的假对象模型测过（`scripts/test-wps-*.js`），

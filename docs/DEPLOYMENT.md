@@ -141,6 +141,11 @@ powershell -ExecutionPolicy Bypass -File scripts\verify-install-sandbox.ps1 -Lau
 
    这不只是沙箱的问题：**任何开着智能应用控制的 Windows 11 都会这样拦未签名安装包，而且没有「仍要运行」**。在买代码签名证书之前，遇到这种用户只能请对方在「Windows 安全中心 → 应用和浏览器控制 → 智能应用控制」里关掉。
 
+**2026-11 又踩到两个（`scripts/try-wps-sandbox.ps1` 已绕开）：**
+
+3. **`wsb start` 是无头的**：不弹窗口、没有用户登录，`wsb exec -r ExistingLogin` 一律报 `0x80070520`。要再跑 `wsb connect --id <id>` 才有桌面。
+4. **映射 `%LOCALAPPDATA%` 下的目录报 `0x80070002`**（`wsb start --config` 的 MappedFolder 和 `wsb share` 都一样），同一份配置换成别的路径就正常。从 Claude 桌面等打包（MSIX）应用里运行时，写入 `AppData\Local` 会被重定向到 `AppData\Local\Packages\Claude_<id>\LocalCache\Local\`（已实测），沙箱服务在原路径上找不到。暂存目录放在 `dist\` 下。
+
 ## 账号服务线上部署
 
 | 项 | 值 |
