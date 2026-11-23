@@ -401,6 +401,71 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// unify_date (DataCleaner.UnifyDateFormats): every number in the range
+        /// gets a yyyy-mm-dd format; text that parses as a date is replaced by
+        /// that date. Numbers already formatted as dates are left out -- at
+        /// most their date style changes, which costs nothing.
+        ///
+        /// The trap is the first rule: it does not ask whether a number is a
+        /// date. Numbers that do not look like one (an amount of 1500 shows as
+        /// 1904-02-08) are named, and make the preview interrupt.
+        /// </summary>
+        private ChangePreview BuildUnifyDate(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            var notDates = new List<CellSnapshot>();
+            foreach (var cell in grid.Cells)
+            {
+                var raw = RawValue(cell);
+                switch (CleaningRules.UnifyDate(raw, out var date))
+                {
+                    case CleaningRules.DateAction.FormatOnly:
+                        // Numeric text keeps showing the same text; only real
+                        // numbers visibly change.
+                        if (!(raw is double serial) || cell.IsDate) break;
+                        if (serial < PlausibleDateFrom || serial >= PlausibleDateTo) notDates.Add(cell);
+                        preview.Changes.Add(new CellChange
+                        {
+                            Address = cell.Address,
+                            Before = Describe(cell),
+                            After = SerialToDateText(serial),
+                            Kind = ChangeKind.Format
+                        });
+                        break;
+                    case CleaningRules.DateAction.Convert:
+                        preview.Changes.Add(new CellChange
+                        {
+                            Address = cell.Address,
+                            Before = Describe(cell),
+                            After = date.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                            Kind = ChangeKind.Overwrite,
+                            OverwritesFormula = cell.HasFormula
+                        });
+                        break;
+                }
+            }
+            if (notDates.Count > 0)
+            {
+                preview.Warnings.Add($"{notDates.Count} 个数字不像日期（{Examples(notDates)}），套上日期格式后会显示成日期，数值本身不变");
+                preview.RequiresConfirmation = true;
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>1950-01-01 to 2100-01-01 as serial numbers.</summary>
+        private const double PlausibleDateFrom = 18264;
+        private const double PlausibleDateTo = 73051;
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

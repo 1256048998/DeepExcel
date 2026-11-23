@@ -135,6 +135,34 @@ namespace DeepExcel.AddIn.Tools
             return key.ToString();
         }
 
+        /// <summary>Number format unify_date applies.</summary>
+        public const string DateFormat = "yyyy-mm-dd";
+
+        public enum DateAction
+        {
+            /// <summary>Left alone.</summary>
+            None,
+            /// <summary>Anything that parses as a number: only the format changes.</summary>
+            FormatOnly,
+            /// <summary>Text that parses as a date: replaced by that date.</summary>
+            Convert
+        }
+
+        /// <summary>
+        /// unify_date: what happens to one value. Note FormatOnly applies to
+        /// every number, date or not -- an amount of 1500 is given a date
+        /// format like any serial number.
+        /// </summary>
+        public static DateAction UnifyDate(object value, out DateTime date)
+        {
+            date = default;
+            if (value == null) return DateAction.None;
+            var text = value.ToString();
+            if (double.TryParse(text, out _)) return DateAction.FormatOnly;
+            if (DateTime.TryParse(text, out date)) return DateAction.Convert;
+            return DateAction.None;
+        }
+
         public static bool IsSpecialChar(char c)
         {
             if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;

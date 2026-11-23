@@ -35,21 +35,18 @@ namespace DeepExcel.AddIn.Tools
                 {
                     try
                     {
-                        var val = cell.Value2;
-                        if (val == null) continue;
-
-                        // 尝试解析为日期
-                        if (double.TryParse(val.ToString(), out double dateNum))
+                        // 数字（可能是Excel序列号日期）只改格式；能解析成日期的文本替换成日期
+                        switch (CleaningRules.UnifyDate(cell.Value2, out DateTime dt))
                         {
-                            // 可能是Excel序列号日期
-                            cell.NumberFormat = targetFormat;
-                            convertedCount++;
-                        }
-                        else if (DateTime.TryParse(val.ToString(), out DateTime dt))
-                        {
-                            cell.Value = dt;
-                            cell.NumberFormat = targetFormat;
-                            convertedCount++;
+                            case CleaningRules.DateAction.FormatOnly:
+                                cell.NumberFormat = targetFormat;
+                                convertedCount++;
+                                break;
+                            case CleaningRules.DateAction.Convert:
+                                cell.Value = dt;
+                                cell.NumberFormat = targetFormat;
+                                convertedCount++;
+                                break;
                         }
                     }
                     catch

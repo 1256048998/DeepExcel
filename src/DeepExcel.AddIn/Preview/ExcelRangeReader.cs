@@ -67,18 +67,20 @@ namespace DeepExcel.AddIn.Preview
                 var firstRow = range.Row;
                 var firstColumn = range.Column;
 
+                // Value (unlike Value2) comes back as DateTime for cells
+                // formatted as dates. One more block read is what it costs to
+                // show a date as a date instead of its serial number, and to
+                // know which numbers are already dates.
+                object typed = null;
+                try { typed = range.Value; } catch (Exception) { }
+
                 if (!(values is object[,] valueGrid))
                 {
-                    cells.Add(new CellSnapshot
-                    {
-                        Address = CellAddress(firstRow, firstColumn),
-                        Display = Format(values),
-                        Formula = formulas as string,
-                        Value = values
-                    });
+                    cells.Add(Snapshot(CellAddress(firstRow, firstColumn), values, formulas as string, typed));
                     return cells;
                 }
 
+                var typedGrid = typed as object[,];
                 var formulaGrid = formulas as object[,];
                 var lowerRow = valueGrid.GetLowerBound(0);
                 var upperRow = valueGrid.GetUpperBound(0);
@@ -90,14 +92,9 @@ namespace DeepExcel.AddIn.Preview
                     for (var c = lowerColumn; c <= upperColumn; c++)
                     {
                         var formula = formulaGrid != null ? formulaGrid[r, c] as string : null;
-                        cells.Add(new CellSnapshot
-                        {
-                            Address = CellAddress(
-                                firstRow + (r - lowerRow), firstColumn + (c - lowerColumn)),
-                            Display = Format(valueGrid[r, c]),
-                            Formula = formula,
-                            Value = valueGrid[r, c]
-                        });
+                        cells.Add(Snapshot(
+                            CellAddress(firstRow + (r - lowerRow), firstColumn + (c - lowerColumn)),
+                            valueGrid[r, c], formula, typedGrid != null ? typedGrid[r, c] : null));
                     }
                 }
             }
@@ -162,6 +159,19 @@ namespace DeepExcel.AddIn.Preview
                 // reason to silently preview the active sheet instead.
                 return null;
             }
+        }
+
+        private static CellSnapshot Snapshot(string address, object value2, string formula, object typed)
+        {
+            var isDate = typed is DateTime;
+            return new CellSnapshot
+            {
+                Address = address,
+                Value = value2,
+                Formula = formula,
+                IsDate = isDate,
+                Display = isDate ? PreviewBuilder.FormatDate((DateTime)typed) : Format(value2)
+            };
         }
 
         private static string CellAddress(int row, int column)

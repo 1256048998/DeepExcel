@@ -202,6 +202,30 @@ namespace DeepExcel.AddIn.Preview
             return string.IsNullOrEmpty(cell.Display) ? null : cell.Display;
         }
 
+        /// <summary>A date as the preview shows it: yyyy-MM-dd, plus the time if any.</summary>
+        internal static string FormatDate(DateTime date)
+        {
+            return date.TimeOfDay == TimeSpan.Zero
+                ? date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)
+                : date.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>
+        /// What a number shows once given a yyyy-mm-dd format, on Excel's
+        /// calendar: serial 1 is 1900-01-01, and serial 60 is the 29 February
+        /// 1900 Excel counts although it never existed. Out-of-range values
+        /// show as #### in Excel.
+        /// </summary>
+        internal static string SerialToDateText(double serial)
+        {
+            if (serial < 0 || serial >= 2958466) return "####";
+            if (serial < 1) return "1900-01-00";
+            var day = Math.Floor(serial);
+            if (day == 60) return "1900-02-29";
+            var date = DateTime.FromOADate(day < 60 ? day + 1 : day);
+            return date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static bool IsFormulaText(string text)
         {
             return !string.IsNullOrEmpty(text) && text.StartsWith("=", StringComparison.Ordinal);

@@ -47,6 +47,16 @@ namespace DeepExcel.Tests
             return this;
         }
 
+        /// <summary>A date-formatted cell: Value2 is the serial number.</summary>
+        public GridSheet Date(string address, DateTime date)
+        {
+            Set(address, date.ToOADate());
+            var cell = _cells.Values.Single(c => c.Address == address.ToUpperInvariant());
+            cell.IsDate = true;
+            cell.Display = PreviewBuilder.FormatDate(date);
+            return this;
+        }
+
         /// <summary>Fills a block starting at a cell, one array per row.</summary>
         public GridSheet Rows(string topLeft, params object[][] rows)
         {
@@ -668,6 +678,65 @@ namespace DeepExcel.Tests
             var preview = new PreviewBuilder(sheet).Build("remove_duplicates", Args("range_address", "A1:A4"));
 
             Assert.Equal(new[] { 2, 3 }, preview.DeletedRows.ToArray());
+        }
+
+        // ------------------------------------------------------------------
+        // unify_date
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Unify_date_converts_date_text_to_real_dates()
+        {
+            var sheet = new GridSheet().Set("A1", "2026/3/5").Set("A2", "备注");
+            var preview = new PreviewBuilder(sheet).Build("unify_date", Args("range_address", "A1:A2"));
+
+            Assert.Equal(1, preview.AffectedCells);
+            Assert.Equal("2026/3/5", At(preview, "A1").Before);
+            Assert.Equal("2026-03-05", At(preview, "A1").After);
+            Assert.Equal(ChangeKind.Overwrite, At(preview, "A1").Kind);
+        }
+
+        [Fact]
+        public void Unify_date_reformats_plain_numbers_as_dates_and_says_when_they_are_not_dates()
+        {
+            // The executor gives every number in the range a date format. A
+            // serial number becomes its date; an amount becomes nonsense.
+            var sheet = new GridSheet()
+                .Set("A1", new DateTime(2026, 3, 5).ToOADate())
+                .Set("A2", 1500.0);
+            var preview = new PreviewBuilder(sheet).Build("unify_date", Args("range_address", "A1:A2"));
+
+            Assert.Equal("2026-03-05", At(preview, "A1").After);
+            Assert.Equal(ChangeKind.Format, At(preview, "A1").Kind);
+            Assert.Equal("1904-02-08", At(preview, "A2").After);
+            Assert.Contains(preview.Warnings, w => w.Contains("不像日期") && w.Contains("A2") && !w.Contains("A1"));
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+        }
+
+        [Fact]
+        public void Unify_date_leaves_cells_that_are_already_dates()
+        {
+            var sheet = new GridSheet().Date("A1", new DateTime(2026, 3, 5));
+            Assert.True(new PreviewBuilder(sheet).Build("unify_date", Args("range_address", "A1")).IsNoOp);
+        }
+
+        [Fact]
+        public void Unify_date_keeps_a_formula_when_it_only_reformats_it()
+        {
+            var sheet = new GridSheet().Set("A1", 46000.0, "=TODAY()");
+            var preview = new PreviewBuilder(sheet).Build("unify_date", Args("range_address", "A1"));
+
+            Assert.Equal(0, preview.FormulasOverwritten);
+            Assert.Equal(ChangeKind.Format, At(preview, "A1").Kind);
+        }
+
+        [Fact]
+        public void Serial_numbers_before_march_1900_follow_excels_calendar()
+        {
+            // Excel counts a 29 February 1900 that never existed.
+            Assert.Equal("1900-01-01", PreviewBuilder.SerialToDateText(1));
+            Assert.Equal("1900-02-28", PreviewBuilder.SerialToDateText(59));
+            Assert.Equal("1900-03-01", PreviewBuilder.SerialToDateText(61));
         }
     }
 }

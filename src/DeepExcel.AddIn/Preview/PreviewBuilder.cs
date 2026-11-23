@@ -21,6 +21,12 @@ namespace DeepExcel.AddIn.Preview
         /// </summary>
         public object Value { get; set; }
 
+        /// <summary>
+        /// The cell is formatted as a date: <see cref="Value"/> is its serial
+        /// number and <see cref="Display"/> the date.
+        /// </summary>
+        public bool IsDate { get; set; }
+
         public bool HasFormula
         {
             get { return !string.IsNullOrEmpty(Formula) && Formula.StartsWith("="); }
@@ -122,6 +128,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildDeleteBlankRows(toolName, args);
                     case "remove_duplicates":
                         return BuildRemoveDuplicates(toolName, args);
+                    case "unify_date":
+                        return BuildUnifyDate(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:
