@@ -56,6 +56,9 @@ namespace DeepExcel.AddIn.Preview
         /// it beyond the range the tool was given.
         /// </summary>
         int UsedColumnCount(string sheet);
+
+        /// <summary>Whether the workbook has a worksheet by this name.</summary>
+        bool SheetExists(string sheet);
     }
 
     /// <summary>
@@ -136,6 +139,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildMergeCells(toolName, args);
                     case "unmerge_cells":
                         return BuildUnmergeCells(toolName, args);
+                    case "delete_sheet":
+                        return BuildDeleteSheet(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:

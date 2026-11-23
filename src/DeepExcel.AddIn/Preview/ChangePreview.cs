@@ -82,6 +82,9 @@ namespace DeepExcel.AddIn.Preview
         public List<string> DeletedColumns { get; set; } = new List<string>();
         public List<string> Warnings { get; set; } = new List<string>();
 
+        /// <summary>Worksheets removed outright.</summary>
+        public List<string> DeletedSheets { get; set; } = new List<string>();
+
         /// <summary>
         /// Set when the change loses something the user would not expect from
         /// the operation's name -- leading zeros, digits past the 15th -- so
@@ -92,7 +95,7 @@ namespace DeepExcel.AddIn.Preview
         /// <summary>Rows/columns/sheets whose structure changes, not just values.</summary>
         public bool IsStructural
         {
-            get { return DeletedRows.Count > 0 || DeletedColumns.Count > 0; }
+            get { return DeletedRows.Count > 0 || DeletedColumns.Count > 0 || DeletedSheets.Count > 0; }
         }
 
         public int FormulasOverwritten
@@ -133,6 +136,10 @@ namespace DeepExcel.AddIn.Preview
             }
 
             var parts = new List<string>();
+            foreach (var sheet in DeletedSheets)
+            {
+                parts.Add("删除工作表「" + sheet + "」");
+            }
             if (AffectedCells > 0)
             {
                 parts.Add("将修改 " + AffectedCells + " 个单元格");

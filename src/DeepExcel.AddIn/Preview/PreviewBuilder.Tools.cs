@@ -530,6 +530,40 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// delete_sheet (ExcelActions.DeleteSheet, alerts off): the whole sheet
+        /// goes, and formulas elsewhere that point at it turn into #REF!. The
+        /// preview says how much data the sheet holds, so deleting the wrong
+        /// one -- a full sheet instead of an empty scratch sheet -- shows.
+        /// </summary>
+        private ChangePreview BuildDeleteSheet(string toolName, IDictionary<string, object> args)
+        {
+            var name = GetString(args, "name") ?? GetString(args, "sheet_name");
+            if (string.IsNullOrEmpty(name))
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少工作表名");
+            }
+
+            var preview = new ChangePreview { ToolName = toolName };
+            if (!_reader.SheetExists(name))
+            {
+                preview.Warnings.Add($"找不到工作表「{name}」，执行时会报错，不会删除任何东西");
+                Finalize(preview);
+                return preview;
+            }
+
+            preview.DeletedSheets.Add(name);
+            var rows = _reader.UsedRowCount(name);
+            var cols = _reader.UsedColumnCount(name);
+            var empty = rows <= 1 && cols <= 1 && _reader.Read(name, "A1").All(c => c.IsEmpty);
+            preview.Warnings.Add(empty
+                ? $"「{name}」是空表"
+                : $"「{name}」的数据用到第 {rows} 行、{CellRect.ColumnName(cols)} 列，会整表删除");
+            preview.Warnings.Add("其他表里引用这张表的公式会变成 #REF!");
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

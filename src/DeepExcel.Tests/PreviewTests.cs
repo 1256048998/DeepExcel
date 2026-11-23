@@ -58,6 +58,8 @@ namespace DeepExcel.Tests
             public int UsedRowCount(string sheet) => UsedRows;
 
             public int UsedColumnCount(string sheet) => 26;
+
+            public bool SheetExists(string sheet) => true;
         }
 
         private static Dictionary<string, object> Args(params object[] pairs)

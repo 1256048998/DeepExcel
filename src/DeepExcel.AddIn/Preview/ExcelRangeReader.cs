@@ -143,6 +143,11 @@ namespace DeepExcel.AddIn.Preview
             }
         }
 
+        public bool SheetExists(string sheet)
+        {
+            return ResolveSheet(sheet) != null;
+        }
+
         private Worksheet ResolveSheet(string sheet)
         {
             try

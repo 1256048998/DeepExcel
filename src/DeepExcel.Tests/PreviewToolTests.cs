@@ -27,6 +27,17 @@ namespace DeepExcel.Tests
 
         public List<string> Reads { get; } = new List<string>();
 
+        private readonly HashSet<string> _sheets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        public GridSheet AddSheet(string name)
+        {
+            _sheets.Add(name);
+            return this;
+        }
+
+        public bool SheetExists(string sheet) =>
+            string.IsNullOrEmpty(sheet) || sheet.Equals(ActiveSheet, StringComparison.OrdinalIgnoreCase) || _sheets.Contains(sheet);
+
         public GridSheet Set(string address, object value, string formula = null)
         {
             var sheet = ActiveSheet;
@@ -36,6 +47,7 @@ namespace DeepExcel.Tests
                 sheet = address.Substring(0, bang);
                 address = address.Substring(bang + 1);
             }
+            _sheets.Add(sheet);
             ParseCell(address, out var row, out var col);
             _cells[Key(sheet, row, col)] = new CellSnapshot
             {
@@ -204,6 +216,7 @@ namespace DeepExcel.Tests
             public IReadOnlyList<CellSnapshot> Read(string sheet, string address) => new List<CellSnapshot>();
             public int UsedRowCount(string sheet) => 0;
             public int UsedColumnCount(string sheet) => 0;
+            public bool SheetExists(string sheet) => false;
         }
 
         // ------------------------------------------------------------------
@@ -878,6 +891,45 @@ namespace DeepExcel.Tests
             Assert.Equal(0, preview.AffectedCells);
             Assert.False(PreviewPolicy.ShouldInterrupt(preview));
             Assert.Contains(preview.Warnings, w => w.Contains("左上角"));
+        }
+
+        // ------------------------------------------------------------------
+        // delete_sheet
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Delete_sheet_is_structural_and_says_how_much_data_goes_with_it()
+        {
+            var sheet = new GridSheet().Set("明细!A1", "x").Set("明细!C40", 1.0);
+            var preview = new PreviewBuilder(sheet).Build("delete_sheet", Args("name", "明细"));
+
+            Assert.True(preview.Previewable);
+            Assert.True(preview.IsStructural);
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+            Assert.Contains("明细", preview.Summary());
+            Assert.Contains(preview.Warnings, w => w.Contains("40 行") && w.Contains("C 列"));
+            Assert.Contains(preview.Warnings, w => w.Contains("#REF!"));
+        }
+
+        [Fact]
+        public void Deleting_an_empty_sheet_still_confirms_but_says_it_is_empty()
+        {
+            var sheet = new GridSheet();
+            sheet.AddSheet("空表");
+            var preview = new PreviewBuilder(sheet).Build("delete_sheet", Args("name", "空表"));
+
+            Assert.True(preview.IsStructural);
+            Assert.Contains(preview.Warnings, w => w.Contains("空表"));
+        }
+
+        [Fact]
+        public void Deleting_a_sheet_that_does_not_exist_is_a_no_op()
+        {
+            // The executor refuses: "找不到工作表".
+            var preview = new PreviewBuilder(new GridSheet()).Build("delete_sheet", Args("name", "不存在"));
+
+            Assert.True(preview.IsNoOp);
+            Assert.Contains(preview.Warnings, w => w.Contains("找不到"));
         }
     }
 }
