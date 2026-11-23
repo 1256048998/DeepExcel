@@ -60,9 +60,26 @@ namespace DeepExcel.AddIn.Executor
         /// </summary>
         public static Range Range(Application app, string address)
         {
-            if (!IsRedirected(app)) return app.Range[address];
+            if (!IsRedirected(app))
+            {
+                try
+                {
+                    return app.Range[address];
+                }
+                catch (Exception) when ((address ?? "").IndexOf('!') >= 0 && app?.ActiveWorkbook != null)
+                {
+                    // WPS 表格的 Application.Range 不接受带工作表前缀的地址：
+                    // 「示例-销售明细!A1:G42」直接抛 0x8FE3080B（2026-11-23 真机，WPS 12.1.0.29690）。
+                    // 改为先按名字取到工作表、再在表上取区域。Excel 走不到这里——它在上面就成功了。
+                    return ResolveOnSheet(app.ActiveWorkbook, address);
+                }
+            }
+            return ResolveOnSheet(_current, address);
+        }
 
-            var wb = _current;
+        /// <summary>在指定工作簿里解析地址：先按「表名!」前缀找到工作表，再在表上取区域。</summary>
+        internal static Range ResolveOnSheet(Workbook wb, string address)
+        {
             var text = (address ?? "").Trim();
             var bang = text.LastIndexOf('!');
             Worksheet sheet;

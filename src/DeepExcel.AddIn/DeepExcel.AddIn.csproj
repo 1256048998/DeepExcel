@@ -118,6 +118,7 @@
     <Compile Include="Sidecar\WriteCheck.cs" />
     <Compile Include="TaskPaneControl.cs" />
     <Compile Include="IRibbonCallbacks.cs" />
+    <Compile Include="RibbonIcons.cs" />
     <Compile Include="Extensions\DictionaryExtensions.cs" />
     <Compile Include="ThisAddIn.cs" />
     <Compile Include="Tools\ChartTool.cs" />

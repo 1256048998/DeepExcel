@@ -887,10 +887,8 @@ export default function App() {
       key: 'prompts', label: '提示词与技能', onSelect: handleOpenPromptManager,
       icon: menuIcon(<path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>),
     },
-    {
-      key: 'skills', label: '技能库', onSelect: () => setSkillsOpen(true),
-      icon: menuIcon(<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>),
-    },
+    // 技能库入口暂时隐藏（2026-11-23 产品决定：用处不大，窄面板里排版也挤）。
+    // SkillPanel 和后端都保留，恢复时把这一项加回来即可。
     {
       key: 'models', label: '模型配置', onSelect: () => setModelConfigOpen(true),
       icon: menuIcon(<><circle cx="12" cy="12" r="3"/><path d="M12 1v3M12 20v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M1 12h3M20 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/></>),

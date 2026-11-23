@@ -150,12 +150,33 @@ def main():
     #   * nothing runs after it, so there is no "later step" left to revert for.
     # What must not regress is the independence itself.
     check("WPS activation is not chained behind the Excel block",
-          re.search(r"Log\('Excel post-install step failed.*?\n\s*end;\s*\n.*?try\s*\n.*?UpdateWpsManifest\('Install'\)",
+          re.search(r"Log\('Excel post-install step failed.*?\n\s*end;\s*\n.*?try\s*\n.*?RegisterWpsComAddIn\(",
                     iss, re.S) is not None,
           "an Excel failure must not skip WPS activation")
     check("a WPS activation failure still fails the install",
-          re.search(r"UpdateWpsManifest\('Install'\);.*?except.*?PostInstallFailed := True", iss, re.S)
+          re.search(r"RegisterWpsComAddIn\([^;]*\);.*?except.*?PostInstallFailed := True", iss, re.S)
           is not None)
+
+    # ---- WPS runs the Excel COM add-in (2026-11-23, real WPS 12.1) ----------
+    # The JS add-in cannot run in WPS (no Node in its add-in host); the COM
+    # add-in does. Install registers COM for WPS and retires the JS entry, so a
+    # second, dead DeepExcel tab never appears next to the working one.
+    check("install registers the COM add-in for WPS",
+          "'Software\\Kingsoft\\Office\\ET\\AddIns\\' + progId" in iss
+          and "RegWriteDWordValue(HKCU, addinKey, 'LoadBehavior', 3)" in iss)
+    check("the WPS whitelist entry is a value, not a subkey",
+          "RegWriteStringValue(HKCU, 'Software\\Kingsoft\\Office\\ET\\AddinsWL', progId, '')" in iss,
+          "AddinsWL lists ProgIDs as values (FFCell is listed that way); a subkey is ignored")
+    check("install clears DeepExcel from WPS's disabled list",
+          "RegDeleteValue(HKCU, 'Software\\Kingsoft\\Office\\ET\\AddinsCL', progId)" in iss)
+    check("install no longer registers the JS add-in",
+          "UpdateWpsManifest('Install')" not in iss
+          and re.search(r"UpdateWpsManifest\('Uninstall'\);\s*if ExcelNotActivated then", iss) is not None,
+          "a JS entry in publish.xml gives WPS a second, dead DeepExcel tab")
+    check("a WPS-only machine keeps the COM classes WPS needs",
+          re.search(r"if ExcelNotActivated then\s*begin\s*RegisterComClass\('\{#MainClsid\}'", iss) is not None)
+    check("uninstall removes the WPS COM registration",
+          re.search(r"usUninstall then.*?UnregisterWpsComAddIn\('\{#MainProgId\}'\)", iss, re.S) is not None)
 
     # ---- uninstall --------------------------------------------------------
     check("uninstall removes COM registration",

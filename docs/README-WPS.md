@@ -1,5 +1,12 @@
 # DeepExcel WPS 表格加载项部署指南
 
+> **2026-11-23 起 WPS 走 COM 路线，本文下面关于 JS 加载项的部署步骤已过时。**
+> 真机（WPS 12.1.0.29690 个人版）实测：JS 加载项在 WPS 里跑不起来——加载项宿主是纯浏览器页面，
+> 没有 Node（`require is not defined`），而它的 sidecar、配置、凭据、历史全靠 Node。
+> 同一台机器上，WPS 直接加载 Excel 的 COM 加载项，整条链路都通（功能区、WebView2 面板、sidecar、
+> 模型、读写工具、建表画图），这也是方方格子的做法。安装器现在把 COM 加载项登记给
+> WPS，并从 `publish.xml` 里撤掉 JS 加载项。详见下文「Excel COM 加载项直接跑在 WPS 上」。
+
 ## 概述
 
 DeepExcel 现支持 WPS Office 表格（ET）。WPS 端采用 JS 加载项架构，与 Excel 端的 COM 加载项完全独立，但共享：
@@ -121,7 +128,22 @@ Release 下载并核对 SHA-256；`-SetupPath dist\DeepExcel.Setup.exe` 换成�
 - `execute_jsa` 的确认弹窗在 WPS 面板里是否正常出现、允许 / 拒绝能否回到侧车
 - 选区条：`ApiEvent.AddApiEventListener('SheetSelectionChange', …)` 能否收到选区变化、`Selection.Areas.Item(1)` / `CountLarge` 是否可用（取不到时退回 `Count`）
 
-### Excel COM 加载项直接跑在 WPS 上（共用一套代码）：未验证
+### Excel COM 加载项直接跑在 WPS 上（共用一套代码）：2026-11-23 真机已验证，现为正式路线
+
+环境：开发机，Office 16 + WPS 12.1.0.29690 个人版（32 位 et.exe，装在当前用户下）。
+
+- **登记方式**：`HKCU\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn`（Description / FriendlyName /
+  LoadBehavior=3），外加 `ET\AddinsWL` 下一个**名为 ProgID 的字符串值**（方方格子就是 `"FFCell"=""`）。
+  旧的 `wps-com-test.ps1` 把白名单写成了子键，WPS 不认。
+- **首次启用提示**：WPS 第一次见到陌生 COM 加载项会把它放进 `ET\AddinsCL` 并弹「已禁用的COM加载项」；
+  点「启用」只是删掉那个值。安装器装时就删掉它，实测不再弹（先删掉全部 WPS 登记再装，模拟新机器）。
+- **已修的兼容差异**：`Application.Range["表名!A1:G42"]` 在 WPS 抛 0x8FE3080B → 回退为先取表再取区域
+  （`ExcelTarget.ResolveOnSheet`）；CTP 显示前设的 Width 不生效、面板约 80 px → 显示后再纠正；
+  `imageMso="WindowUnhide"` WPS 没有 → 功能区图标改为自绘（`RibbonIcons.cs`）。
+- **仍未验证**：只装 WPS、没装 Office 的机器。沙箱里 COM 激活报 `0x80070002`（下面第二条），
+  这条在纯 WPS 机器上可能同样成立；`stdole` 线索也还在。拿到一台这样的机器之前不能宣称支持。
+
+以下是 2026-09-25 的旧记录。
 
 设想是 WPS 经 `HKCU\Software\Kingsoft\Office\ET\AddIns` + `AddinsWL` 白名单加载 Excel 的
 COM 加载项，两个宿主共用一套代码、JS 加载项退居兜底（`scripts/wps-com-test.ps1`、

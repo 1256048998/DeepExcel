@@ -1,4 +1,4 @@
-import { useRef, useState, ChangeEvent, ClipboardEvent, useEffect } from 'react'
+import { useRef, useState, ChangeEvent, ClipboardEvent, useEffect, useCallback } from 'react'
 import { PromptDropdown } from './PromptDropdown'
 import { ModelPicker } from './ModelPicker'
 import type { PromptTemplate } from '../utils/prompts'
@@ -122,13 +122,31 @@ export function InputArea({
 
   // ★ textarea 自动高度：根据内容行数调整，最小 1 行，最大 40vh
   // 类似 Trae 的行为，不需要用户手动拖拽调节
-  useEffect(() => {
+  const fitTextareaHeight = useCallback(() => {
     const ta = textareaRef.current
     if (!ta) return
     ta.style.height = 'auto'
     const maxH = Math.floor(window.innerHeight * 0.4)
     ta.style.height = Math.min(ta.scrollHeight, maxH) + 'px'
-  }, [value])
+  }, [])
+
+  useEffect(() => { fitTextareaHeight() }, [value, disabled, allowQueue, isClarifying, fitTextareaHeight])
+
+  // 宽度变了也要重算：面板以很窄的宽度打开时（WPS 里约 80 px），占位文字折成十几行，
+  // 高度按那时算死；用户把面板拉宽后不重算，输入框就一直偏高，直到敲一个字。
+  useEffect(() => {
+    const ta = textareaRef.current
+    if (!ta || typeof ResizeObserver === 'undefined') return
+    let lastWidth = ta.clientWidth
+    const observer = new ResizeObserver(() => {
+      const width = ta.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      fitTextareaHeight()
+    })
+    observer.observe(ta)
+    return () => observer.disconnect()
+  }, [fitTextareaHeight])
 
   const uploadFiles = async (files: File[]) => {
     if (files.length === 0 || !onUploadAttachment) return

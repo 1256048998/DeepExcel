@@ -22,5 +22,9 @@ namespace DeepExcel.AddIn
 
         [DispId(3)]
         void OnShowHelp(object control);
+
+        /// <summary>ribbon.xml 的 getImage 回调，返回 IPictureDisp。</summary>
+        [DispId(4)]
+        object GetButtonImage(object control);
     }
 }

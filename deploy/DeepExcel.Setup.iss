@@ -630,6 +630,46 @@ begin
   RegisterExcelAddIn('{#MainProgId}', '{#AppName} AI AddIn', dllPath);
 end;
 
+// ---------------------------------------------------------------------------
+// WPS: the same COM add-in Excel loads (the approach FFCell ships)
+// ---------------------------------------------------------------------------
+// 2026-11-23, first run on a real WPS (12.1.0.29690, personal edition):
+//   * the JS add-in in jsaddons cannot work there at all -- WPS's add-in host is
+//     a plain browser page with no Node (`require is not defined`), and the JS
+//     add-in needs Node for the sidecar, config, credentials and history;
+//   * WPS loads this very COM add-in from HKCU\Software\Kingsoft\Office\ET\AddIns,
+//     and the whole stack works: ribbon, WebView2 pane, sidecar, model, tools.
+// WPS puts a third-party COM add-in it has not seen into ET\AddinsCL (its
+// disabled list) and asks once; clicking "启用" only removes that value. So we
+// remove it here too. AddinsWL is a list of VALUES named by ProgID (FFCell is
+// listed that way) -- not subkeys.
+function IsWpsInstalled(): Boolean;
+begin
+  Result :=
+    RegKeyExists(HKCU, 'Software\Kingsoft\Office') or
+    RegKeyExists(HKLM, 'SOFTWARE\Kingsoft\Office') or
+    RegKeyExists(HKLM, 'SOFTWARE\WOW6432Node\Kingsoft\Office');
+end;
+
+procedure RegisterWpsComAddIn(const progId, friendlyName: string);
+var
+  addinKey: string;
+begin
+  addinKey := 'Software\Kingsoft\Office\ET\AddIns\' + progId;
+  RegWriteStringValue(HKCU, addinKey, 'Description', friendlyName);
+  RegWriteStringValue(HKCU, addinKey, 'FriendlyName', friendlyName);
+  RegWriteDWordValue(HKCU, addinKey, 'LoadBehavior', 3);
+  RegWriteStringValue(HKCU, 'Software\Kingsoft\Office\ET\AddinsWL', progId, '');
+  RegDeleteValue(HKCU, 'Software\Kingsoft\Office\ET\AddinsCL', progId);
+end;
+
+procedure UnregisterWpsComAddIn(const progId: string);
+begin
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Kingsoft\Office\ET\AddIns\' + progId);
+  RegDeleteValue(HKCU, 'Software\Kingsoft\Office\ET\AddinsWL', progId);
+  RegDeleteValue(HKCU, 'Software\Kingsoft\Office\ET\AddinsCL', progId);
+end;
+
 procedure UnregisterDeepExcel();
 begin
   UnregisterExcelAddIn('{#MainProgId}');
@@ -710,7 +750,9 @@ begin
     try
       if ExcelEnabled then
       begin
-        if ExcelInstalled and WebView2NeedsInstall() then
+        // WPS now runs the same COM add-in and its WebView2 pane, so a
+        // WPS-only machine needs the runtime as much as an Excel one.
+        if (ExcelInstalled or IsWpsInstalled()) and WebView2NeedsInstall() then
           RunAndRequire(
             ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'),
             '/silent /install',
@@ -794,7 +836,18 @@ begin
     // unwinding the file copy), so the manifest never dangles.
     try
       WizardForm.StatusLabel.Caption := '正在启用 WPS 表格加载项';
-      UpdateWpsManifest('Install');
+      // Retire the JS add-in entry (from this or any earlier version): it cannot
+      // run in WPS (no Node), and left in place it would put a second, dead
+      // DeepExcel tab next to the COM one.
+      UpdateWpsManifest('Uninstall');
+      // A WPS-only machine fails Excel activation by definition, and the except
+      // branch above then unregistered the COM classes. WPS needs them.
+      if ExcelNotActivated then
+      begin
+        RegisterComClass('{#MainClsid}', '{#MainProgId}', ExpandConstant('{app}') + '\' + '{#AddinDLL}', '{#MainClass}', '{#AssemblyValue}');
+        RegisterComClass('{#TaskPaneClsid}', '{#TaskPaneProgId}', ExpandConstant('{app}') + '\' + '{#AddinDLL}', '{#TaskPaneClass}', '{#AssemblyValue}');
+      end;
+      RegisterWpsComAddIn('{#MainProgId}', '{#AppName} AI AddIn');
       wpsActivated := True;
     except
       errorMessage := GetExceptionMessage();
@@ -836,14 +889,16 @@ begin
     // makes a successful install look broken.
     if ExcelNotActivated and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
-             '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +
+             '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 +
+             '若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”即可。' + #13#10 + #13#10 +
              '这台电脑上没有检测到 Microsoft Excel，Excel 版暂未启用。' + #13#10 +
              '如果你其实装了 Excel 却看不到 DeepExcel 选项卡，' + #13#10 +
              '请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复。', mbInformation, MB_OK);
     if (not ExcelNotActivated) and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
-             '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);
+             '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +
+             'WPS 若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”即可。', mbInformation, MB_OK);
   end;
 end;
 
@@ -853,6 +908,7 @@ begin
   begin
     UninstallProgressForm.StatusLabel.Caption := '正在移除 WPS 表格加载项';
     UpdateWpsManifest('Uninstall');
+    UnregisterWpsComAddIn('{#MainProgId}');
     UnregisterDeepExcel();
   end;
 end;

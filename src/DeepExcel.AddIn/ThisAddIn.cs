@@ -746,6 +746,30 @@ namespace DeepExcel.AddIn
             catch (Exception ex) { Log("OnRibbonLoad cast failed: " + ex.Message); }
         }
 
+        object IRibbonCallbacks.GetButtonImage(object control)
+        {
+            string id = null;
+            try
+            {
+                id = (control as Microsoft.Office.Core.IRibbonControl)?.Id;
+                // WPS 传来的控件对象不一定能按 Office 的接口 QI，退回按名字取属性
+                if (id == null && control != null)
+                    id = control.GetType().InvokeMember("Id", System.Reflection.BindingFlags.GetProperty, null, control, null) as string;
+            }
+            catch (Exception ex) { Log("GetButtonImage: read control id failed: " + ex.Message); }
+
+            try
+            {
+                return RibbonIcons.ForControl(id);
+            }
+            catch (Exception ex)
+            {
+                // 返回 null 时功能区显示空白图标，按钮仍然可点
+                Log("GetButtonImage failed for " + (id ?? "?") + ": " + ex.Message);
+                return null;
+            }
+        }
+
         void IRibbonCallbacks.OnTogglePanel(object control)
         {
             Log("OnTogglePanel called");
@@ -842,6 +866,7 @@ namespace DeepExcel.AddIn
                     {
                         Log("CustomTaskPane already visible for window: " + windowKey);
                     }
+                    EnsureUsablePaneWidth(ctp);
 
                     // ★ 性能优化：面板打开时预启动 sidecar
                     // 虽然 OnStartupComplete 已经预热过，但如果是新建工作簿
@@ -1232,6 +1257,31 @@ namespace DeepExcel.AddIn
         /// <summary>
         /// 清理字典中已失效的 CTP（用户点 X 关闭后 CTP 对象访问任何属性都会抛异常）
         /// </summary>
+        private const int DefaultPaneWidth = 420;
+        // 低于这个宽度面板基本不可用（输入框只剩一指宽）。只在明显被压窄时纠正，
+        // 用户自己拖到 300 以上的宽度不去动。
+        private const int MinUsablePaneWidth = 300;
+
+        /// <summary>
+        /// WPS 表格不采用 CreateCTP 之后、显示之前设的 Width：面板以约 80 px 打开
+        /// （2026-11-23 真机，WPS 12.1.0.29690）。显示之后再读一次，太窄就重设。
+        /// Excel 显示前设的宽度本来就生效，这里读到 420 什么也不做。
+        /// </summary>
+        private void EnsureUsablePaneWidth(Microsoft.Office.Core.CustomTaskPane ctp)
+        {
+            try
+            {
+                int width = ctp.Width;
+                if (width >= MinUsablePaneWidth) return;
+                ctp.Width = DefaultPaneWidth;
+                Log($"CustomTaskPane width was {width}, reset to {DefaultPaneWidth}; now {ctp.Width}");
+            }
+            catch (Exception ex)
+            {
+                Log("EnsureUsablePaneWidth failed: " + ex.Message);
+            }
+        }
+
         private void PurgeInvalidCtps()
         {
             var invalidKeys = new System.Collections.Generic.List<string>();
