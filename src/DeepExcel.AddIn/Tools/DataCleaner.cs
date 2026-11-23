@@ -311,8 +311,7 @@ namespace DeepExcel.AddIn.Tools
                     for (int j = 1; j <= cols; j++)
                     {
                         var cell = (Range)range.Cells[i, j];
-                        var val = cell.Value2;
-                        if (val != null && !string.IsNullOrWhiteSpace(val.ToString()))
+                        if (!CleaningRules.IsBlank(cell.Value2))
                         {
                             isBlank = false;
                             break;

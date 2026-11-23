@@ -95,6 +95,15 @@ namespace DeepExcel.Tests
                 .DefaultIfEmpty(0).Max();
         }
 
+        public int UsedColumnCount(string sheet)
+        {
+            var name = string.IsNullOrEmpty(sheet) ? ActiveSheet : sheet;
+            var prefix = name.ToUpperInvariant() + "|";
+            return _cells.Where(kv => kv.Key.StartsWith(prefix, StringComparison.Ordinal))
+                .Select(kv => int.Parse(kv.Key.Split('|')[2]))
+                .DefaultIfEmpty(0).Max();
+        }
+
         private static string Key(string sheet, int row, int col) =>
             sheet.ToUpperInvariant() + "|" + row + "|" + col;
 
@@ -184,6 +193,7 @@ namespace DeepExcel.Tests
         {
             public IReadOnlyList<CellSnapshot> Read(string sheet, string address) => new List<CellSnapshot>();
             public int UsedRowCount(string sheet) => 0;
+            public int UsedColumnCount(string sheet) => 0;
         }
 
         // ------------------------------------------------------------------
@@ -585,6 +595,47 @@ namespace DeepExcel.Tests
                 Args("range_address", "A1:A2", "delimiter", ","));
 
             Assert.True(preview.IsNoOp);
+        }
+
+        // ------------------------------------------------------------------
+        // delete_blank_rows
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Delete_blank_rows_lists_the_rows_that_are_blank_across_the_range()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "姓名", "金额" },
+                new object[] { null, null },
+                new object[] { "张三", null },
+                new object[] { " ", "" },
+                new object[] { "李四", 5.0 });
+            var preview = new PreviewBuilder(sheet).Build("delete_blank_rows", Args("range_address", "A1:B5"));
+
+            Assert.Equal(new[] { 2, 4 }, preview.DeletedRows.ToArray());
+            Assert.True(preview.IsStructural);
+            Assert.Contains("删除 2 行", preview.Summary());
+            Assert.Contains(preview.Warnings, w => w.Contains("上移"));
+        }
+
+        [Fact]
+        public void Delete_blank_rows_warns_when_a_row_has_data_outside_the_range()
+        {
+            // The executor deletes the entire row, not just the range's part.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "x", "y", null, null },
+                new object[] { null, null, null, "备注" });
+            var preview = new PreviewBuilder(sheet).Build("delete_blank_rows", Args("range_address", "A1:B2"));
+
+            Assert.Equal(new[] { 2 }, preview.DeletedRows.ToArray());
+            Assert.Contains(preview.Warnings, w => w.Contains("第 2 行") && w.Contains("区域外"));
+        }
+
+        [Fact]
+        public void Delete_blank_rows_with_no_blank_rows_is_a_no_op()
+        {
+            var sheet = new GridSheet().Rows("A1", new object[] { "a" }, new object[] { "b" });
+            Assert.True(new PreviewBuilder(sheet).Build("delete_blank_rows", Args("range_address", "A1:A2")).IsNoOp);
         }
     }
 }

@@ -44,6 +44,12 @@ namespace DeepExcel.AddIn.Preview
 
         /// <summary>Row count of the used range, for bounding deletes.</summary>
         int UsedRowCount(string sheet);
+
+        /// <summary>
+        /// Last used column, for seeing what an entire-row delete takes with
+        /// it beyond the range the tool was given.
+        /// </summary>
+        int UsedColumnCount(string sheet);
     }
 
     /// <summary>
@@ -112,6 +118,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildMergeColumns(toolName, args);
                     case "split_text_to_columns":
                         return BuildSplitText(toolName, args);
+                    case "delete_blank_rows":
+                        return BuildDeleteBlankRows(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:

@@ -299,6 +299,73 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// delete_blank_rows: rows blank across every column of the range are
+        /// deleted, bottom up, as entire rows (DataCleaner.DeleteBlankRows).
+        /// </summary>
+        private ChangePreview BuildDeleteBlankRows(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var blank = Enumerable.Range(0, grid.Rows)
+                .Where(r => Enumerable.Range(0, grid.Cols).All(c => CleaningRules.IsBlank(RawValue(grid[r, c]))))
+                .Select(r => grid.Rect.Row1 + r)
+                .ToList();
+            return EntireRowsDeleted(toolName, target, grid, blank);
+        }
+
+        /// <summary>
+        /// Rows the executor removes with EntireRow.Delete(). The whole row
+        /// goes, not just the range's part of it, so anything in other columns
+        /// of those rows is named: the user asked about a range and would not
+        /// expect a note in column F to disappear with it.
+        /// </summary>
+        private ChangePreview EntireRowsDeleted(string toolName, Target target, Grid grid, IList<int> rows)
+        {
+            var preview = new ChangePreview { ToolName = toolName };
+            preview.DeletedRows.AddRange(rows);
+            if (rows.Count == 0)
+            {
+                Finalize(preview);
+                return preview;
+            }
+
+            var lastColumn = _reader.UsedColumnCount(target.Sheet);
+            var outside = new List<string>();
+            if (lastColumn > grid.Rect.Col2 || grid.Rect.Col1 > 1)
+            {
+                var width = Math.Max(lastColumn, grid.Rect.Col2);
+                foreach (var row in rows)
+                {
+                    var whole = new CellRect(grid.Rect.Sheet, row, 1, row, width);
+                    var cells = _reader.Read(target.Sheet, LocalAddress(whole));
+                    var stray = cells
+                        .Where((cell, index) => (index + 1 < grid.Rect.Col1 || index + 1 > grid.Rect.Col2)
+                                                && !CleaningRules.IsBlank(RawValue(cell)))
+                        .Select(cell => cell.Address)
+                        .ToList();
+                    if (stray.Count > 0)
+                    {
+                        outside.Add($"第 {row} 行（{string.Join("、", stray.Take(3))}）");
+                    }
+                }
+            }
+            if (outside.Count > 0)
+            {
+                preview.Warnings.Add(
+                    $"整行删除：{string.Join("；", outside.Take(5))}{(outside.Count > 5 ? $" 等 {outside.Count} 行" : "")}在区域外还有内容，会一并删掉");
+            }
+            preview.Warnings.Add("删除行会使下方所有行上移，引用这些行的公式可能失效");
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

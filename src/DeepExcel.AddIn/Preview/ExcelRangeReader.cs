@@ -128,6 +128,24 @@ namespace DeepExcel.AddIn.Preview
             }
         }
 
+        public int UsedColumnCount(string sheet)
+        {
+            try
+            {
+                var worksheet = ResolveSheet(sheet);
+                if (worksheet == null)
+                {
+                    return 0;
+                }
+                var used = worksheet.UsedRange;
+                return used == null ? 0 : used.Column + used.Columns.Count - 1;
+            }
+            catch (Exception)
+            {
+                return 0;
+            }
+        }
+
         private Worksheet ResolveSheet(string sheet)
         {
             try
