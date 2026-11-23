@@ -375,5 +375,44 @@ namespace DeepExcel.Tests
 
             Assert.Contains(preview.Warnings, w => w.Contains("2 个文本格") && w.Contains("B1"));
         }
+
+        // ------------------------------------------------------------------
+        // text_to_number
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Text_to_number_converts_numeric_text_only()
+        {
+            var sheet = new GridSheet().Set("A1", "42").Set("A2", 7.0).Set("A3", "abc").Set("A4", "3.5");
+            var preview = new PreviewBuilder(sheet).Build("text_to_number", Args("range_address", "A1:A4"));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.Equal("42", At(preview, "A1").After);
+            Assert.Equal("3.5", At(preview, "A4").After);
+            Assert.Null(At(preview, "A2"));
+        }
+
+        [Fact]
+        public void Text_to_number_warns_that_leading_zeros_will_be_lost()
+        {
+            // Employee numbers and postcodes stored as text are the usual
+            // victims: 001234 becomes 1234.
+            var sheet = new GridSheet().Set("A1", "001234").Set("A2", "0");
+            var preview = new PreviewBuilder(sheet).Build("text_to_number", Args("range_address", "A1:A2"));
+
+            Assert.Equal("1234", At(preview, "A1").After);
+            Assert.Contains(preview.Warnings, w => w.Contains("前导零") && w.Contains("A1") && !w.Contains("A2"));
+        }
+
+        [Fact]
+        public void Text_to_number_warns_that_long_digit_strings_lose_precision()
+        {
+            // An ID card number has 18 digits; Excel keeps 15.
+            var sheet = new GridSheet().Set("A1", "110101199003071234");
+            var preview = new PreviewBuilder(sheet).Build("text_to_number", Args("range_address", "A1"));
+
+            Assert.Contains(preview.Warnings, w => w.Contains("15 位"));
+            Assert.True(PreviewPolicy.ShouldInterrupt(preview));
+        }
     }
 }

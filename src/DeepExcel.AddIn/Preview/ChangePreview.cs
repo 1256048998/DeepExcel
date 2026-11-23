@@ -82,6 +82,13 @@ namespace DeepExcel.AddIn.Preview
         public List<string> DeletedColumns { get; set; } = new List<string>();
         public List<string> Warnings { get; set; } = new List<string>();
 
+        /// <summary>
+        /// Set when the change loses something the user would not expect from
+        /// the operation's name -- leading zeros, digits past the 15th -- so
+        /// the panel is shown however few cells are involved.
+        /// </summary>
+        public bool RequiresConfirmation { get; set; }
+
         /// <summary>Rows/columns/sheets whose structure changes, not just values.</summary>
         public bool IsStructural
         {

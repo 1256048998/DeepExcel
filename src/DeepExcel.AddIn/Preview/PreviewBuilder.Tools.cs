@@ -68,7 +68,7 @@ namespace DeepExcel.AddIn.Preview
         private ChangePreview BuildPerCell(
             string toolName, IDictionary<string, object> args,
             Func<object, object> rule, Func<object, string> show,
-            Func<Grid, IEnumerable<string>> warnings = null)
+            Action<Grid, ChangePreview> annotate = null)
         {
             var target = ResolveTarget(args, "range_address", "address", "range");
             if (target == null)
@@ -93,12 +93,39 @@ namespace DeepExcel.AddIn.Preview
                     OverwritesFormula = cell.HasFormula
                 });
             }
-            if (warnings != null)
-            {
-                preview.Warnings.AddRange(warnings(grid));
-            }
+            annotate?.Invoke(grid, preview);
             Finalize(preview);
             return preview;
+        }
+
+        /// <summary>
+        /// Text that text_to_number converts at a cost the user would not
+        /// guess from "turn text into numbers": codes with leading zeros, and
+        /// long digit strings such as ID numbers. Both are irreversible once
+        /// saved, so they make the preview interrupt however few cells there are.
+        /// </summary>
+        private static void NumbersThatLoseDigits(Grid grid, ChangePreview preview)
+        {
+            var converted = grid.Cells
+                .Where(c => RawValue(c) is string s && CleaningRules.TextToNumber(s) != null)
+                .ToList();
+            var zeros = converted.Where(c => CleaningRules.HasLeadingZero((string)RawValue(c))).ToList();
+            var longDigits = converted.Where(c => CleaningRules.LosesPrecision((string)RawValue(c))).ToList();
+            if (zeros.Count > 0)
+            {
+                preview.Warnings.Add($"{zeros.Count} 个格以 0 开头（{Examples(zeros)}），转成数字后前导零会丢失");
+                preview.RequiresConfirmation = true;
+            }
+            if (longDigits.Count > 0)
+            {
+                preview.Warnings.Add($"{longDigits.Count} 个格超过 15 位数字（{Examples(longDigits)}，如身份证号），转成数字后末几位会变成 0");
+                preview.RequiresConfirmation = true;
+            }
+        }
+
+        private static string Examples(IList<CellSnapshot> cells)
+        {
+            return string.Join("、", cells.Take(3).Select(c => c.Address + "「" + Clip(RawValue(c) as string ?? Stringify(RawValue(c))) + "」"));
         }
 
         private static string ShowAmount(object value)
@@ -113,14 +140,13 @@ namespace DeepExcel.AddIn.Preview
         /// an amount written in a way the rule does not read ("约 5 万") --
         /// worth naming, since the user asked for the column to be cleaned.
         /// </summary>
-        private static IEnumerable<string> AmountsLeftAsText(Grid grid)
+        private static void AmountsLeftAsText(Grid grid, ChangePreview preview)
         {
             var skipped = grid.Cells
                 .Where(c => RawValue(c) is string s && s.Length > 0 && CleaningRules.CleanAmount(s) == null)
                 .ToList();
-            if (skipped.Count == 0) yield break;
-            var examples = string.Join("、", skipped.Take(3).Select(c => c.Address + "「" + Clip((string)RawValue(c)) + "」"));
-            yield return $"{skipped.Count} 个文本格不是可识别的金额，保持原样（{examples}）";
+            if (skipped.Count == 0) return;
+            preview.Warnings.Add($"{skipped.Count} 个文本格不是可识别的金额，保持原样（{Examples(skipped)}）");
         }
 
         /// <summary>

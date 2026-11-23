@@ -266,15 +266,12 @@ namespace DeepExcel.AddIn.Tools
 
                 foreach (Range cell in range.Cells)
                 {
-                    var val = cell.Value2;
-                    if (val != null && val is string s && !string.IsNullOrEmpty(s))
+                    var number = CleaningRules.TextToNumber(cell.Value2);
+                    if (number != null)
                     {
-                        if (double.TryParse(s, out double num))
-                        {
-                            cell.Value = num;
-                            cell.NumberFormat = "General";
-                            convertedCount++;
-                        }
+                        cell.Value = number.Value;
+                        cell.NumberFormat = "General";
+                        convertedCount++;
                     }
                 }
 

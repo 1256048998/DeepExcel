@@ -104,6 +104,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildPerCell(toolName, args, v => CleaningRules.RemoveSpecialChars(v), ShowSpecialChars);
                     case "clean_amount":
                         return BuildPerCell(toolName, args, v => CleaningRules.CleanAmount(v), ShowAmount, AmountsLeftAsText);
+                    case "text_to_number":
+                        return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:
                         // Simulable in principle but not implemented yet.
                         // Claiming an empty change set would be a lie the user

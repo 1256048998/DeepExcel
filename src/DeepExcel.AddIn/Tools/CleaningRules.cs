@@ -75,6 +75,43 @@ namespace DeepExcel.AddIn.Tools
             return double.TryParse(cleaned, out var number) ? number : (double?)null;
         }
 
+        /// <summary>
+        /// text_to_number: text that parses as a number becomes that number
+        /// (number format General). Text only.
+        /// </summary>
+        public static double? TextToNumber(object value)
+        {
+            if (!(value is string s) || s.Length == 0) return null;
+            return double.TryParse(s, out var number) ? number : (double?)null;
+        }
+
+        /// <summary>"001234": the zeros are gone once it is a number.</summary>
+        public static bool HasLeadingZero(string text)
+        {
+            var t = (text ?? "").Trim();
+            if (t.StartsWith("+") || t.StartsWith("-")) t = t.Substring(1);
+            return t.Length >= 2 && t[0] == '0' && char.IsDigit(t[1]);
+        }
+
+        /// <summary>
+        /// More significant digits than a double keeps: an 18-digit ID number
+        /// comes back with its last digits replaced by zeros.
+        /// </summary>
+        public static bool LosesPrecision(string text)
+        {
+            var digits = 0;
+            var leading = true;
+            foreach (var c in text ?? "")
+            {
+                if (c == 'e' || c == 'E') break;
+                if (!char.IsDigit(c)) continue;
+                if (leading && c == '0') continue;
+                leading = false;
+                digits++;
+            }
+            return digits > 15;
+        }
+
         public static bool IsSpecialChar(char c)
         {
             if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;

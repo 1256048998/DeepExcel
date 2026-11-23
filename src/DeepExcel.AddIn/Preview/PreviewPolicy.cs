@@ -113,7 +113,7 @@ namespace DeepExcel.AddIn.Preview
             {
                 return false;
             }
-            if (preview.IsStructural || preview.FormulasOverwritten > 0)
+            if (preview.IsStructural || preview.FormulasOverwritten > 0 || preview.RequiresConfirmation)
             {
                 return true;
             }
