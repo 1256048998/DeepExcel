@@ -38,7 +38,7 @@ namespace DeepExcel.AddIn.Updates
         /// <summary>check | download | launch | apply</summary>
         public string Phase { get; set; }
 
-        /// <summary>up_to_date | ready | failed | blocked | installed | started</summary>
+        /// <summary>up_to_date | ready | failed | blocked | installed | started | rolled_back</summary>
         public string Outcome { get; set; }
 
         /// <summary>An <see cref="UpdateRejection"/> name or an UpdateTransportException code.</summary>
@@ -106,6 +106,7 @@ namespace DeepExcel.AddIn.Updates
         /// </summary>
         public AppliedReceipt ReportPendingUpgrade()
         {
+            ReportPendingRollback();
             try
             {
                 AppliedReceipt receipt = _journal.TakeReceipt();
@@ -119,6 +120,7 @@ namespace DeepExcel.AddIn.Updates
                 Logger.Instance.Info(
                     LogCategory, "已完成升级：" + receipt.FromVersion + " → " + receipt.ToVersion);
                 Emit("apply", "installed", null, receipt.FromVersion, receipt.ToVersion, 0);
+                KeepRunningBuildForRollback(receipt.ToVersion);
                 return receipt;
             }
             catch (Exception ex)
@@ -126,6 +128,78 @@ namespace DeepExcel.AddIn.Updates
                 Logger.Instance.Warning(LogCategory, "读取升级回执失败：" + ex.Message);
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Reports, once, that the updater had to put this version back.
+        ///
+        /// The failed version keeps its attempt count, so it is offered again
+        /// at most <see cref="UpdateJournal.MaxAttempts"/> times in total -- each
+        /// of which now costs the user nothing, because a failure is undone.
+        /// </summary>
+        private void ReportPendingRollback()
+        {
+            try
+            {
+                RollbackNote note = _journal.TakeRollback();
+                if (note == null)
+                {
+                    return;
+                }
+                Logger.Instance.Warning(
+                    LogCategory,
+                    string.Format(CultureInfo.InvariantCulture,
+                        "v{0} 安装后未能正常使用（{1}），已自动恢复到 v{2}",
+                        note.FailedVersion, note.ReasonCode, note.RestoredVersion));
+                Emit("apply", "rolled_back", SafeToken(note.ReasonCode),
+                     SafeVersion(note.RestoredVersion), SafeVersion(note.FailedVersion), 0);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning(LogCategory, "读取回滚记录失败：" + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Makes the running build the version a later failed update returns to.
+        ///
+        /// Only when the receipt names the build that is actually running: this
+        /// code executing is the proof that the new version loads, and nothing
+        /// short of that proof should replace a rollback package known to work.
+        /// </summary>
+        private void KeepRunningBuildForRollback(string installedByUpdater)
+        {
+            try
+            {
+                if (!ReleaseVersion.TryParse(installedByUpdater, out ReleaseVersion installed) ||
+                    !ReleaseVersion.TryParse(InstalledVersion, out ReleaseVersion running) ||
+                    installed != running)
+                {
+                    return;
+                }
+                if (UpdateStage.KeepForRollback(_stageRoot, installedByUpdater, Options.Channel, _verifier))
+                {
+                    Logger.Instance.Info(LogCategory, "已保留 v" + installedByUpdater + " 作为回滚包");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning(LogCategory, "保留回滚包失败：" + ex.Message);
+            }
+        }
+
+        // The rollback note is a file in a user-writable folder. Whatever it
+        // says is reduced to an identifier or a version before it can reach
+        // telemetry, so a planted note cannot smuggle a path or a sentence out.
+        private static string SafeToken(string token)
+        {
+            return token != null && System.Text.RegularExpressions.Regex.IsMatch(
+                token, "^[A-Za-z_][A-Za-z0-9_]{0,39}$") ? token : "unknown";
+        }
+
+        private static string SafeVersion(string version)
+        {
+            return ReleaseVersion.TryParse(version, out _) ? version : null;
         }
 
         private void Emit(

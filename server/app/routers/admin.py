@@ -330,6 +330,12 @@ def stats(
             # reason_code is a fixed token by construction; see the privacy note
             # on update_event in routers/telemetry.py.
             update_failures[payload.get("reason_code") or "unknown"] += 1
+        elif outcome == "rolled_back":
+            # The install failed and the updater put the previous version back.
+            # The user lost nothing, which is exactly why it would go unnoticed
+            # without being listed here: a release that rolls back everywhere
+            # looks like one that nobody has installed yet.
+            update_failures["rolled_back:" + (payload.get("reason_code") or "unknown")] += 1
 
     versions = Counter(
         version for version in db.scalars(

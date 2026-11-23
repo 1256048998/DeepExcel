@@ -291,6 +291,7 @@ namespace DeepExcel.Tests
             Run(Build(_key.Sign(UpdateTestKey.Payload(version: version, channel: "beta"))));
             Run(Build(_key.SignFor(Package, version), Encoding.UTF8.GetBytes("wrong")));
             new UpdateJournal(_root).WriteReceipt("0.5.0", version);
+            new UpdateJournal(_root).WriteRollback("0.5.0", version, "installer_failed");
             Build(_key.SignFor(Package, "0.0.1")).ReportPendingUpgrade();
 
             Assert.NotEmpty(_events);
@@ -327,7 +328,7 @@ namespace DeepExcel.Tests
             // produce an event stream that is quietly missing a whole category.
             var serverAllows = new HashSet<string>
             {
-                "up_to_date", "ready", "failed", "blocked", "installed", "started",
+                "up_to_date", "ready", "failed", "blocked", "installed", "started", "rolled_back",
             };
             var phasesAllowed = new HashSet<string> { "check", "download", "launch", "apply" };
 
@@ -336,6 +337,7 @@ namespace DeepExcel.Tests
             Run(Build(_key.SignFor(Package, "0.0.1")));
             Run(Build("", feedStatus: HttpStatusCode.ServiceUnavailable));
             new UpdateJournal(_root).WriteReceipt("0.5.0", version);
+            new UpdateJournal(_root).WriteRollback("0.5.0", version, "installer_failed");
             Build(_key.SignFor(Package, "0.0.1")).ReportPendingUpgrade();
 
             Assert.NotEmpty(_events);

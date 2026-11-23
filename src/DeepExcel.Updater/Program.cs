@@ -28,8 +28,13 @@ namespace DeepExcel.Updater
     /// running (the install would half-fail in a way nobody can diagnose).
     /// Both simply defer the update to the next restart.
     ///
+    /// When the installer fails and the previous version's installer is kept
+    /// in updates\rollback\ (and still verifies), that installer is run to put
+    /// the working version back -- see <see cref="RollBack"/>.
+    ///
     /// Exit codes: 0 installed, 2 usage, 3 stage rejected, 4 digest mismatch,
-    /// 5 host still running, 6 installer failed, 7 unexpected error.
+    /// 5 host still running, 6 installer failed, 7 unexpected error,
+    /// 8 installer failed and the previous version was restored.
     /// </summary>
     public static class Program
     {
@@ -40,9 +45,14 @@ namespace DeepExcel.Updater
         private const int ExitHostRunning = 5;
         private const int ExitInstallerFailed = 6;
         private const int ExitUnexpected = 7;
+        private const int ExitRolledBack = 8;
 
         private const int DefaultWaitSeconds = 180;
         private const int InstallerTimeoutSeconds = 900;
+        private const int InstallerTimedOut = -1;
+
+        private const string InstallLogName = "install.log";
+        private const string RollbackLogName = "rollback-install.log";
 
         /// <summary>Host applications that hold the add-in files open.</summary>
         private static readonly string[] HostProcessNames = { "EXCEL", "et", "wps" };
@@ -175,20 +185,42 @@ namespace DeepExcel.Updater
                 return ExitHostRunning;
             }
 
-            // 5. Install.
-            int installerExit = RunInstaller(package, stage);
+            // 5. Find the way back before taking the step: the previous
+            //    version's own installer, re-verified now, because it sat in a
+            //    user-writable folder too. Missing is normal for the first
+            //    update after a manual install.
+            string stageRoot = StageRootOf(stage);
+            UpdateCheckResult rollback = UpdateStage.LoadRollback(
+                stageRoot, installedVersion, channel, EmbeddedUpdateKey.Verifier);
+            Log(rollback.Accepted
+                ? "回滚包已验签：v" + rollback.Release.Version
+                : "没有可用的回滚包（" + rollback.Rejection + "）：" + rollback.Detail);
+
+            // 6. Install.
+            int installerExit = RunInstaller(package, stage, InstallLogName);
             if (installerExit != 0)
             {
                 Log("安装程序返回 " + installerExit);
+                // A timed-out installer is still running; starting a second one
+                // underneath it would make things worse, not better.
+                if (installerExit != InstallerTimedOut && rollback.Accepted &&
+                    RollBack(stage, rollback.Release, installedVersion, check.Release.Version, "installer_failed"))
+                {
+                    ReportFailure(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "安装 DeepExcel v{0} 未成功，已自动恢复到 v{1}，可以照常使用。",
+                        check.Release.Version, rollback.Release.Version));
+                    return ExitRolledBack;
+                }
                 ReportFailure(string.Format(
                     CultureInfo.InvariantCulture,
                     "安装 DeepExcel v{0} 失败（代码 {1}）。详见 {2}",
-                    check.Release.Version, installerExit, Path.Combine(stage, "install.log")));
+                    check.Release.Version, installerExit, Path.Combine(stage, InstallLogName)));
                 return ExitInstallerFailed;
             }
             Log("安装成功：v" + check.Release.Version);
 
-            // 6. Leave a note for the build that is about to replace this one.
+            // 7. Leave a note for the build that is about to replace this one.
             //
             // This process is the only one that knows the upgrade succeeded, and
             // it is about to exit. Without the note, "how many clients actually
@@ -196,7 +228,6 @@ namespace DeepExcel.Updater
             // to answer -- has no source of truth anywhere.
             try
             {
-                string stageRoot = StageRootOf(stage);
                 new UpdateJournal(stageRoot).WriteReceipt(installedVersion, check.Release.Version);
                 Log("已写入升级回执到 " + stageRoot);
             }
@@ -207,7 +238,7 @@ namespace DeepExcel.Updater
                 Log("写入升级回执失败：" + ex.Message);
             }
 
-            // 7. Put the user back where they were. Never fatal.
+            // 8. Put the user back where they were. Never fatal.
             if (options.TryGetValue("relaunch", out string host) && !string.IsNullOrWhiteSpace(host))
             {
                 Relaunch(host);
@@ -319,7 +350,46 @@ namespace DeepExcel.Updater
             return null;
         }
 
-        private static int RunInstaller(string package, string stage)
+        /// <summary>
+        /// Reinstalls the previous version with its own installer.
+        ///
+        /// The installer is re-hashed immediately before it runs, exactly like
+        /// the update package: verified a moment ago is not verified now. On
+        /// success the restored version is told why, so it can report the
+        /// rollback once; the failed version keeps its attempt count.
+        /// </summary>
+        private static bool RollBack(
+            string stage, UpdateRelease previous, string restoredVersion, string failedVersion, string reasonCode)
+        {
+            string stageRoot = StageRootOf(stage);
+            string directory = UpdateStage.RollbackDirectoryFor(stageRoot, previous.Version);
+            string package = Path.Combine(directory, UpdateStage.PackageFileName);
+            if (!UpdateStage.VerifyPackage(package, previous, out string problem))
+            {
+                Log("回滚包校验失败，放弃回滚：" + problem);
+                return false;
+            }
+
+            Log("开始回滚：重新安装 v" + previous.Version);
+            int exit = RunInstaller(package, directory, RollbackLogName, Path.Combine(stage, RollbackLogName));
+            if (exit != 0)
+            {
+                Log("回滚安装程序返回 " + exit + "；需要用户手动重新安装");
+                return false;
+            }
+            Log("回滚成功：已恢复 v" + previous.Version);
+            try
+            {
+                new UpdateJournal(stageRoot).WriteRollback(restoredVersion, failedVersion, reasonCode);
+            }
+            catch (Exception ex)
+            {
+                Log("写入回滚记录失败：" + ex.Message);
+            }
+            return true;
+        }
+
+        private static int RunInstaller(string package, string stage, string logName, string logPath = null)
         {
             // /SUPPRESSMSGBOXES is needed as well as /VERYSILENT: WizardSilent
             // returns False under /VERYSILENT in this installer, so the
@@ -328,7 +398,7 @@ namespace DeepExcel.Updater
             string arguments = string.Format(
                 CultureInfo.InvariantCulture,
                 "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=\"{0}\"",
-                Path.Combine(stage, "install.log"));
+                logPath ?? Path.Combine(stage, logName));
             Log("运行安装程序：" + package + " " + arguments);
 
             using (var process = new Process())
@@ -345,7 +415,7 @@ namespace DeepExcel.Updater
                 if (!process.WaitForExit(InstallerTimeoutSeconds * 1000))
                 {
                     Log("安装程序超时；不强制结束，交由用户处理");
-                    return -1;
+                    return InstallerTimedOut;
                 }
                 return process.ExitCode;
             }

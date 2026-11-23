@@ -171,6 +171,169 @@ namespace DeepExcel.AddIn.Updates
             }
         }
 
+        // ------------------------------------------------------------------
+        // Rollback slot
+        //
+        //     <root>\rollback\<version>\update.json + DeepExcel.Setup.exe
+        //
+        // The last version confirmed to start, kept so a failed update can be
+        // undone by that version's own installer. Its own installer, rather
+        // than a copy of the install directory, because the install directory
+        // also holds the user's snapshots, history and workbooks: restoring a
+        // copy would roll those back too. One version only: a rollback only
+        // ever goes back one step, and each slot is a full installer.
+        //
+        // Not a version-named child of <root>, so Prune() never touches it.
+
+        public const string RollbackDirectoryName = "rollback";
+
+        public static string RollbackDirectoryFor(string root, string version)
+        {
+            return DirectoryFor(Path.Combine(root, RollbackDirectoryName), version);
+        }
+
+        /// <summary>
+        /// Copies a staged version into the rollback slot, verified, and only
+        /// then drops whatever the slot held before. Returns false -- leaving
+        /// the previous slot untouched -- when the stage is missing or does not
+        /// verify. Never throws.
+        /// </summary>
+        public static bool KeepForRollback(
+            string root, string version, string channel, IManifestVerifier verifier)
+        {
+            string target = null;
+            try
+            {
+                string source = FindVersionDirectory(root, version);
+                if (source == null)
+                {
+                    return false;
+                }
+                UpdateCheckResult staged = LoadVerified(source, version, channel, verifier);
+                if (!staged.Accepted)
+                {
+                    return false;
+                }
+
+                target = RollbackDirectoryFor(root, staged.Release.Version);
+                string incoming = target + PartialSuffix;
+                if (Directory.Exists(incoming)) Directory.Delete(incoming, recursive: true);
+                Directory.CreateDirectory(incoming);
+                File.Copy(Path.Combine(source, PackageFileName), Path.Combine(incoming, PackageFileName));
+                File.Copy(Path.Combine(source, ManifestFileName), Path.Combine(incoming, ManifestFileName));
+                // The copy is what will be run, so the copy is what gets checked.
+                if (!LoadVerified(incoming, version, channel, verifier).Accepted)
+                {
+                    Directory.Delete(incoming, recursive: true);
+                    return false;
+                }
+
+                if (Directory.Exists(target)) Directory.Delete(target, recursive: true);
+                Directory.Move(incoming, target);
+
+                foreach (string other in Directory.GetDirectories(Path.Combine(root, RollbackDirectoryName)))
+                {
+                    if (ReleaseVersion.TryParse(Path.GetFileName(other), out _) &&
+                        !string.Equals(other, target, StringComparison.OrdinalIgnoreCase))
+                    {
+                        try { Directory.Delete(other, recursive: true); }
+                        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { }
+                    }
+                }
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// The rollback package for <paramref name="installedVersion"/>, fully
+        /// re-verified: signature, product, channel, exact version, and the
+        /// package bytes. Anything less is a rejection, never an exception.
+        /// </summary>
+        public static UpdateCheckResult LoadRollback(
+            string root, string installedVersion, string channel, IManifestVerifier verifier)
+        {
+            string directory;
+            try
+            {
+                directory = FindVersionDirectory(Path.Combine(root, RollbackDirectoryName), installedVersion);
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException ||
+                                       ex is ArgumentException)
+            {
+                directory = null;
+            }
+            if (directory == null)
+            {
+                return UpdateCheckResult.Reject(
+                    UpdateRejection.MalformedJson, "没有 v" + installedVersion + " 的回滚包。");
+            }
+            return LoadVerified(directory, installedVersion, channel, verifier);
+        }
+
+        private static UpdateCheckResult LoadVerified(
+            string directory, string installedVersion, string channel, IManifestVerifier verifier)
+        {
+            string manifestPath = Path.Combine(directory, ManifestFileName);
+            string manifestJson;
+            try
+            {
+                var info = new FileInfo(manifestPath);
+                if (!info.Exists)
+                {
+                    return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "缺少回滚清单。");
+                }
+                if (info.Length > UpdateManifest.MaxManifestBytes)
+                {
+                    return UpdateCheckResult.Reject(UpdateRejection.TooLarge, "回滚清单过大。");
+                }
+                manifestJson = File.ReadAllText(manifestPath, new UTF8Encoding(false));
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+            {
+                return UpdateCheckResult.Reject(UpdateRejection.MalformedJson, "读取回滚清单失败：" + ex.Message);
+            }
+
+            UpdateCheckResult result = UpdateManifest.EvaluateInstalled(
+                manifestJson, installedVersion, channel, verifier);
+            if (!result.Accepted)
+            {
+                return result;
+            }
+            if (!VerifyPackage(Path.Combine(directory, PackageFileName), result.Release, out string detail))
+            {
+                return UpdateCheckResult.Reject(UpdateRejection.BadDigest, detail);
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The child of <paramref name="parent"/> named for <paramref name="version"/>.
+        ///
+        /// Matched by version rather than by string: the running build reports
+        /// "0.6.1.0" and the manifest that installed it said "0.6.1".
+        /// </summary>
+        private static string FindVersionDirectory(string parent, string version)
+        {
+            if (!ReleaseVersion.TryParse(version, out ReleaseVersion wanted) || !Directory.Exists(parent))
+            {
+                return null;
+            }
+            foreach (string child in Directory.GetDirectories(parent))
+            {
+                if (ReleaseVersion.TryParse(Path.GetFileName(child), out ReleaseVersion found) &&
+                    found == wanted)
+                {
+                    return child;
+                }
+            }
+            return null;
+        }
+
         /// <summary>
         /// Deletes every staged version except the one named.
         ///

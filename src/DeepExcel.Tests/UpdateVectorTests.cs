@@ -143,6 +143,10 @@ namespace DeepExcel.Tests
                     nameof(UpdateRejection.TooLarge),
                     nameof(UpdateRejection.MalformedJson),
                     nameof(UpdateRejection.BadVersion),
+                    // Only EvaluateInstalled (the rollback package) returns it;
+                    // a manifest from the feed is never judged that way.
+                    // Covered by UpdateRollbackTests.
+                    nameof(UpdateRejection.VersionMismatch),
                 };
 
                 var missing = new List<string>();

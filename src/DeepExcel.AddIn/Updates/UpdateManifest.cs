@@ -28,6 +28,8 @@ namespace DeepExcel.AddIn.Updates
         NotNewer,
         /// <summary>Too old to be upgraded in place; the user must reinstall.</summary>
         ManualUpgradeRequired,
+        /// <summary>A rollback manifest for a version other than the one that was installed.</summary>
+        VersionMismatch,
     }
 
     /// <summary>An authenticated, newer release the client may install.</summary>
@@ -99,6 +101,31 @@ namespace DeepExcel.AddIn.Updates
 
         public static UpdateCheckResult Evaluate(
             string manifestJson, string installedVersion, string channel, IManifestVerifier verifier)
+        {
+            return EvaluateCore(manifestJson, installedVersion, channel, verifier, rollback: false);
+        }
+
+        /// <summary>
+        /// Authenticates the manifest of a version that is, or was, installed --
+        /// the rollback package -- rather than of an update.
+        ///
+        /// Every check is the same except the version rule: instead of "strictly
+        /// newer than installed" the release must be exactly
+        /// <paramref name="installedVersion"/>, and the upgrade floor does not
+        /// apply. That is still a downgrade defence: the only version a rollback
+        /// can restore is the one that was running when the update began, so an
+        /// old but validly signed manifest planted in the rollback folder can
+        /// never walk the client back any further.
+        /// </summary>
+        public static UpdateCheckResult EvaluateInstalled(
+            string manifestJson, string installedVersion, string channel, IManifestVerifier verifier)
+        {
+            return EvaluateCore(manifestJson, installedVersion, channel, verifier, rollback: true);
+        }
+
+        private static UpdateCheckResult EvaluateCore(
+            string manifestJson, string installedVersion, string channel, IManifestVerifier verifier,
+            bool rollback)
         {
             if (verifier == null || !verifier.IsConfigured)
             {
@@ -202,10 +229,20 @@ namespace DeepExcel.AddIn.Updates
                         "本机版本号无法解析：{0}", Describe(installedVersion)));
             }
 
+            if (rollback)
+            {
+                if (candidate != installed)
+                {
+                    return UpdateCheckResult.Reject(
+                        UpdateRejection.VersionMismatch,
+                        string.Format(CultureInfo.InvariantCulture,
+                            "回滚包版本不符（应为 {0}，实为 {1}）。", installedVersion, versionText));
+                }
+            }
             // Strictly newer. This is also the downgrade defence: an attacker who
             // can replay an older but validly signed manifest still cannot walk
             // the client back to a version with a known defect.
-            if (candidate <= installed)
+            else if (candidate <= installed)
             {
                 return UpdateCheckResult.Reject(
                     UpdateRejection.NotNewer,
@@ -213,7 +250,7 @@ namespace DeepExcel.AddIn.Updates
                         "已是最新版本（本机 {0}，最新 {1}）。", installedVersion, versionText));
             }
 
-            string floorText = GetString(payload, "minimum_upgradable_version");
+            string floorText = rollback ? null : GetString(payload, "minimum_upgradable_version");
             if (!string.IsNullOrWhiteSpace(floorText))
             {
                 if (!ReleaseVersion.TryParse(floorText, out ReleaseVersion floor))

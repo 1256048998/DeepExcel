@@ -116,7 +116,8 @@ ALLOWLIST: dict[str, dict[str, Any]] = {
     "update_event": {
         "phase": lambda v: _enum(v, {"check", "download", "launch", "apply"}),
         "outcome": lambda v: _enum(
-            v, {"up_to_date", "ready", "failed", "blocked", "installed", "started"}),
+            v, {"up_to_date", "ready", "failed", "blocked", "installed", "started",
+                "rolled_back"}),
         # An UpdateRejection name, an UpdateTransportException code, or an
         # exception type name. Never a message.
         "reason_code": lambda v: _string(v, 40),

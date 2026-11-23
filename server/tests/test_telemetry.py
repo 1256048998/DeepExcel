@@ -261,6 +261,22 @@ def test_update_event_phase_and_outcome_are_closed_sets(client):
     assert sorted(dropped) == ["outcome", "phase"]
 
 
+def test_update_event_counts_an_automatic_rollback(client):
+    """The client reports apply / rolled_back when the updater had to put the
+    previous version back. Dropping it would make a failing release look like
+    one nobody tried to install."""
+    kept, dropped = sanitize(
+        "update_event",
+        {"phase": "apply", "outcome": "rolled_back", "reason_code": "installer_failed",
+         "from_version": "0.6.1", "to_version": "0.6.2"},
+    )
+    assert kept == {
+        "phase": "apply", "outcome": "rolled_back", "reason_code": "installer_failed",
+        "from_version": "0.6.1", "to_version": "0.6.2",
+    }
+    assert dropped == []
+
+
 def test_update_event_reason_code_cannot_carry_a_message(client):
     kept, _ = sanitize(
         "update_event",

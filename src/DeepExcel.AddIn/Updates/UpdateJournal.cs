@@ -16,7 +16,25 @@ namespace DeepExcel.AddIn.Updates
     }
 
     /// <summary>
-    /// The two pieces of update state that have to outlive a process.
+    /// Left by the updater when it had to put the previous version back.
+    ///
+    /// Every field is a version or a fixed token, because this goes straight
+    /// into update telemetry.
+    /// </summary>
+    public sealed class RollbackNote
+    {
+        /// <summary>The version that was put back -- the one that was installed before.</summary>
+        public string RestoredVersion { get; set; }
+
+        /// <summary>The version that failed.</summary>
+        public string FailedVersion { get; set; }
+
+        /// <summary>installer_failed | no_startup_receipt</summary>
+        public string ReasonCode { get; set; }
+    }
+
+    /// <summary>
+    /// The pieces of update state that have to outlive a process.
     ///
     /// **Attempts.** An update that fails to install is not a one-off: the
     /// package is still staged and still verifies, so the next start finds it
@@ -32,7 +50,10 @@ namespace DeepExcel.AddIn.Updates
     /// unanswerable. The updater leaves a note; the next start picks it up,
     /// reports it, and deletes it.
     ///
-    /// Both live in the staging *root* rather than a version directory, because
+    /// **Rollback.** When the updater has to put the previous version back, the
+    /// version it restored learns of it the same way and reports it once.
+    ///
+    /// All of them live in the staging *root* rather than a version directory, because
     /// <see cref="UpdateStage.Prune"/> deletes version directories and these
     /// have to survive that.
     ///
@@ -42,6 +63,7 @@ namespace DeepExcel.AddIn.Updates
     {
         public const string JournalFileName = "journal.json";
         public const string ReceiptFileName = "applied.json";
+        public const string RollbackFileName = "rolledback.json";
 
         /// <summary>
         /// Three, then stop asking.
@@ -142,6 +164,41 @@ namespace DeepExcel.AddIn.Updates
                 FromVersion = GetString(state, "from"),
                 ToVersion = to,
                 AppliedAtUtc = GetString(state, "utc"),
+            };
+        }
+
+        /// <summary>Written by the updater after it reinstalled the previous version.</summary>
+        public void WriteRollback(string restoredVersion, string failedVersion, string reasonCode)
+        {
+            WriteObject(Path.Combine(_root, RollbackFileName), new Dictionary<string, object>
+            {
+                ["restored"] = restoredVersion ?? "",
+                ["failed"] = failedVersion ?? "",
+                ["reason"] = reasonCode ?? "",
+                ["utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+            });
+        }
+
+        /// <summary>Reads and consumes the rollback note, for the same reason as <see cref="TakeReceipt"/>.</summary>
+        public RollbackNote TakeRollback()
+        {
+            string path = Path.Combine(_root, RollbackFileName);
+            Dictionary<string, object> state = ReadObject(path);
+            TryDelete(path);
+            if (state == null)
+            {
+                return null;
+            }
+            string failed = GetString(state, "failed");
+            if (string.IsNullOrEmpty(failed))
+            {
+                return null;
+            }
+            return new RollbackNote
+            {
+                RestoredVersion = GetString(state, "restored"),
+                FailedVersion = failed,
+                ReasonCode = GetString(state, "reason"),
             };
         }
 

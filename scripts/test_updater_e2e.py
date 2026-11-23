@@ -43,6 +43,8 @@ EXIT_USAGE = 2
 EXIT_STAGE_REJECTED = 3
 EXIT_DIGEST_MISMATCH = 4
 EXIT_HOST_RUNNING = 5
+EXIT_INSTALLER_FAILED = 6
+EXIT_ROLLED_BACK = 8
 
 _failures = []
 _checks = 0
@@ -91,17 +93,24 @@ def build_updater(workspace, private_key_path):
     return output, info
 
 
-def build_stub_installer(workspace):
-    """An executable that accepts any arguments and succeeds.
+def build_stub_installer(workspace, exit_code=0, name="stub"):
+    """An executable that accepts any arguments and exits with exit_code.
 
     Needed to exercise the path after a successful install -- above all the
     upgrade receipt, which is the only record that anyone ever took an update
-    and is written by code that never runs in a --dry-run.
+    and is written by code that never runs in a --dry-run. It also drops a
+    ran.txt beside itself, so a test can tell which installer was executed:
+    the rollback scenarios depend on knowing the previous version's installer
+    really ran, not just that the updater said so.
     """
-    source = os.path.join(workspace, "stub.cs")
+    source = os.path.join(workspace, name + ".cs")
     with open(source, "w", encoding="utf-8") as stream:
-        stream.write("class Stub { static int Main(string[] args) { return 0; } }\n")
-    output = os.path.join(workspace, "stub.exe")
+        stream.write(
+            "class Stub { static int Main(string[] args) { "
+            "System.IO.File.WriteAllText(System.IO.Path.Combine("
+            "System.AppDomain.CurrentDomain.BaseDirectory, \"ran.txt\"), \"ran\"); "
+            "return %d; } }\n" % exit_code)
+    output = os.path.join(workspace, name + ".exe")
     result = subprocess.run(
         [CSC, "/nologo", "/target:exe", "/out:" + output,
          "/reference:" + os.path.join(FRAMEWORK, "mscorlib.dll"), source],
@@ -113,8 +122,12 @@ def build_stub_installer(workspace):
 
 
 def stage(workspace, name, private_key_path, version="0.6.0", package=b"pretend installer bytes",
-          channel="stable", minimum=None):
-    directory = os.path.join(workspace, "stages", name, version)
+          channel="stable", minimum=None, slot=None):
+    """Writes a signed stage. slot="rollback" writes the rollback package instead."""
+    parent = os.path.join(workspace, "stages", name)
+    if slot:
+        parent = os.path.join(parent, slot)
+    directory = os.path.join(parent, version)
     os.makedirs(directory)
     package_path = os.path.join(directory, "DeepExcel.Setup.exe")
     with open(package_path, "wb") as stream:
@@ -332,6 +345,61 @@ def main():
               "without a lease directory the updater falls back to process names")
         check(code in (EXIT_INSTALLED, EXIT_HOST_RUNNING),
               "the fallback either installs or defers, never crashes (exit %d)" % code)
+
+        print("\n==> Rollback")
+        failing = build_stub_installer(workspace, exit_code=1, name="failing")
+
+        # The installer fails half way; the previous version's own installer,
+        # kept and signed, puts the working version back.
+        broken = stage(workspace, "rollback", key_path, package=failing)
+        os.makedirs(os.path.join(stage_root(broken), "leases"))
+        previous = stage(workspace, "rollback", key_path, version="0.5.0", package=stub,
+                         slot="rollback")
+        code, output = run_real(updater, broken)
+        check(code == EXIT_ROLLED_BACK,
+              "a failed install is rolled back to the previous version (exit %d)" % code)
+        check(os.path.isfile(os.path.join(previous, "ran.txt")),
+              "the previous version's installer actually ran")
+        check("回滚包已验签" in output, "the rollback package was verified before use")
+        note_path = os.path.join(stage_root(broken), "rolledback.json")
+        check(os.path.isfile(note_path), "the rollback leaves a note for the restored version")
+        if os.path.isfile(note_path):
+            with open(note_path, encoding="utf-8") as stream:
+                note = json.load(stream)
+            check(note.get("restored") == "0.5.0" and note.get("failed") == "0.6.0"
+                  and note.get("reason") == "installer_failed",
+                  "the note names both versions and the reason (%s)" % note)
+        check(not os.path.isfile(os.path.join(stage_root(broken), "applied.json")),
+              "a rolled-back install writes no upgrade receipt")
+
+        # Nothing to go back to: the first update after a manual install.
+        bare = stage(workspace, "rollback-none", key_path, package=failing)
+        os.makedirs(os.path.join(stage_root(bare), "leases"))
+        code, output = run_real(updater, bare)
+        check(code == EXIT_INSTALLER_FAILED,
+              "without a rollback package a failed install is reported as such (exit %d)" % code)
+
+        # A rollback package changed after it was kept is never executed.
+        tampered = stage(workspace, "rollback-tampered", key_path, package=failing)
+        os.makedirs(os.path.join(stage_root(tampered), "leases"))
+        planted = stage(workspace, "rollback-tampered", key_path, version="0.5.0", package=stub,
+                        slot="rollback")
+        with open(os.path.join(planted, "DeepExcel.Setup.exe"), "ab") as stream:
+            stream.write(b"\0")
+        code, output = run_real(updater, tampered)
+        check(code == EXIT_INSTALLER_FAILED,
+              "a tampered rollback package is refused (exit %d)" % code)
+        check(not os.path.isfile(os.path.join(planted, "ran.txt")),
+              "the tampered rollback package never ran")
+
+        # A rollback package for some other version is not a way back.
+        elsewhere = stage(workspace, "rollback-other", key_path, package=failing)
+        os.makedirs(os.path.join(stage_root(elsewhere), "leases"))
+        older = stage(workspace, "rollback-other", key_path, version="0.4.0", package=stub,
+                      slot="rollback")
+        code, output = run_real(updater, elsewhere)
+        check(code == EXIT_INSTALLER_FAILED and not os.path.isfile(os.path.join(older, "ran.txt")),
+              "a rollback package for another version is not used (exit %d)" % code)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

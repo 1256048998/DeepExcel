@@ -198,6 +198,12 @@ def test_dashboard_reports_auto_update_health(admin_client):
         {"event_type": "update_event",
          "payload": {"phase": "download", "outcome": "failed",
                      "reason_code": "package_digest_mismatch", "from_version": "0.5.0"}},
+        # The install failed and the previous version was put back: a failure of
+        # the release, not an upgrade, even though the user lost nothing.
+        {"event_type": "update_event",
+         "payload": {"phase": "apply", "outcome": "rolled_back",
+                     "reason_code": "installer_failed",
+                     "from_version": "0.5.0", "to_version": "0.6.0"}},
         # Routine "already current" must not be mistaken for a problem.
         {"event_type": "update_event",
          "payload": {"phase": "check", "outcome": "up_to_date", "from_version": "0.6.0"}},
@@ -213,6 +219,7 @@ def test_dashboard_reports_auto_update_health(admin_client):
     assert stats["top_update_failures_7d"] == [
         {"reason": "feed_timeout", "count": 2},
         {"reason": "package_digest_mismatch", "count": 1},
+        {"reason": "rolled_back:installer_failed", "count": 1},
     ]
 
 
