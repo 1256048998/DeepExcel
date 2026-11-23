@@ -73,7 +73,8 @@ namespace DeepExcel.AddIn.Preview
                     {
                         Address = CellAddress(firstRow, firstColumn),
                         Display = Format(values),
-                        Formula = formulas as string
+                        Formula = formulas as string,
+                        Value = values
                     });
                     return cells;
                 }
@@ -94,7 +95,8 @@ namespace DeepExcel.AddIn.Preview
                             Address = CellAddress(
                                 firstRow + (r - lowerRow), firstColumn + (c - lowerColumn)),
                             Display = Format(valueGrid[r, c]),
-                            Formula = formula
+                            Formula = formula,
+                            Value = valueGrid[r, c]
                         });
                     }
                 }

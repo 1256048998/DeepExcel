@@ -12,6 +12,14 @@ namespace DeepExcel.AddIn.Preview
         public string Display { get; set; }
         public string Formula { get; set; }
 
+        /// <summary>
+        /// The raw value as Excel holds it (Value2): a string, a double, a bool,
+        /// or null. <see cref="Display"/> is truncated and loses the type, and
+        /// the cleaning tools branch on both -- trim_spaces skips numbers,
+        /// text_to_number only converts text.
+        /// </summary>
+        public object Value { get; set; }
+
         public bool HasFormula
         {
             get { return !string.IsNullOrEmpty(Formula) && Formula.StartsWith("="); }
@@ -45,7 +53,7 @@ namespace DeepExcel.AddIn.Preview
     /// (formula overwrite, no-op writes, ranges larger than the supplied data)
     /// rather than only against whatever workbook is open.
     /// </summary>
-    public sealed class PreviewBuilder
+    public sealed partial class PreviewBuilder
     {
         private readonly IRangeReader _reader;
 
@@ -85,6 +93,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildDeleteRows(toolName, sheet, args);
                     case "delete_columns":
                         return BuildDeleteColumns(toolName, sheet, args);
+                    case "replace_formula":
+                        return BuildReplaceFormula(toolName, args);
                     default:
                         // Simulable in principle but not implemented yet.
                         // Claiming an empty change set would be a lie the user
@@ -103,15 +113,19 @@ namespace DeepExcel.AddIn.Preview
 
         private ChangePreview BuildScalarWrite(string toolName, string sheet, IDictionary<string, object> args)
         {
-            var address = GetString(args, "address") ?? GetString(args, "cell");
+            var target = ResolveTarget(args, "address", "cell");
             var after = GetString(args, "value") ?? GetString(args, "formula") ?? "";
             var preview = new ChangePreview { ToolName = toolName };
-            if (string.IsNullOrEmpty(address))
+            if (target == null)
             {
                 return ChangePreview.NotPreviewable(toolName, "缺少目标地址");
             }
 
-            var current = _reader.Read(sheet, address);
+            var current = _reader.Read(target.Sheet, target.Address);
+            if (current.Count == 0)
+            {
+                return Unreadable(toolName);
+            }
             foreach (var cell in current)
             {
                 AddChangeIfDifferent(preview, cell, after);
@@ -122,15 +136,19 @@ namespace DeepExcel.AddIn.Preview
 
         private ChangePreview BuildRangeWrite(string toolName, string sheet, IDictionary<string, object> args)
         {
-            var address = GetString(args, "address") ?? GetString(args, "range");
-            if (string.IsNullOrEmpty(address))
+            var target = ResolveTarget(args, "address", "range");
+            if (target == null)
             {
                 return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
             }
 
             var values = FlattenValues(args);
             var preview = new ChangePreview { ToolName = toolName };
-            var current = _reader.Read(sheet, address);
+            var current = _reader.Read(target.Sheet, target.Address);
+            if (current.Count == 0)
+            {
+                return Unreadable(toolName);
+            }
 
             for (var i = 0; i < current.Count; i++)
             {
@@ -150,14 +168,23 @@ namespace DeepExcel.AddIn.Preview
 
         private ChangePreview BuildClear(string toolName, string sheet, IDictionary<string, object> args)
         {
-            var address = GetString(args, "address") ?? GetString(args, "range");
-            if (string.IsNullOrEmpty(address))
+            var target = ResolveTarget(args, "address", "range");
+            if (target == null)
             {
                 return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
             }
 
+            var current = _reader.Read(target.Sheet, target.Address);
+            if (current.Count == 0)
+            {
+                // An empty read is a failure, not an empty range: the reader
+                // returns placeholders for blank cells. Calling it a no-op would
+                // auto-allow the clear without asking.
+                return Unreadable(toolName);
+            }
+
             var preview = new ChangePreview { ToolName = toolName };
-            foreach (var cell in _reader.Read(sheet, address))
+            foreach (var cell in current)
             {
                 if (cell.IsEmpty)
                 {
@@ -251,10 +278,20 @@ namespace DeepExcel.AddIn.Preview
         {
             preview.AffectedCells = preview.Changes.Count;
 
-            if (preview.FormulasOverwritten > 0)
+            // A formula replaced by another formula keeps calculating; only one
+            // replaced by a literal (or cleared) stops. Both always interrupt --
+            // FormulasOverwritten counts them together -- but telling the user a
+            // rewritten formula "will no longer recalculate" would be false.
+            var rewritten = preview.Changes.Count(c => c.OverwritesFormula && IsFormulaText(c.After));
+            var lost = preview.Changes.Count(c => c.OverwritesFormula && !IsFormulaText(c.After));
+            if (rewritten > 0)
+            {
+                preview.Warnings.Insert(0, $"{rewritten} 个公式会被改写，请核对改写后的公式");
+            }
+            if (lost > 0)
             {
                 preview.Warnings.Insert(0,
-                    $"{preview.FormulasOverwritten} 处会覆盖已有公式，覆盖后该单元格不再自动计算");
+                    $"{lost} 处会覆盖已有公式，覆盖后该单元格不再自动计算");
             }
 
             // The list is what the user reads; the count is what they approve.
