@@ -1,8 +1,5 @@
 # src/DeepExcel.Sidecar/tests/test_host_tools.py
 # 按宿主注册工具（F7）+ 回答缓存已删除（F8）。
-import re
-from pathlib import Path
-
 import excel_tools
 import sidecar
 from excel_tools import (
@@ -14,22 +11,9 @@ from excel_tools import (
     register_all_tools,
 )
 
-ROOT = Path(__file__).resolve().parents[3]
-
 
 def _names(tools):
     return {t.name for t in tools}
-
-
-def test_wps_host_tools_match_the_js_dispatcher():
-    """WPS_HOST_TOOLS 必须与 tool-dispatcher.js 的 case 分支逐条一致。
-
-    WPS 端新增或删掉一个工具时，这里不同步就会重新出现「模型能看到、WPS 执行不了」。
-    """
-    js = (ROOT / "src" / "DeepExcel.Wps" / "tool-dispatcher.js").read_text(encoding="utf-8")
-    cases = set(re.findall(r"case '(\w+)':", js))
-    assert cases, "没解析到任何 case 分支，正则可能过时了"
-    assert cases == set(WPS_HOST_TOOLS) | set(WPS_HOST_PRIMITIVES)
 
 
 def test_sidecar_computed_tools_follow_their_host_primitive():

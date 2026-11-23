@@ -1,6 +1,6 @@
 """宿主快照的解析层：把 sheet_snapshot 返回的 JSON 变成可按 (行, 列) 查询的网格。
 
-快照格式（C# ExcelActionsImpl.SheetSnapshot 与 WPS wps-actions.sheetSnapshot 一致）::
+快照格式（C# ExcelActionsImpl.SheetSnapshot；Excel 与 WPS 共用这一个宿主）::
 
     {
       "sheet": "Data",

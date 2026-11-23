@@ -182,7 +182,7 @@ def test_updater_is_packaged(module):
 
     It is also on the required-files list, because a missing one produces an
     install that looks perfect and can never upgrade itself -- the same class of
-    omission that shipped WPS without jsplugins.xml.
+    omission that once shipped the WPS add-in without its manifest.
     """
     check("DeepExcel.Updater.exe is copied into the payload",
           "DeepExcel.Updater.exe" in module.EXCEL_ITEMS)
@@ -190,125 +190,23 @@ def test_updater_is_packaged(module):
           "DeepExcel.Updater.exe" in module.EXCEL_REQUIRED_FILES)
 
 
-def test_every_wps_source_file_is_packaged(module):
-    """Every tracked WPS source file must reach the release payload.
+def test_wps_js_add_in_stays_retired(module):
+    """WPS loads the Excel COM add-in; the old JS add-in must not come back.
 
-    This is the guard that was missing when jsplugins.xml shipped absent. The
-    development path (build-wps.ps1) had always copied it; the release path's
-    WPS_ITEMS did not list it. The result on a user's machine was an add-in
-    whose ribbon tab appeared and whose every JS callback was dead -- reproduced
-    in a clean sandbox against real WPS, and matching a field report of "WPS
-    installs but does not work".
-
-    Adding that one filename to the list fixed that one file. It did nothing
-    about the next one. So the list is checked against the source tree itself
-    rather than against the other hand-maintained list, which could drift the
-    same way.
-
-    Git is the source of truth: it excludes web/ and sidecar/, which are build
-    outputs rather than sources.
+    2026-11-23, real WPS 12.1: the JS add-in host is a plain browser page with
+    no Node, so the JS add-in (which needed Node for the sidecar, config,
+    credentials and history) could never run there, while the COM add-in ran
+    end to end. The JS add-in was then removed. Shipping any part of it again
+    would put a second, dead DeepExcel tab next to the working one.
     """
-    wps_root = os.path.join(ROOT, "src", "DeepExcel.Wps")
-    try:
-        tracked = subprocess.run(
-            ["git", "ls-files", "--", "src/DeepExcel.Wps"],
-            cwd=ROOT, capture_output=True, text=True, timeout=60,
-            encoding="utf-8", errors="replace")
-    except OSError as exc:
-        check("git is available to enumerate WPS sources", False, str(exc)[:70])
-        return
-    if tracked.returncode != 0:
-        check("git is available to enumerate WPS sources", False, tracked.stderr[:70])
-        return
-
-    top_level_files, top_level_dirs = set(), set()
-    for line in tracked.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        relative = os.path.relpath(line, "src/DeepExcel.Wps").replace("\\", "/")
-        head, _, tail = relative.partition("/")
-        if tail:
-            top_level_dirs.add(head)
-        else:
-            top_level_files.add(head)
-
-    check("found WPS sources to check", bool(top_level_files),
-          "%d files, %d directories" % (len(top_level_files), len(top_level_dirs)))
-
-    packaged = set(module.WPS_ITEMS)
-    missing = sorted(top_level_files - packaged)
-    check("every tracked WPS file is in WPS_ITEMS", not missing,
-          "not packaged: %s" % ", ".join(missing) if missing else "")
-
-    missing_dirs = sorted(top_level_dirs - packaged)
-    check("every tracked WPS directory is in WPS_ITEMS", not missing_dirs,
-          "not packaged: %s" % ", ".join(missing_dirs) if missing_dirs else "")
-
-    # The reverse: a name in the list that no longer exists makes the packager
-    # fail at release time with "Required release item is missing", which is a
-    # worse moment to find out than now.
-    ghosts = sorted(
-        name for name in packaged
-        if not os.path.exists(os.path.join(wps_root, name.replace("/", os.sep)))
-    )
-    check("WPS_ITEMS lists nothing that no longer exists", not ghosts,
-          "stale entries: %s" % ", ".join(ghosts) if ghosts else "")
-
-    # jsplugins.xml specifically: it is the add-in manifest that binds ribbon
-    # buttons to their handlers, so losing it produces a tab that looks fine
-    # and does nothing -- the failure mode least likely to be noticed in a
-    # smoke test.
-    check("the add-in manifest is a required file",
-          "jsplugins.xml" in module.WPS_REQUIRED_FILES,
-          "without it a missing manifest becomes a silent user-facing failure")
-
-
-def test_wps_sidecar_and_web_come_from_excel_payload(module):
-    """WPS 的 sidecar/ 与 web/ 必须取自 Excel 载荷，不能再从 src/DeepExcel.Wps 取。
-
-    那两个目录被 gitignore，是开发机上某次 build-wps.ps1 的旧产物。2026-09-25
-    发现那份 sidecar 比源码落后三个安全修复，而打包脚本正是从那里取的。
-    """
-    for name in module.WPS_DERIVED_FROM_EXCEL:
-        check("WPS_ITEMS does not package %s/ from the WPS tree" % name,
-              name not in module.WPS_ITEMS,
-              "src/DeepExcel.Wps/%s is a stale build output" % name)
-    for excel_name in module.WPS_DERIVED_FROM_EXCEL.values():
-        check("Excel payload ships %s for WPS to reuse" % excel_name,
-              excel_name in module.EXCEL_ITEMS)
-
-    work = tempfile.mkdtemp(prefix="wps-derived-")
-    try:
-        excel_payload = os.path.join(work, "Excel")
-        wps_payload = os.path.join(work, "Wps")
-        os.makedirs(os.path.join(excel_payload, "sidecar", "tests"))
-        os.makedirs(os.path.join(excel_payload, "sidecar", "__pycache__"))
-        os.makedirs(os.path.join(excel_payload, "WebViewAssets", "assets"))
-        os.makedirs(wps_payload)
-        with open(os.path.join(excel_payload, "sidecar", "sidecar.py"), "w") as f:
-            f.write("CURRENT = True\n")
-        with open(os.path.join(excel_payload, "sidecar", "tests", "test_x.py"), "w") as f:
-            f.write("")
-        with open(os.path.join(excel_payload, "WebViewAssets", "index.html"), "w") as f:
-            f.write("<html></html>")
-        # 模拟一份残留在目标里的旧拷贝：必须被整体替换，不能与新文件混在一起
-        os.makedirs(os.path.join(wps_payload, "sidecar"))
-        with open(os.path.join(wps_payload, "sidecar", "stale.py"), "w") as f:
-            f.write("STALE = True\n")
-
-        module.copy_derived_wps_items(excel_payload, wps_payload)
-
-        with open(os.path.join(wps_payload, "sidecar", "sidecar.py")) as f:
-            check("WPS sidecar is the Excel payload copy", "CURRENT" in f.read())
-        check("stale WPS sidecar files are removed",
-              not os.path.exists(os.path.join(wps_payload, "sidecar", "stale.py")))
-        check("sidecar tests are not shipped to WPS",
-              not os.path.exists(os.path.join(wps_payload, "sidecar", "tests")))
-        check("WPS web/ comes from Excel WebViewAssets",
-              os.path.isfile(os.path.join(wps_payload, "web", "index.html")))
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    for name in ("WPS_ITEMS", "WPS_REQUIRED_FILES", "WPS_SOURCE", "copy_derived_wps_items"):
+        check("packager has no %s" % name, not hasattr(module, name))
+    check("no JS add-in source tree",
+          not os.path.exists(os.path.join(ROOT, "src", "DeepExcel.Wps")))
+    with open(os.path.join(ROOT, "deploy", "DeepExcel.Setup.iss"), encoding="utf-8") as stream:
+        iss = stream.read()
+    check("installer copies no WPS JS payload",
+          "{#PayloadDir}Wps" not in iss)
 
 
 def test_sidecar_copies_keep_subpackages(module):
@@ -318,7 +216,7 @@ def test_sidecar_copies_keep_subpackages(module):
     harmless while the sidecar was flat; once perception/ became a
     subpackage, any copy made that way would import-fail on a user's machine
     while the developer's machine, running from the source tree, never
-    noticed. The same rule is checked in all three copy sites.
+    noticed. The same rule is checked in every copy site.
     """
     del module
     sidecar = os.path.join(ROOT, "src", "DeepExcel.Sidecar")
@@ -328,7 +226,7 @@ def test_sidecar_copies_keep_subpackages(module):
         and os.path.isfile(os.path.join(sidecar, name, "__init__.py"))
     ]
     check("the sidecar has subpackages to protect", bool(subpackages), ", ".join(subpackages))
-    for script in ("_compile_only.ps1", "package-python.ps1", "build-wps.ps1"):
+    for script in ("_compile_only.ps1", "package-python.ps1"):
         with open(os.path.join(ROOT, "scripts", script), encoding="utf-8-sig") as stream:
             text = stream.read()
         flat_copy = re.search(r"Join-Path\s+\$sidecar\w*\s+'\*\.py'", text, re.IGNORECASE)
@@ -584,8 +482,7 @@ def main():
     test_write_checksums(module)
     test_signing_rejects_self_signed_sources(module)
     test_updater_is_packaged(module)
-    test_every_wps_source_file_is_packaged(module)
-    test_wps_sidecar_and_web_come_from_excel_payload(module)
+    test_wps_js_add_in_stays_retired(module)
     test_sidecar_copies_keep_subpackages(module)
     test_release_doc_covers_every_build_step(module)
     test_update_manifest_guards(module)

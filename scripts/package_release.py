@@ -5,9 +5,10 @@
 Usage:
     python scripts/package_release.py --version 0.4.17
 
-The installer supports both Microsoft Excel (managed COM add-in) and WPS
-Spreadsheets (WPS publish.xml add-in).  Missing runtime files are fatal: a
-release build must never silently produce a package that cannot load.
+The installer supports both Microsoft Excel and WPS Spreadsheets with one
+managed COM add-in: WPS loads the same DLL Excel does, so there is a single
+payload.  Missing runtime files are fatal: a release build must never silently
+produce a package that cannot load.
 """
 
 import argparse
@@ -27,7 +28,6 @@ BIN_RELEASE = os.path.abspath(os.environ.get(
     "DEEPEXCEL_BIN_RELEASE",
     os.path.join(ROOT, "src", "DeepExcel.AddIn", "bin", "Release"),
 ))
-WPS_SOURCE = os.path.join(ROOT, "src", "DeepExcel.Wps")
 DIST = os.path.join(ROOT, "dist")
 SCRIPTS = os.path.join(ROOT, "scripts")
 DEPLOY = os.path.join(ROOT, "deploy")
@@ -85,76 +85,6 @@ EXCEL_REQUIRED_FILES = [
     os.path.join("WebViewAssets", "assets", "index.css"),
     os.path.join("sidecar", "sidecar.py"),
     os.path.join("python", "python.exe"),
-]
-
-WPS_ITEMS = [
-    "main.js",
-    "ribbon.xml",
-    # 加载项清单：声明入口 url 和按钮的 onAction 回调。开发路径的
-    # build-wps.ps1 一直在复制它，发布路径却漏了，于是用户装到的加载项
-    # 只有 ribbon.xml 能渲染出选项卡，所有 JS 回调都是死的——选项卡在、
-    # 图标不显示、点"打开面板"毫无反应。干净沙箱 + 真实 WPS 已复现。
-    "jsplugins.xml",
-    # 加载项入口页。WPS 12.1.0.29690 找不到它会自己生成一个指向 js/main.js
-    # 的默认入口，main.js 永远不加载：选项卡在、没图标、按钮全是死的。
-    # 2026-11-23 真机复现并验证修复。
-    "index.html",
-    "taskpane.html",
-    "package.json",
-    "sidecar-host.js",
-    "tool-dispatcher.js",
-    "wps-actions.js",
-    # read_range 分页 / find 汇总的纯逻辑，wps-actions.js 依赖它
-    "range-paging.js",
-    # 工作簿记忆的面板入口（与 Excel 端共用 workbooks/<hash>/NOTES.md）
-    "workbook-memory-store.js",
-    "jsa-executor.js",
-    # 首次使用：工作簿结构 / 插入示例数据
-    "starter-host.js",
-    # 先读后写 + 读后被改检测（对应 C# ReadLedger）
-    "read-ledger.js",
-    # 模型配置（厂商 / 模型优先级 / API Key），与 Excel 端共用 config.json + DPAPI 凭据
-    "config-store.js",
-    "credential-store.js",
-    "model-service.js",
-    "dpapi-cli.py",
-    # 对话历史 + 附件
-    "conversation-store.js",
-    "attachment-store.js",
-    "images",
-]
-
-# WPS 端的 sidecar/ 与 web/ 不是源码，而是 Excel 端同名产物的副本。以前打包直接从
-# src/DeepExcel.Wps/ 下取——那两个目录被 gitignore，是 build-wps.ps1 某次运行留下的
-# 旧拷贝。2026-09-25 检查时，那份 sidecar 停在 09-13：缺 tools=[] 的纵深防御 hook、
-# MaxTurns、UTF-8 流修复，发版就会把 WPS 用户带回三个安全修复之前。
-# 现在从刚组装好的 Excel 载荷里复制，两个宿主拿到的侧车和面板逐字节相同。
-WPS_DERIVED_FROM_EXCEL = {
-    "sidecar": "sidecar",
-    "web": "WebViewAssets",
-}
-
-WPS_REQUIRED_FILES = [
-    "main.js",
-    "ribbon.xml",
-    # 这条守卫本来就是为了拦"WPS 资源缺失"，连 images/panel.svg 都列了，
-    # 偏偏漏了加载项清单本身，于是缺失一路溜到用户机器上。
-    "jsplugins.xml",
-    "index.html",
-    "taskpane.html",
-    "sidecar-host.js",
-    "config-store.js",
-    "credential-store.js",
-    "model-service.js",
-    "dpapi-cli.py",
-    "conversation-store.js",
-    "attachment-store.js",
-    os.path.join("sidecar", "sidecar.py"),
-    os.path.join("web", "index.html"),
-    os.path.join("web", "assets", "index.js"),
-    os.path.join("web", "assets", "index.css"),
-    os.path.join("images", "panel.svg"),
-    os.path.join("images", "help.svg"),
 ]
 
 INSTALL_TXT_TEMPLATE = """DeepExcel v{version}
@@ -215,22 +145,6 @@ def copy_item(source_root, item, destination_root):
     else:
         os.makedirs(os.path.dirname(destination), exist_ok=True)
         shutil.copy2(source, destination)
-
-
-def copy_derived_wps_items(excel_payload, wps_payload):
-    """WPS 的 sidecar/、web/ 一律取自 Excel 载荷，见 WPS_DERIVED_FROM_EXCEL。"""
-    for wps_name, excel_name in WPS_DERIVED_FROM_EXCEL.items():
-        source = os.path.join(excel_payload, excel_name)
-        if not os.path.isdir(source):
-            fail("Excel payload is missing %s, needed for WPS %s/" % (excel_name, wps_name))
-        destination = os.path.join(wps_payload, wps_name)
-        if os.path.exists(destination):
-            shutil.rmtree(destination)
-        shutil.copytree(
-            source,
-            destination,
-            ignore=shutil.ignore_patterns("__pycache__", "tests", "*.pyc", "*.pyo"),
-        )
 
 
 def read_assembly_version(dll_path):
@@ -489,20 +403,10 @@ def verify_probe_is_32bit(path):
 def assemble_payload(version):
     safe_recreate_dir(PAYLOAD)
     excel_payload = os.path.join(PAYLOAD, "Excel")
-    wps_payload = os.path.join(PAYLOAD, "Wps")
     os.makedirs(excel_payload)
-    os.makedirs(wps_payload)
 
     for item in EXCEL_ITEMS:
         copy_item(BIN_RELEASE, item, excel_payload)
-    for item in WPS_ITEMS:
-        copy_item(WPS_SOURCE, item, wps_payload)
-    copy_derived_wps_items(excel_payload, wps_payload)
-
-    for relative_path in WPS_REQUIRED_FILES:
-        packaged_path = os.path.join(wps_payload, relative_path)
-        if not os.path.isfile(packaged_path) or os.path.getsize(packaged_path) == 0:
-            fail("Missing or empty WPS runtime asset: %s" % packaged_path)
 
     for relative_path in EXCEL_REQUIRED_FILES:
         packaged_path = os.path.join(excel_payload, relative_path)
@@ -524,14 +428,6 @@ def assemble_payload(version):
         )
     except subprocess.CalledProcessError as exc:
         fail("Packaged sidecar cold import failed: %s" % (exc.stderr or exc.stdout))
-
-    with open(os.path.join(wps_payload, "package.json"), "r", encoding="utf-8") as stream:
-        wps_package = json.load(stream)
-    if wps_package.get("version") != version:
-        fail(
-            "WPS package version %r does not match release version %s"
-            % (wps_package.get("version"), version)
-        )
 
     # register-user.ps1 / diagnose.ps1 are no longer shipped. DeepExcel.Repair.exe
     # supersedes both for end users, and keeping PowerShell scripts out of the

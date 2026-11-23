@@ -5,7 +5,7 @@
 DeepExcel 是一款 Windows 表格 AI 加载项。它把模型对话、表格上下文和可审计的工具调用放在同一个侧边面板中，用户不需要在表格与聊天网页之间反复切换。
 
 > [!IMPORTANT]
-> 当前安装包**未进行代码签名**，首次运行会触发 Windows SmartScreen 提示，属于正常现象（见下）。Microsoft Excel 端已完成真实安装和运行验证；WPS 端仍处于兼容性验证阶段，不同 WPS 版本的 JS 加载项能力可能存在差异。
+> 当前安装包**未进行代码签名**，首次运行会触发 Windows SmartScreen 提示，属于正常现象（见下）。Microsoft Excel 端已完成真实安装和运行验证；WPS 表格直接加载同一个 COM 加载项，已在 WPS 12.1 个人版真机跑通面板、对话与表格工具，其他 WPS 版本和逐项工具兼容性仍在验证。
 
 ## 快速开始
 
@@ -41,7 +41,7 @@ Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq 'CN=DeepExc
 - 注册 32 位和 64 位 Excel COM 加载项；
 - 检查 .NET Framework 4.8 与 WebView2 Runtime；
 - 安装内置 Python 3.11 和 AI Sidecar；
-- 写入 WPS `publish.xml` 节点，并保留其他 WPS 插件配置。
+- 把同一个 COM 加载项登记给 WPS 表格（`HKCU\Software\Kingsoft\Office\ET\AddIns`），并清理旧版本留下的 WPS JS 加载项。
 
 ### 配置模型
 
@@ -73,20 +73,22 @@ Get-ChildItem Cert:\CurrentUser\Root | Where-Object { $_.Subject -eq 'CN=DeepExc
 汇总各地区销售额，并生成一张柱状图。
 ```
 
-DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA、Python 或 WPS JSA。高风险操作会请求用户确认。
+DeepExcel 会优先调用结构化表格工具；只有复杂操作才使用 VBA 或 Python。高风险操作会请求用户确认。
 
 ## 主要能力
 
+WPS 表格加载的是和 Excel 同一个 COM 加载项（同一套面板、Sidecar 和工具），能力差异只来自 WPS 对 Excel 对象模型的兼容程度。
+
 | 能力 | Microsoft Excel | WPS 表格 |
 | --- | --- | --- |
-| AI 对话侧边面板 | 支持 | 兼容性验证中 |
-| 读写单元格与区域 | 支持 | 支持的 WPS 版本可用 |
-| 公式、排序、筛选、格式化 | 支持 | 支持的 WPS 版本可用 |
-| 图表与复杂批量操作 | 支持 | 部分能力使用 JSA |
-| VBA | 支持，需要 VBA 工程访问权限 | 不使用 VBA |
-| 操作前快照 | 支持 | 能力受 WPS 宿主限制 |
-| 多工作簿对话隔离 | 支持 | 逐步适配 |
-| 模型列表刷新 | 支持 | 逐步适配 |
+| AI 对话侧边面板 | 支持 | 支持（WPS 12.1 真机验证） |
+| 读写单元格与区域 | 支持 | 支持（WPS 12.1 真机验证） |
+| 公式、排序、筛选、格式化 | 支持 | 同一实现，逐项验证中 |
+| 图表、透视表与复杂批量操作 | 支持 | 同一实现，取决于 WPS 对象模型兼容性 |
+| VBA | 支持，需要 VBA 工程访问权限 | 取决于 WPS 版本是否带 VBA 环境，未验证 |
+| 操作前快照 | 支持 | 同一实现，逐项验证中 |
+| 多工作簿对话隔离 | 支持 | 同一实现 |
+| 模型列表刷新 | 支持 | 同一实现 |
 
 其他功能包括流式回复、工具调用状态、操作快照、手动回滚、对话历史、附件、提示词模板、VBA 中文字符串处理和 Sidecar 冷启动诊断。
 
@@ -118,9 +120,9 @@ VBA 和 Python 无法预演，这种情况会**明确说明"无法预览"并自�
 | --- | --- |
 | 操作系统 | Windows 10 / Windows 11，x64 |
 | Microsoft Office | Excel 2016 或更高版本，支持 32 位或 64 位 Office |
-| WPS | 支持 `publish.xml` 和 JS 加载项的 WPS 表格版本 |
-| .NET Framework | 4.8 或更高版本，Excel 端需要 |
-| WebView2 Runtime | Excel 端需要，安装器会检测 |
+| WPS | 能加载 COM 加载项的 WPS 表格（已验证 WPS 12.1 个人版） |
+| .NET Framework | 4.8 或更高版本，Excel 和 WPS 都需要 |
+| WebView2 Runtime | Excel 和 WPS 都需要，安装器会检测 |
 | 网络 | 调用模型 API 时需要 |
 | Python | 无需用户安装，安装包内置 Python 3.11 |
 
@@ -140,13 +142,13 @@ VBA 和 Python 无法预演，这种情况会**明确说明"无法预览"并自�
 | `%LOCALAPPDATA%\DeepExcel\Snapshots\` | 操作快照 |
 | `%LOCALAPPDATA%\DeepExcel\history\` | 工作簿对话历史 |
 | `%LOCALAPPDATA%\DeepExcel\Attachments\` | 会话附件 |
-| `%APPDATA%\kingsoft\wps\jsaddons\` | WPS 加载项文件和 `publish.xml` |
+| `HKCU\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn` | WPS 表格的加载项登记 |
 
 安全边界：
 
 - API Key 只允许当前 Windows 用户通过 DPAPI 解密；
 - VBA 和 Python 执行经过权限确认与受限操作检查；
-- WPS 清单更新只修改 DeepExcel 节点；
+- 清理旧版 WPS JS 加载项时只移除 `publish.xml` 里的 DeepExcel 节点，其他 WPS 插件保持不变；
 - 安装包未经代码签名，请用 `SHA256SUMS.txt` 核对完整性；
 - 使用 AI 修改重要工作簿前，仍建议保留独立备份。
 
@@ -155,14 +157,13 @@ VBA 和 Python 无法预演，这种情况会**明确说明"无法预览"并自�
 ```text
 DeepExcel/
 ├── src/
-│   ├── DeepExcel.AddIn/       # Excel COM 加载项、WebView2、表格工具
+│   ├── DeepExcel.AddIn/       # COM 加载项（Excel 与 WPS 共用）、WebView2、表格工具
 │   │   ├── Account/           # 账号会话、出口路由解析、遥测
 │   │   ├── Perception/        # 工作簿语义索引（类型推断、采样、缓存）
 │   │   ├── Preview/           # 执行前变更预览
 │   │   └── Skills/            # 技能参数化与本地技能库
 │   ├── DeepExcel.UI/          # React + TypeScript 侧边面板
 │   ├── DeepExcel.Sidecar/     # Python AI Agent 与 IPC
-│   ├── DeepExcel.Wps/         # WPS Ribbon、任务窗格与 JSA 工具
 │   ├── DeepExcel.Repair/      # 诊断与修复工具（GUI + CLI）
 │   ├── DeepExcel.Probe32/     # 32 位 COM 激活探针
 │   └── DeepExcel.Tests/       # 单元测试
@@ -178,7 +179,7 @@ DeepExcel/
 ```text
 用户输入
   → React 任务窗格
-  → Excel C# Bridge / WPS JS Bridge
+  → C# Bridge（Excel 与 WPS 共用同一个 COM 加载项）
   → Python Sidecar
   → 模型供应商 API
   → 结构化工具调用
@@ -190,10 +191,10 @@ DeepExcel/
 ### 构建前端
 
 ```powershell
-cd src\DeepExcel.UI
-npm install
-npm run build
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-ui.ps1
 ```
+
+等价于在 `src\DeepExcel.UI` 下 `npm install` + `npm run build`，产物直接写到 `src\DeepExcel.AddIn\WebViewAssets`，Excel 和 WPS 共用。
 
 ### 编译并注册 Excel 加载项
 
@@ -203,14 +204,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\register-user.ps1
 ```
 
 运行 `_compile_only.ps1` 前应关闭 Excel，避免开发 DLL 被正在运行的 Excel 进程锁定。
-
-### 构建 WPS 资源
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-wps.ps1
-```
-
-该命令会构建共享前端、复制 WPS Sidecar，并运行 Ribbon/任务窗格回调冒烟测试。
 
 ### 构建内置 Python
 
@@ -332,7 +325,7 @@ cp dist/update.json /srv/deepexcel/updates/stable.json
 6. 打包守卫测试（`python scripts\test_package_release.py`）；
 7. 更新链路端到端测试（`python scripts\test_updater_e2e.py`）；
 8. Sidecar 自然冷启动导入；
-9. WPS Ribbon/任务窗格回调测试；
+9. WPS 真机冒烟：DeepExcel 选项卡出现、面板能打开并完成一次对话（可用 `scripts\try-wps-sandbox.ps1`）；
 10. **全新机器安装验收**（`scripts\verify-install-sandbox.ps1 -Launch -NoPause`）——覆盖 SHA-256 校验、静默安装、32/64 位 COM 注册与激活、卸载清理；
 11. `SHA256SUMS.txt` 与安装包一同发布；`update.json` 发布到更新源。
 
@@ -384,17 +377,19 @@ cp dist/update.json /srv/deepexcel/updates/stable.json
 - 不要使用 `MsgBox`、`InputBox` 或独立 `End`；
 - 如果提示 VBA 工程未授权，只需启用“信任对 VBA 工程对象模型的访问”，不建议启用所有宏。
 
-### WPS 没有图标或任务窗格打不开
+### WPS 里没有 DeepExcel 选项卡或面板打不开
 
-1. 确认使用最新安装包并完全重启 WPS；
-2. 检查 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 是否包含 DeepExcel；
-3. 检查同目录下是否存在 `DeepExcel_<版本>` 文件夹；
-4. 按 `Alt+F12` 打开 WPS 加载项调试器，查看第一条红色 Console 错误；
-5. 将 WPS 版本号、错误截图和 Console 错误一起反馈。
+1. 确认使用最新安装包并完全重启 WPS（任务管理器里没有残留的 `et.exe` / `wps.exe`）；
+2. WPS 若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”；
+3. 检查注册表 `HKCU\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn` 存在且 `LoadBehavior` 为 3；
+4. 从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复 COM 注册；
+5. 将 WPS 版本号、截图和 `%APPDATA%\DeepExcel\logs\` 下的日志一起反馈。
+
+详见 [WPS 说明](docs/README-WPS.md)。
 
 ### 如何卸载
 
-在 Windows“已安装的应用”中卸载 DeepExcel。卸载器会移除程序文件、Excel 注册和 WPS DeepExcel 节点，但会保留用户配置、日志、快照和对话历史。
+在 Windows“已安装的应用”中卸载 DeepExcel。卸载器会移除程序文件、Excel 和 WPS 的加载项注册，但会保留用户配置、日志、快照和对话历史。
 
 如需彻底清除个人数据，请确认不再需要后手动删除：
 

@@ -287,9 +287,11 @@ function Start-GuestTrial {
              -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$log" -Wait -PassThru
         if ($p.ExitCode -ne 0) { throw "DeepExcel 安装失败，退出码 $($p.ExitCode)。日志：$log" }
 
-        $publish = Join-Path $env:APPDATA 'kingsoft\wps\jsaddons\publish.xml'
-        if (-not ((Test-Path $publish) -and (Select-String -LiteralPath $publish -Pattern 'DeepExcel' -Quiet))) {
-            throw "DeepExcel 装完了，但 WPS 加载项清单里没有它：$publish"
+        # WPS 加载的是 Excel 那个 COM 加载项，安装器把它登记在 ET\AddIns 下。
+        $wpsAddin = 'HKCU:\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn'
+        $loadBehavior = (Get-ItemProperty -LiteralPath $wpsAddin -ErrorAction SilentlyContinue).LoadBehavior
+        if ($loadBehavior -ne 3) {
+            throw "DeepExcel 装完了，但没有登记给 WPS：$wpsAddin（LoadBehavior=$loadBehavior）"
         }
         Write-Host 'DeepExcel 安装完成，已登记到 WPS 加载项。'
 

@@ -3,15 +3,15 @@
 DeepExcel 对外只分发单文件 `DeepExcel.Setup.exe`。同一个安装器同时支持 Microsoft Excel 和 WPS 表格：
 
 - Excel：按当前用户写入真实的 32/64 位 COM 注册表视图，安装后分别用 32/64 位 CLR 做激活验证，同时安装 x86/x64/ARM64 WebView2 loader。
-- WPS：使用新版 WPS 支持的 `publish.xml` 模式，只合并/删除 DeepExcel 节点，不覆盖其他 WPS 插件。
+- WPS：加载和 Excel 同一个 COM 加载项。安装器把它登记到 `HKCU\Software\Kingsoft\Office\ET\AddIns`（加 `AddinsWL` 白名单值、清 `AddinsCL` 禁用值），并清理旧版本留下的 WPS JS 加载项（`publish.xml` 里的 DeepExcel 节点和 `jsaddons\DeepExcel_*` 目录，其他 WPS 插件不动）。
 - 两个宿主共享安装器内置的 Python 3.11 和 sidecar，用户不需安装 Python。
 - 安装器检测 WebView2 Runtime，缺失时调用已验证 Microsoft 签名的 Evergreen bootstrapper。
 
 ## 生产构建
 
 ```powershell
-# 1. 构建共享前端和 WPS 资源
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-wps.ps1
+# 1. 构建任务窗格前端（Excel 与 WPS 共用，产物写到 src\DeepExcel.AddIn\WebViewAssets）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-ui.ps1
 
 # 2. 构建 Excel COM 加载项和依赖
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\_compile_only.ps1
@@ -109,8 +109,8 @@ python scripts\package_release.py --version 0.4.17 --force-unsigned
 2. 在一台未安装开发工具的 Windows 10/11 虚拟机运行已签名安装器。
 3. Excel 中检查 DeepExcel Ribbon、任务窗格和 AI 对话。
 4. WPS 表格中检查 DeepExcel Ribbon、任务窗格和 AI 对话。
-5. 确认 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 中其他插件节点仍然存在。
-6. 执行卸载，确认 Excel COM 注册和 WPS DeepExcel 节点被清理，其他 WPS 插件不受影响。
+5. 在装过旧版（带 WPS JS 加载项）的机器上覆盖安装：WPS 里只出现一个 DeepExcel 选项卡；`%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 中其他插件节点仍然存在。
+6. 执行卸载，确认 Excel COM 注册和 `HKCU\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn` 被清理，其他 WPS 插件不受影响。
 7. 若安装器报告旧版机器级注册残留，点“是”让它清理：只有删除这几个 DeepExcel 专属 HKLM 键的 `reg.exe` 会以管理员身份运行（一次 UAC），安装本身仍装到当前用户。标准用户可由管理员在 UAC 弹窗里当场输入密码；不要用另一个管理员账户运行整个安装器代装用户级插件。静默安装（自动更新）遇到残留会直接失败并写日志，不会弹授权。
 8. **确认 `dist\update.json` 已发布到更新源**，且 `DeepExcel.Setup.exe` 真的在清单里那个 URL 上。验证方式：`curl https://<更新源>/api/v1/updates/latest` 应返回刚生成的那份清单。
 9. **在一台装着上一版的机器上验证自动升级**：等它后台检查（启动 1 分钟后，之后每 6 小时；也可在面板里手动"检查更新"），看是否出现"新版本已就绪"，点"重启安装"后能否装上。这是唯一能证明更新链路真的通了的检查。
@@ -171,18 +171,17 @@ ssh root@<vps> 'cd /opt/deepexcel/server && docker compose up -d --build'
 
 ## 关键防退化约束
 
-- 缺少 `Extensibility.dll`、内置 Python、WPS web/sidecar 或任一 WebView2 位数 loader 时，打包立即失败。
+- 缺少 `Extensibility.dll`、内置 Python 或任一 WebView2 位数 loader 时，打包立即失败。
 - AnyCPU 包不允许根目录出现 x86 `WebView2Loader.dll`，避免 64 位 Excel 白屏。
 - Excel 加载项写入 Microsoft 文档指定的 `HKCU\Software\Microsoft\Office\Excel\Addins\DeepExcel.AddIn`。
 - Excel 注册不能依赖 `App Paths\excel.exe` 是否存在；企业/MSI Office 可能没有该键，但仍必须注册加载项。
 - 32 位 COM 必须写入 Windows `Registry32`/Inno `HKCU32` 视图，禁止在 64 位视图下手拼 `WOW6432Node` 路径。
-- WPS 不再使用新版已限制的 `jsplugins.xml/oem.ini` 部署路径。
-- WPS `publish.xml` 由安装包内置 Python 标准库更新，通过同目录临时文件原子替换，并在替换前校验文件未被其他进程改写；该步骤不依赖用户的 Windows PowerShell 环境。
-- WPS 离线节点必须使用官方 `wpsjs` 格式：`url="DeepExcel_<version>"`，并与 `jsaddons` 下的目录名完全一致；禁止写成 `file://`。
+- WPS 只走 COM 加载项，不再分发 JS 加载项：WPS 的 JS 加载项宿主是纯浏览器、没有 Node，依赖 Node 的 JS 加载项根本跑不起来（2026-11-23 WPS 12.1 真机实测），而 COM 加载项整条链路都通。`test_package_release.py` 守着它不回来。
+- WPS 白名单 `ET\AddinsWL` 写的是**以 ProgID 命名的值**，不是子键；子键 WPS 不认。
+- 安装和卸载都会清理旧版 JS 加载项：先从 `publish.xml` 删 DeepExcel 节点（同目录临时文件原子替换，替换前校验文件未被其他进程改写），再删 `jsaddons\DeepExcel_*` 目录。顺序不能反：反过来中途失败会留下指向不存在目录的节点。没有 `publish.xml` 的机器不会凭空多出一个。
 - 内置 Python、pip 与全部 Python 依赖均固定版本和 SHA-256；依赖变化必须同步更新 `scripts\python-requirements.lock.txt`。
 - 更新签名**私钥绝不出现在服务端或仓库里**。服务端只原样转发已签名的清单，所以拿下服务端也推不了更新——这是整个更新安全模型的全部内容。`update_signing.py genkey` 会拒绝把私钥写进仓库，`.gitignore` 再兜一层。
 - 客户端 `EmbeddedUpdateKey` 里的公钥常量只能由 `update_signing.py genkey` 改写，禁止手改。手改会让公钥与私钥悄悄不一致，**所有客户端静默停止升级**；打包时会用客户端那份公钥回验刚生成的清单，不匹配直接构建失败。
-- 任何被 git 跟踪的 `src\DeepExcel.Wps` 源文件都必须在 `WPS_ITEMS` 里。`jsplugins.xml` 曾因此漏打包，用户装到的加载项选项卡在、所有 JS 回调是死的。守卫以 `git ls-files` 为唯一真相。
 
 ## 遗留清理（2026-09-12 一次性）
 

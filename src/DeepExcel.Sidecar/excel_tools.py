@@ -1002,10 +1002,12 @@ _HOST_ONLY_TOOLS = {
     "execute_jsa": "wps",
 }
 
-# WPS 宿主（src/DeepExcel.Wps/tool-dispatcher.js 的 case 分支）实际实现的工具。
-# WPS 的工具分发只实现了 Excel 的一小半：图表、透视、快照、VBA、清洗等在 WPS 里
-# 调用永远拿到「WPS 端暂未实现」，白白浪费一轮还让用户以为功能坏了。所以 WPS 会话
-# 只注册这里列出的工具。tests/test_host_tools.py 逐条比对 JS 源码，两边不一致就变红。
+# 旧 WPS JS 加载项的工具分发实际实现的工具（它只实现了 Excel 的一小半），WPS 会话
+# 只注册这里列出的工具。
+#
+# 已无入口：DEEPEXCEL_HOST=wps 只有那个 JS 加载项会设，而它已删除——WPS 现在加载
+# 和 Excel 同一个 COM 加载项，sidecar 按 excel 宿主启动，拿到完整工具集。这一套
+# （连同 execute_jsa）待整体清理。
 WPS_HOST_TOOLS = frozenset({
     "read_range", "find", "list", "write_formula", "write_value", "write_range",
     "read_workbook", "read_selection", "sort_data", "filter_data",

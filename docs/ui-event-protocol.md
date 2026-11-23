@@ -27,7 +27,7 @@ stdout 一行一个 JSON：
 - `ts`：侧车发出时的毫秒时间戳。
 - 值为 `null` 的字段不发。
 
-**宿主（C# `PythonSidecar`/`MessageBridge`、WPS `sidecar-host.js`）原样转发给面板**，
+**宿主（C# `PythonSidecar`/`MessageBridge`，Excel 与 WPS 共用）原样转发给面板**，
 面板收到的是 `{type: "ui_event", payload: <event>}`。宿主唯一读取的是 `run_summary.outcome`
 （C# 任务轨迹据此区分成功 / 出错 / 中断）。
 
@@ -110,7 +110,7 @@ stdout 一行一个 JSON：
 
 - `get_starter` → `starter {workbook_name, sheets[{name, rows, columns, grid, date_columns}]}`：每张可见表最多 12 张、前 51 行 × 30 列原样交出（错误值是 `#N/A` 这样的文本，日期是序列号，靠 `date_columns` 区分）。列类型判断和推荐在 `src/DeepExcel.UI/src/utils/starter.ts`（有测试），Excel 和 WPS 共用。
 - 工作簿全空：卡片给「插入示例数据」。`insert_sample {sheet_name, rows, number_formats}` → `sample_inserted {sheet}`；宿主把示例写进最后一张表之后的新表（重名加 `(2)`），以 `=` 开头的文本加撇号不当公式。示例数据在 `starter.ts` 里按固定种子生成，故意埋了文本金额、带空格的名字、一行重复、一个空区域。
-- 宿主实现：`src/DeepExcel.AddIn/Bridge/StarterHandlers.cs`、`src/DeepExcel.Wps/starter-host.js`。宿主不认识 `get_starter`（老版本）时面板退回三条通用示例。
+- 宿主实现：`src/DeepExcel.AddIn/Bridge/StarterHandlers.cs`（Excel 与 WPS 共用）。宿主不认识 `get_starter`（老版本）时面板退回三条通用示例。
 
 ## 与旧消息的关系
 

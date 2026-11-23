@@ -36,12 +36,9 @@ function filesUnder(dir: string, ext: string[]): string[] {
   return out
 }
 
-// 客户端（Excel 插件 + WPS）真正上报的事件名
+// 客户端（COM 加载项，Excel 与 WPS 共用）真正上报的事件名
 function clientEvents(): Set<string> {
-  const files = [
-    ...filesUnder(join(repo, 'src/DeepExcel.AddIn'), ['.cs']),
-    ...filesUnder(join(repo, 'src/DeepExcel.Wps'), ['.js']),
-  ]
+  const files = filesUnder(join(repo, 'src/DeepExcel.AddIn'), ['.cs'])
   const events = new Set<string>()
   for (const f of files) {
     const src = readFileSync(f, 'utf-8')

@@ -25,11 +25,6 @@ param(
     # Drive WPS with synthetic keystrokes. Off by default: it races the
     # add-in's initialisation and produced a ribbon with no DeepExcel tab.
     [switch]$AutoKeys,
-    # Tests whether WPS can load the Excel COM add-in directly, the way FFCell
-    # ships: one VSTO/COM add-in serving both hosts, no JS add-in at all.
-    # Disables the JS add-in first so any ribbon tab that appears can only have
-    # come from COM.
-    [switch]$ComWps,
     [string]$SetupPath,
     # Path to a WPS installer on the host. Not downloaded automatically: the
     # sandbox is disposable, so an automatic download would re-fetch several
@@ -49,7 +44,7 @@ $ErrorActionPreference = 'Stop'
 # Host side: build the .wsb and launch
 # ---------------------------------------------------------------------------
 function Start-SandboxRun {
-    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup, [bool]$ComWpsTest,
+    param([string]$Setup, [bool]$WithTrace, [string]$WpsSetup,
           [bool]$AutoKeysTest, [bool]$NoPauseRun)
 
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -87,9 +82,6 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     $keysArg = ''
     if ($AutoKeysTest) { $keysArg = ' -AutoKeys' }
 
-    $comArg = ''
-    if ($ComWpsTest) { $comArg = ' -ComWps' }
-
     $wpsArg = ''
     if ($WpsSetup) {
         if (-not (Test-Path $WpsSetup)) { throw "WPS installer not found: $WpsSetup" }
@@ -115,7 +107,7 @@ Windows Sandbox requires Windows 10/11 Pro or Enterprise.
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg$comArg$keysArg$pauseArg</Command>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\DeepExcelStage\verify-install-sandbox.ps1 -SetupPath C:\DeepExcelStage\DeepExcel.Setup.exe$traceArg$wpsArg$keysArg$pauseArg</Command>
   </LogonCommand>
 </Configuration>
 "@ | Set-Content -LiteralPath $wsb -Encoding UTF8
@@ -225,11 +217,9 @@ function Invoke-ActivationTrace {
 # Installs WPS inside the sandbox so the WPS half of the acceptance test runs
 # against a real host application instead of just asserting on files.
 #
-# This is the only way to answer the open question: the installer writes
-# enable="enable_dev" into publish.xml, and whether a normal (non-developer)
-# WPS actually loads an enable_dev entry has never been verified. The ribbon
-# either shows the DeepExcel tab or it does not -- that needs a human looking
-# at the sandbox window, so this function ends by launching WPS.
+# Registry checks only prove WPS was told about the COM add-in. Whether the
+# ribbon shows the DeepExcel tab and the pane opens needs a human looking at
+# the sandbox window, so the WPS step ends by launching WPS.
 function Install-WpsInGuest {
     # Everything here is logged to the mapped folder. The previous run skipped
     # WPS and left no trace of why -- the sandbox console dies with the VM, so a
@@ -447,7 +437,7 @@ function Invoke-GuestRibbonClick {
 
 function Invoke-GuestVerification {
     param([string]$Setup, [string]$ResultFile, [bool]$WithTrace, [bool]$WithWps,
-          [bool]$ComWps, [bool]$AutoKeys, [bool]$NoPause)
+          [bool]$AutoKeys, [bool]$NoPause)
 
     Write-Host '=== DeepExcel fresh-install verification ==='
     Write-Host "Setup: $Setup"
@@ -455,7 +445,8 @@ function Invoke-GuestVerification {
 
     # WPS goes first so DeepExcel installs into a machine that already has WPS,
     # which is the real user's order. Installing it afterwards would let the
-    # DeepExcel installer create jsaddons itself and hide any ordering problem.
+    # DeepExcel installer create WPS's registry keys itself and hide any
+    # ordering problem.
     $wpsReady = $false
     if ($WithWps) { $wpsReady = Install-WpsInGuest }
 
@@ -626,131 +617,41 @@ function Invoke-GuestVerification {
         Add-Check 'DeepExcel.Repair.exe --verify reports healthy' $false 'tool missing'
     }
 
-    # 5b. WPS. Its add-in is plain JS -- no COM, no .NET, no bitness -- so it
-    #     has no reason to depend on anything Excel above. But the installer
-    #     activates it LAST inside the same try block, so an Excel-side failure
-    #     skips it entirely: the files land in jsaddons (the [Files] section is
-    #     unconditional) while publish.xml never learns about them, and WPS
-    #     silently loads nothing. Checking the folder alone would miss this,
-    #     which is the whole point of asserting on the manifest.
-    $jsaddons = Join-Path $env:APPDATA 'kingsoft\wps\jsaddons'
-    $addinDir = Get-ChildItem -Path $jsaddons -Directory -Filter 'DeepExcel_*' -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-    Add-Check 'WPS add-in payload copied to jsaddons' ($null -ne $addinDir) "$($addinDir.Name)"
+    # 5b. WPS. WPS loads this same COM add-in, registered for it under
+    #     HKCU\Software\Kingsoft\Office\ET (real WPS 12.1, 2026-11-23). The
+    #     installer activates WPS in its own try block, so it must be there even
+    #     when the Excel half failed -- which inside the sandbox it always does,
+    #     there being no Excel. AddinsWL is a list of VALUES named by ProgID; a
+    #     subkey is ignored. AddinsCL is WPS's disabled list and must not name us.
+    $wpsEt = 'HKCU:\Software\Kingsoft\Office\ET'
+    $wpsAddinKey = "$wpsEt\AddIns\DeepExcel.AddIn"
+    $loadBehavior = (Get-ItemProperty -LiteralPath $wpsAddinKey -ErrorAction SilentlyContinue).LoadBehavior
+    Add-Check 'WPS COM add-in registered (ET\AddIns, LoadBehavior=3)' ($loadBehavior -eq 3) "LoadBehavior=$loadBehavior"
 
-    $publishXml = Join-Path $jsaddons 'publish.xml'
-    $registered = $false
-    $detail = 'publish.xml not found'
+    $whitelist = Get-ItemProperty -LiteralPath "$wpsEt\AddinsWL" -ErrorAction SilentlyContinue
+    $listed = ($null -ne $whitelist) -and ($whitelist.PSObject.Properties.Name -contains 'DeepExcel.AddIn')
+    Add-Check 'WPS whitelist lists DeepExcel.AddIn as a value' $listed
+
+    $disabled = Get-ItemProperty -LiteralPath "$wpsEt\AddinsCL" -ErrorAction SilentlyContinue
+    $blocked = ($null -ne $disabled) -and ($disabled.PSObject.Properties.Name -contains 'DeepExcel.AddIn')
+    Add-Check 'WPS disabled list does not name DeepExcel.AddIn' (-not $blocked)
+
+    # The JS add-in earlier versions shipped cannot run in WPS (no Node in its
+    # add-in host). Nothing of it may be left: a publish.xml entry would put a
+    # second, dead DeepExcel tab next to the working one.
+    $jsRoot = Join-Path $env:APPDATA 'kingsoft\wps\jsaddons'
+    $jsFolders = @(Get-ChildItem -Path $jsRoot -Directory -Filter 'DeepExcel_*' -ErrorAction SilentlyContinue)
+    Add-Check 'no old WPS JS add-in folder' ($jsFolders.Count -eq 0) (($jsFolders | ForEach-Object Name) -join ', ')
+    $jsEntry = $false
+    $publishXml = Join-Path $jsRoot 'publish.xml'
     if (Test-Path $publishXml) {
-        try {
-            [xml]$manifest = Get-Content -LiteralPath $publishXml -Raw
-            $entry = $manifest.SelectNodes('//*[@url]') |
-                     Where-Object { $_.url -like 'DeepExcel_*' } |
-                     Select-Object -First 1
-            $registered = $null -ne $entry
-            $detail = if ($registered) { "url=$($entry.url)" } else { 'no DeepExcel entry in publish.xml' }
-        } catch {
-            $detail = "publish.xml unreadable: $($_.Exception.Message)"
-        }
+        $jsEntry = Select-String -LiteralPath $publishXml -Pattern 'DeepExcel' -Quiet
     }
-    Add-Check 'WPS add-in registered in publish.xml' $registered $detail
+    Add-Check 'no DeepExcel entry in WPS publish.xml' (-not $jsEntry)
 
-    # 5c. The manifest check above proves the entry was written. It cannot prove
-    #     the add-in actually works, so the window is handed to a human here,
-    #     before the uninstall step tears everything down.
-    #
-    #     What is NOT in question any more: enable="enable_dev". That was the
-    #     prime suspect for months and it is now ruled out twice over --
-    #     Kingsoft's own wpsjs toolchain emits exactly that value from the code
-    #     path that builds end-user distribution packages (build.js,
-    #     CreatePublishXml), and an earlier sandbox run saw the ribbon tab
-    #     appear, which could not happen if WPS refused to load the entry.
-    #
-    #     The open question is now one step further in: the tab renders from
-    #     ribbon.xml with no JS at all, so a tab alone proves nothing about
-    #     whether the callbacks are wired. jsplugins.xml -- the manifest that
-    #     binds them -- was missing from the release payload until 85ea244, and
-    #     that is what produced the field report of "WPS installs but does not
-    #     work". So what needs looking at is whether the buttons DO something.
-    # 5b-2. Decide whether main.js runs at all.
-    #
-    # The ribbon tab and its buttons come from ribbon.xml, which WPS renders
-    # without any JS. Both JS callbacks (GetImage for the icons, OnAction for
-    # the button) do nothing, which is equally consistent with "main.js never
-    # loaded" and "main.js loaded but its require() calls threw" -- those are
-    # wrapped in try blocks that swallow the error.
-    #
-    # main.js is written against Node-style require(), so require('fs') should
-    # exist in that runtime. A marker written at the top of the file settles it
-    # without needing anyone to click anything.
-    $jsDiag = Join-Path $outDir 'wps-js-diag.log'
-    if ($addinDir) {
-        $mainJs = Join-Path $addinDir.FullName 'main.js'
-        if (Test-Path $mainJs) {
-            $probe = @"
-/* DIAG */ try { require('fs').appendFileSync('$($jsDiag -replace '\\','\\')', 'main.js top-level executed ' + new Date().toISOString() + '\n') } catch (e) { }
-"@
-            $tail = @"
-
-/* DIAG */ try { require('fs').appendFileSync('$($jsDiag -replace '\\','\\')', 'main.js reached end of file\n') } catch (e) { }
-"@
-            $body = Get-Content -LiteralPath $mainJs -Raw
-            Set-Content -LiteralPath $mainJs -Value ($probe + "`n" + $body + $tail) -Encoding UTF8
-            Write-Host '  (wps) instrumented main.js with load probes'
-        } else {
-            Write-Host "  (wps) main.js not found under $($addinDir.FullName)"
-        }
-    }
-
-    # 5b-3. COM route experiment.
-    if ($ComWps -and $addinDir) {
-        Write-Host ''
-        Write-Host '=== COM route experiment ==='
-
-        # The installer rolled the COM registration back when the Excel-side
-        # post-install step failed, so put it back first -- --repair rebuilds
-        # both registry views and the Excel add-in key.
-        if (Test-Path $repair) {
-            Start-Process -FilePath $repair -ArgumentList '--repair' -Wait -NoNewWindow `
-                -RedirectStandardOutput (Join-Path $outDir 'com-wps-repair.log') `
-                -RedirectStandardError  (Join-Path $outDir 'com-wps-repair.log.err') | Out-Null
-            Write-Host '  restored COM registration via --repair'
-        }
-
-        # Disable the JS add-in, otherwise its tab would be indistinguishable
-        # from a tab loaded through COM.
-        $pub = Join-Path $jsaddons 'publish.xml'
-        if (Test-Path $pub) {
-            Copy-Item $pub (Join-Path $outDir 'publish.xml.before-com-test') -Force
-            [xml]$m = Get-Content -LiteralPath $pub -Raw
-            $gone = 0
-            foreach ($n in @($m.SelectNodes('//*[@url]'))) {
-                if ($n.url -like 'DeepExcel_*') { $n.ParentNode.RemoveChild($n) | Out-Null; $gone++ }
-            }
-            $m.Save($pub)
-            Write-Host "  disabled JS add-in (removed $gone publish.xml entry/entries)"
-        }
-
-        # WPS reads its own add-in list, plus a trust whitelist on the personal
-        # edition. Register under both spellings of the vendor key -- the casing
-        # differs between WPS builds.
-        foreach ($vendor in 'Kingsoft', 'kingsoft') {
-            $base = "HKCU:\Software\$vendor\Office\ET"
-            try {
-                New-Item -Path "$base\AddIns\DeepExcel.AddIn" -Force | Out-Null
-                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'Description'  -Value 'DeepExcel AI AddIn'
-                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'FriendlyName' -Value 'DeepExcel AI AddIn'
-                Set-ItemProperty -Path "$base\AddIns\DeepExcel.AddIn" -Name 'LoadBehavior' -Value 3 -Type DWord
-                New-Item -Path "$base\AddinsWL\DeepExcel.AddIn" -Force | Out-Null
-                Set-ItemProperty -Path "$base\AddinsWL\DeepExcel.AddIn" -Name '(default)' -Value 1
-            } catch {
-                Write-Host "  registering under $vendor failed: $($_.Exception.Message)"
-            }
-        }
-        Write-Host '  registered DeepExcel.AddIn under WPS ET AddIns + AddinsWL'
-        Write-Host '  -> any DeepExcel tab in WPS now can only come from COM'
-    }
-
+    # 5c. The registry checks prove WPS was told about the add-in. Whether it
+    #     really loads it -- ribbon, WebView2 pane, sidecar -- needs WPS running
+    #     and a human looking, before the uninstall step tears everything down.
     if ($wpsReady) {
         $etPath = Get-Content -LiteralPath 'C:\wps-et-path.txt' -ErrorAction SilentlyContinue
         if ($etPath) {
@@ -763,21 +664,15 @@ function Invoke-GuestVerification {
             Write-Host ' Launching WPS Spreadsheets. Two things to check,'
             Write-Host ' in this order:'
             Write-Host ''
-            Write-Host '  1. Is there a "DeepExcel" tab, WITH its icons?'
-            Write-Host '     Icons come from a JS callback; the tab itself does not.'
-            Write-Host '     tab + icons     -> jsplugins.xml is being honoured'
-            Write-Host '     tab, no icons   -> the manifest is not loading'
-            Write-Host '     no tab at all   -> publish.xml never took effect'
+            Write-Host '  1. Is there a "DeepExcel" tab?'
+            Write-Host '     If WPS asks about a disabled COM add-in, enable'
+            Write-Host '     DeepExcel.AddIn -- the installer clears that list, so'
+            Write-Host '     being asked at all is worth noting.'
+            Write-Host '     no tab at all   -> WPS did not load the COM add-in'
             Write-Host ''
-            Write-Host '  2. Click "Open panel". Does the task pane appear?'
-            Write-Host '     This is the check that matters: it is the exact'
-            Write-Host '     symptom a user reported (tab present, clicks dead)'
-            Write-Host '     and the one 85ea244 was meant to fix.'
-            Write-Host ''
-            Write-Host ' enable="enable_dev" is NOT under suspicion -- see 5c.'
-            Write-Host ' Also read wps-js-diag.log in the results folder: it says'
-            Write-Host ' whether main.js executed at all, which no amount of'
-            Write-Host ' looking at the ribbon can tell you.'
+            Write-Host '  2. Click "Open panel". Does the task pane appear and'
+            Write-Host '     answer a message? That is the WebView2 pane and the'
+            Write-Host '     sidecar, the same stack Excel runs.'
             Write-Host ''
             Write-Host ' Close WPS, then press Enter here to continue (uninstall check).'
             Write-Host '--------------------------------------------------------------'
@@ -852,43 +747,30 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
             Start-Sleep -Seconds 12
             Save-GuestScreenshot -OutDir $outDir -Name '03-after-panel-click'
 
-            # The add-in's own log is the only place that says how far OnAction
-            # got. It lives in the profile, not the mapped folder.
-            $panelLog = Join-Path $env:LOCALAPPDATA 'DeepExcel\logs\wps-panel.log'
-            if (Test-Path $panelLog) {
-                Copy-Item $panelLog (Join-Path $outDir 'wps-panel.log') -Force
-                Write-Host '  (wps) copied add-in panel log'
-            } else {
-                Add-Content -LiteralPath $actionLog -Value "add-in log not created at $panelLog"
-            }
-
             $go = Join-Path (Split-Path -Parent $ResultFile) 'continue.txt'
             Remove-Item $go -ErrorAction SilentlyContinue
             Write-Host " Waiting for $go (create it from the host to continue)."
-            # Watch for the add-in's log DURING the wait, not after it.
-            #
-            # The previous version copied it before the human had touched
-            # anything, so it always captured nothing. The log only appears once
-            # the panel button is actually clicked, which is precisely what this
+            # Copy the add-in's own logs DURING the wait, not after it: they
+            # only fill in once the panel is actually opened, which is what this
             # wait is for. Screenshots are also taken periodically, so an error
             # dialog that the human closes is still recorded.
-            $panelLogSrc = Join-Path $env:LOCALAPPDATA 'DeepExcel\logs\wps-panel.log'
-            $panelLogDst = Join-Path $outDir 'wps-panel.log'
+            $addinLogSrc = Join-Path $env:APPDATA 'DeepExcel\logs'
+            $addinLogDst = Join-Path $outDir 'addin-logs'
             $waitUntil = (Get-Date).AddMinutes(45)
             $tick = 0
             while (-not (Test-Path $go) -and (Get-Date) -lt $waitUntil) {
                 Start-Sleep -Seconds 5
                 $tick++
-                if (Test-Path $panelLogSrc) {
-                    try { Copy-Item $panelLogSrc $panelLogDst -Force } catch { }
-                }
                 # every ~30s
                 if ($tick % 6 -eq 0) {
+                    if (Test-Path $addinLogSrc) {
+                        try { Copy-Item $addinLogSrc $addinLogDst -Recurse -Force } catch { }
+                    }
                     Save-GuestScreenshot -OutDir $outDir -Name 'live-latest'
                 }
             }
-            if (Test-Path $panelLogSrc) {
-                try { Copy-Item $panelLogSrc $panelLogDst -Force } catch { }
+            if (Test-Path $addinLogSrc) {
+                try { Copy-Item $addinLogSrc $addinLogDst -Recurse -Force } catch { }
             }
             Save-GuestScreenshot -OutDir $outDir -Name '04-final'
             Write-Host ' Continuing.'
@@ -911,10 +793,10 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
             Write-Host "  (wps) $($report.Count) recent log files listed in $wpsLogSummary"
 
             # Listing filenames is not enough -- WPS records add-in loading in
-            # its own log, and that text is the only place likely to say why the
-            # JS callbacks are dead. Pull the relevant lines out; the full log is
+            # its own log, and that text is the likeliest place to say why an
+            # add-in did not load. Pull the relevant lines out; the full log is
             # ~300 KB and most of it is unrelated.
-            $interesting = 'DeepExcel|jsaddon|jsplugin|addon|plugin'
+            $interesting = 'DeepExcel|addin'
             $extract = @()
             foreach ($root in @("$env:APPDATA\kingsoft\office6\log", "$env:APPDATA\Kingsoft\office6\log")) {
                 if (-not (Test-Path $root)) { continue }
@@ -932,13 +814,6 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
             }
             $extract | Set-Content -LiteralPath (Join-Path $outDir 'wps-log-extract.txt') -Encoding UTF8
             Write-Host "  (wps) $($extract.Count) log lines extracted"
-
-            # The installed add-in folder as WPS actually sees it.
-            if ($addinDir) {
-                Get-ChildItem -Path $addinDir.FullName -Recurse -File -ErrorAction SilentlyContinue |
-                    ForEach-Object { $_.FullName.Substring($addinDir.FullName.Length + 1) } |
-                    Set-Content -LiteralPath (Join-Path $outDir 'wps-addin-tree.txt') -Encoding UTF8
-            }
         }
     }
 
@@ -956,6 +831,7 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
         }
         if (Test-Path $addinKey) { $residual = $true }
         Add-Check 'Uninstall removes COM registration' (-not $residual)
+        Add-Check 'Uninstall removes the WPS add-in registration' (-not (Test-Path -LiteralPath $wpsAddinKey))
     } else {
         Add-Check 'Uninstall removes COM registration' $false 'uninstaller not found'
     }
@@ -999,8 +875,8 @@ Invoke-ByName '$tabName' | Out-File -LiteralPath '$actionLog' -Encoding UTF8 -Ap
     # Note: -Param:$switch.IsPresent does not parse (the member access is taken
     # as a separate token). These targets are [bool], so cast explicitly.
 if ($Launch) {
-    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath -ComWpsTest ([bool]$ComWps) -AutoKeysTest ([bool]$AutoKeys) -NoPauseRun ([bool]$NoPause)
+    Start-SandboxRun -Setup $SetupPath -WithTrace ([bool]$Trace) -WpsSetup $WpsSetupPath -AutoKeysTest ([bool]$AutoKeys) -NoPauseRun ([bool]$NoPause)
 } else {
     if (-not $SetupPath) { throw 'Specify -SetupPath, or use -Launch to run this inside Windows Sandbox.' }
-    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps) -ComWps ([bool]$ComWps) -AutoKeys ([bool]$AutoKeys) -NoPause ([bool]$NoPause)
+    Invoke-GuestVerification -Setup $SetupPath -ResultFile $ResultPath -WithTrace ([bool]$Trace) -WithWps ([bool]$WithWps) -AutoKeys ([bool]$AutoKeys) -NoPause ([bool]$NoPause)
 }

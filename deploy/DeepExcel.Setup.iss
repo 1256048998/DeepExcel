@@ -86,7 +86,8 @@ CloseApplications=yes
 RestartApplications=no
 CloseApplicationsFilter=EXCEL.EXE,et.exe,wps.exe
 ; Keep the install dir simple and predictable (no version subfolder).
-; WPS resolves the shared Python runtime from this stable per-user location.
+; Excel and WPS both load the add-in (and its Python runtime) from this stable
+; per-user location.
 DisableDirPage=yes
 ; Don't let the wizard restart the machine.
 RestartIfNeededByRun=no
@@ -116,9 +117,8 @@ Name: "English"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Install only the deterministic payload assembled by package_release.py.
+; Excel and WPS load the same COM add-in from here; there is no WPS payload.
 Source: "{#BuildDir}*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
-; WPS publish mode expects a folder named <name>_<version> under jsaddons.
-Source: "{#PayloadDir}Wps\*"; DestDir: "{userappdata}\kingsoft\wps\jsaddons\DeepExcel_{#AppVersion}"; Flags: ignoreversion recursesubdirs
 ; package_release.py downloads and validates Microsoft's signed bootstrapper.
 Source: "Includes\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall; Check: WebView2NeedsInstall
 
@@ -131,7 +131,6 @@ Name: "{group}\{#AppName} 官网"; Filename: "{#AppURL}"
 Name: "{group}\{#AppName} 诊断与修复"; Filename: "{app}\DeepExcel.Repair.exe"; WorkingDir: "{app}"
 
 [UninstallDelete]
-Type: filesandordirs; Name: "{userappdata}\kingsoft\wps\jsaddons\DeepExcel_{#AppVersion}"
 ; Staged update packages. An installer is tens of megabytes, and leaving one
 ; behind after an uninstall is the kind of thing users find months later.
 ; Configuration and credentials under {userappdata}\DeepExcel are deliberately
@@ -515,41 +514,42 @@ function MoveFileEx(existingFile, newFile: string; flags: Cardinal): Boolean;
 procedure ExitProcess(exitCode: Cardinal);
   external 'ExitProcess@kernel32.dll stdcall';
 
-procedure UpdateWpsManifest(const mode: string);
+// ---------------------------------------------------------------------------
+// WPS: retire the old JS add-in
+// ---------------------------------------------------------------------------
+// Earlier versions also shipped a WPS JS add-in: a folder
+// jsaddons\DeepExcel_<version> plus a DeepExcel entry in jsaddons\publish.xml.
+// It cannot run in WPS (no Node in WPS's add-in host) and is no longer shipped;
+// WPS loads the COM add-in instead. Left in place, the old entry would put a
+// second, dead DeepExcel tab next to the working one. So install and uninstall
+// both remove it: first the publish.xml entry, then the folders. In that order
+// a failure can leave an orphaned folder, never an entry pointing at nothing.
+//
+// Only DeepExcel's own nodes are touched; other WPS add-ins in publish.xml are
+// kept, and the file is replaced atomically with a .bak beside it. A machine
+// that never had a publish.xml is left without one.
+procedure RemoveWpsJsAddInEntry(const addinRoot: string);
 var
-  addinRoot, manifestPath, temporaryPath, backupPath: string;
+  manifestPath, temporaryPath, backupPath: string;
   originalHash: string;
-  originalExists, existsNow: Boolean;
-  document, validationDocument, rootNode, nodes, entry: Variant;
+  document, validationDocument, rootNode, nodes: Variant;
 begin
-  addinRoot := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons');
   manifestPath := addinRoot + '\publish.xml';
   temporaryPath := addinRoot + '\.publish.deepexcel.tmp';
   backupPath := manifestPath + '.bak';
-  ForceDirectories(addinRoot);
-
-  originalExists := FileExists(manifestPath);
-  if originalExists then
-    originalHash := GetSHA256OfFile(manifestPath)
-  else
-    originalHash := '';
+  if not FileExists(manifestPath) then
+    Exit;
+  originalHash := GetSHA256OfFile(manifestPath);
 
   document := CreateOleObject('MSXML2.DOMDocument.6.0');
   document.async := False;
   document.resolveExternals := False;
   document.preserveWhiteSpace := False;
-  if originalExists then
+  document.load(manifestPath);
+  if document.parseError.errorCode <> 0 then
   begin
-    document.load(manifestPath);
-    if document.parseError.errorCode <> 0 then
-    begin
-      CopyFile(manifestPath, manifestPath + '.invalid.bak', False);
-      RaiseException('Existing WPS publish.xml is invalid: ' + document.parseError.reason);
-    end;
-  end
-  else
-  begin
-    document.loadXML('<?xml version="1.0" encoding="utf-8"?><jsplugins/>');
+    CopyFile(manifestPath, manifestPath + '.invalid.bak', False);
+    RaiseException('Existing WPS publish.xml is invalid: ' + document.parseError.reason);
   end;
 
   rootNode := document.documentElement;
@@ -557,23 +557,12 @@ begin
     RaiseException('Unexpected WPS manifest root (expected jsplugins).');
 
   nodes := rootNode.selectNodes('*[@name="DeepExcel"]');
+  if nodes.length = 0 then
+    Exit;
   while nodes.length > 0 do
   begin
     rootNode.removeChild(nodes.item(0));
     nodes := rootNode.selectNodes('*[@name="DeepExcel"]');
-  end;
-
-  if CompareText(mode, 'Install') = 0 then
-  begin
-    entry := document.createElement('jsplugin');
-    entry.setAttribute('name', 'DeepExcel');
-    entry.setAttribute('type', 'et');
-    entry.setAttribute('url', 'DeepExcel_{#AppVersion}');
-    entry.setAttribute('version', '{#AppVersion}');
-    entry.setAttribute('enable', 'enable_dev');
-    entry.setAttribute('install', 'null');
-    entry.setAttribute('customDomain', '');
-    rootNode.appendChild(entry);
   end;
 
   DeleteFile(temporaryPath);
@@ -591,19 +580,13 @@ begin
     RaiseException('Generated WPS manifest is invalid: ' + validationDocument.parseError.reason);
   end;
 
-  existsNow := FileExists(manifestPath);
-  if existsNow <> originalExists then
-  begin
-    DeleteFile(temporaryPath);
-    RaiseException('WPS publish.xml changed during update; please retry.');
-  end;
-  if originalExists and (GetSHA256OfFile(manifestPath) <> originalHash) then
+  if (not FileExists(manifestPath)) or (GetSHA256OfFile(manifestPath) <> originalHash) then
   begin
     DeleteFile(temporaryPath);
     RaiseException('WPS publish.xml was modified by another process; please retry.');
   end;
 
-  if originalExists and (not CopyFile(manifestPath, backupPath, False)) then
+  if not CopyFile(manifestPath, backupPath, False) then
   begin
     DeleteFile(temporaryPath);
     RaiseException('Cannot back up WPS publish.xml.');
@@ -615,6 +598,44 @@ begin
     DeleteFile(temporaryPath);
     RaiseException('Cannot atomically replace WPS publish.xml.');
   end;
+end;
+
+procedure RemoveWpsJsAddInFolders(const addinRoot: string);
+var
+  findRec: TFindRec;
+  folders: TStringList;
+  index: Integer;
+begin
+  folders := TStringList.Create;
+  try
+    if FindFirst(addinRoot + '\DeepExcel_*', findRec) then
+    begin
+      try
+        repeat
+          if (findRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then
+            folders.Add(addinRoot + '\' + findRec.Name);
+        until not FindNext(findRec);
+      finally
+        FindClose(findRec);
+      end;
+    end;
+    for index := 0 to folders.Count - 1 do
+      if not DelTree(folders.Strings[index], True, True, True) then
+        Log('Could not remove old WPS JS add-in folder: ' + folders.Strings[index]);
+  finally
+    folders.Free;
+  end;
+end;
+
+procedure RetireWpsJsAddIn();
+var
+  addinRoot: string;
+begin
+  addinRoot := ExpandConstant('{userappdata}\kingsoft\wps\jsaddons');
+  if not DirExists(addinRoot) then
+    Exit;
+  RemoveWpsJsAddInEntry(addinRoot);
+  RemoveWpsJsAddInFolders(addinRoot);
 end;
 
 // ---------------------------------------------------------------------------
@@ -631,18 +652,18 @@ begin
 end;
 
 // ---------------------------------------------------------------------------
-// WPS: the same COM add-in Excel loads (the approach FFCell ships)
+// WPS: the same COM add-in Excel loads
 // ---------------------------------------------------------------------------
 // 2026-11-23, first run on a real WPS (12.1.0.29690, personal edition):
-//   * the JS add-in in jsaddons cannot work there at all -- WPS's add-in host is
-//     a plain browser page with no Node (`require is not defined`), and the JS
-//     add-in needs Node for the sidecar, config, credentials and history;
+//   * the old JS add-in could not work there at all -- WPS's add-in host is a
+//     plain browser page with no Node (`require is not defined`), and the JS
+//     add-in needed Node for the sidecar, config, credentials and history;
 //   * WPS loads this very COM add-in from HKCU\Software\Kingsoft\Office\ET\AddIns,
 //     and the whole stack works: ribbon, WebView2 pane, sidecar, model, tools.
 // WPS puts a third-party COM add-in it has not seen into ET\AddinsCL (its
 // disabled list) and asks once; clicking "启用" only removes that value. So we
-// remove it here too. AddinsWL is a list of VALUES named by ProgID (FFCell is
-// listed that way) -- not subkeys.
+// remove it here too. AddinsWL is a list of VALUES named by ProgID (that is
+// how other add-ins already trusted by WPS appear there) -- not subkeys.
 function IsWpsInstalled(): Boolean;
 begin
   Result :=
@@ -821,25 +842,24 @@ begin
 
     // WPS is activated in its own try block, NOT chained after the Excel work.
     //
-    // The WPS add-in is plain JS: no COM, no .NET, no bitness, nothing it needs
-    // from the Excel side. It used to sit at the end of the Excel try block, so
-    // any Excel-side failure skipped it entirely -- the files were copied (the
-    // [Files] section is unconditional) but publish.xml never learned about
-    // them, and WPS silently loaded nothing. On a machine with no Excel at all,
-    // that made the WPS add-in unreachable for a reason that has nothing to do
-    // with WPS.
-    //
-    // The old ordering comment argued WPS must come last so a committed
-    // publish.xml can never point at rolled-back files. That still holds: the
-    // rollback above only touches Excel's COM registration, and the payload in
-    // jsaddons is left in place on failure (Setup now exits non-zero instead of
-    // unwinding the file copy), so the manifest never dangles.
+    // WPS activation used to sit at the end of the Excel try block, so any
+    // Excel-side failure skipped it entirely. On a machine with no Excel at all
+    // -- where Excel activation fails by definition -- that made WPS unreachable
+    // for a reason that has nothing to do with WPS. WPS needs only the COM
+    // classes (re-registered below when the Excel half rolled them back) and its
+    // own HKCU add-in entry.
     try
       WizardForm.StatusLabel.Caption := '正在启用 WPS 表格加载项';
-      // Retire the JS add-in entry (from this or any earlier version): it cannot
-      // run in WPS (no Node), and left in place it would put a second, dead
-      // DeepExcel tab next to the COM one.
-      UpdateWpsManifest('Uninstall');
+      // Remove the JS add-in an earlier version left behind (publish.xml entry
+      // and jsaddons folders): it cannot run in WPS, and left in place it would
+      // put a second, dead DeepExcel tab next to the COM one. Cleanup only, so
+      // it does not decide the install: a publish.xml some other add-in broke
+      // is unreadable to WPS anyway, and must not fail DeepExcel's install.
+      try
+        RetireWpsJsAddIn();
+      except
+        Log('Could not remove the old WPS JS add-in: ' + GetExceptionMessage());
+      end;
       // A WPS-only machine fails Excel activation by definition, and the except
       // branch above then unregistered the COM classes. WPS needs them.
       if ExcelNotActivated then
@@ -907,7 +927,13 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     UninstallProgressForm.StatusLabel.Caption := '正在移除 WPS 表格加载项';
-    UpdateWpsManifest('Uninstall');
+    // Leftovers of the old JS add-in only. A publish.xml that some other add-in
+    // broke must not stop DeepExcel itself from being uninstalled.
+    try
+      RetireWpsJsAddIn();
+    except
+      Log('Could not remove the old WPS JS add-in: ' + GetExceptionMessage());
+    end;
     UnregisterWpsComAddIn('{#MainProgId}');
     UnregisterDeepExcel();
   end;

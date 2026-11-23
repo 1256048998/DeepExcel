@@ -143,8 +143,8 @@ def main():
           and "SnapshotPreviousExcelRegistration" in iss)
     # WPS activation used to be the last statement of the Excel try block, with
     # a revert if a later step failed. It is now its own try block, so:
-    #   * an Excel-side failure no longer skips it -- the WPS add-in is plain JS
-    #     and needs nothing from Excel, but it was unreachable on any machine
+    #   * an Excel-side failure no longer skips it -- WPS needs only the COM
+    #     classes and its own HKCU entry, but it was unreachable on any machine
     #     where the Excel half failed (reported from the field, WPS installed
     #     but unusable), and on machines with no Excel at all;
     #   * nothing runs after it, so there is no "later step" left to revert for.
@@ -158,21 +158,40 @@ def main():
           is not None)
 
     # ---- WPS runs the Excel COM add-in (2026-11-23, real WPS 12.1) ----------
-    # The JS add-in cannot run in WPS (no Node in its add-in host); the COM
-    # add-in does. Install registers COM for WPS and retires the JS entry, so a
-    # second, dead DeepExcel tab never appears next to the working one.
+    # The old JS add-in cannot run in WPS (no Node in its add-in host); the COM
+    # add-in does. Install registers COM for WPS and removes whatever an earlier
+    # version left of the JS add-in, so a second, dead DeepExcel tab never
+    # appears next to the working one.
     check("install registers the COM add-in for WPS",
           "'Software\\Kingsoft\\Office\\ET\\AddIns\\' + progId" in iss
           and "RegWriteDWordValue(HKCU, addinKey, 'LoadBehavior', 3)" in iss)
     check("the WPS whitelist entry is a value, not a subkey",
           "RegWriteStringValue(HKCU, 'Software\\Kingsoft\\Office\\ET\\AddinsWL', progId, '')" in iss,
-          "AddinsWL lists ProgIDs as values (FFCell is listed that way); a subkey is ignored")
+          "AddinsWL lists ProgIDs as values; a subkey is ignored")
     check("install clears DeepExcel from WPS's disabled list",
           "RegDeleteValue(HKCU, 'Software\\Kingsoft\\Office\\ET\\AddinsCL', progId)" in iss)
-    check("install no longer registers the JS add-in",
-          "UpdateWpsManifest('Install')" not in iss
-          and re.search(r"UpdateWpsManifest\('Uninstall'\);\s*if ExcelNotActivated then", iss) is not None,
+    check("install ships no WPS JS add-in",
+          "jsaddons\\DeepExcel_{#AppVersion}" not in iss and "{#PayloadDir}Wps" not in iss,
+          "the JS add-in is retired; WPS loads the COM add-in")
+    check("install retires the old JS add-in before registering COM for WPS",
+          re.search(r"try\s*RetireWpsJsAddIn\(\);\s*except.*?end;\s*if ExcelNotActivated then",
+                    iss, re.S) is not None,
           "a JS entry in publish.xml gives WPS a second, dead DeepExcel tab")
+    check("a broken publish.xml does not fail the install",
+          re.search(r"try\s*RetireWpsJsAddIn\(\);\s*except\s*Log\(", iss) is not None,
+          "the cleanup is not what decides whether DeepExcel installed")
+    check("retiring removes the publish.xml entry before the folders",
+          re.search(r"procedure RetireWpsJsAddIn\(\);.*?RemoveWpsJsAddInEntry\(addinRoot\);"
+                    r"\s*RemoveWpsJsAddInFolders\(addinRoot\);", iss, re.S) is not None,
+          "the other order can leave an entry pointing at a deleted folder")
+    check("retiring never creates a publish.xml",
+          "ForceDirectories" not in iss[iss.find("procedure RemoveWpsJsAddInEntry"):iss.find("procedure RetireWpsJsAddIn")]
+          and "loadXML" not in iss,
+          "a machine that never had the JS add-in must be left alone")
+    check("retiring removes only DeepExcel's own manifest nodes",
+          "selectNodes('*[@name=\"DeepExcel\"]')" in iss)
+    check("uninstall also retires the old JS add-in, and survives a broken manifest",
+          re.search(r"usUninstall then.*?try\s*RetireWpsJsAddIn\(\);\s*except", iss, re.S) is not None)
     check("a WPS-only machine keeps the COM classes WPS needs",
           re.search(r"if ExcelNotActivated then\s*begin\s*RegisterComClass\('\{#MainClsid\}'", iss) is not None)
     check("uninstall removes the WPS COM registration",
@@ -270,25 +289,32 @@ def main():
           "$pauseArg" in logon,
           "a flag missing from the LogonCommand is accepted and ignored")
 
-    # ---- the WPS prompt asks about something still unknown ----------------
-    # enable="enable_dev" was the prime suspect for months and is now ruled out
-    # twice over (Kingsoft's own wpsjs build.js emits it for end-user packages,
-    # and a sandbox run saw the ribbon tab appear). Leaving the old prompt in
-    # place would send whoever runs this next to re-answer a settled question
-    # instead of looking at the callbacks, which is where the real bug was.
-    check("the WPS prompt no longer treats enable_dev as open",
-          "is NOT under suspicion" in sandbox,
-          "the prompt should point at the callbacks, not at enable_dev")
-    check("the WPS prompt asks whether the buttons do anything",
+    # ---- the sandbox checks WPS the way WPS now loads DeepExcel ------------
+    # WPS loads the COM add-in. A sandbox run that still asserted on a jsaddons
+    # payload would fail on a correct install, and one that instrumented main.js
+    # would be measuring something that no longer ships.
+    check("sandbox checks the WPS COM registration",
+          "AddIns\\DeepExcel.AddIn" in sandbox and "AddinsWL" in sandbox)
+    check("sandbox checks no old JS add-in is left",
+          "no DeepExcel entry in WPS publish.xml" in sandbox
+          and "no old WPS JS add-in folder" in sandbox)
+    check("sandbox no longer looks for the JS add-in payload",
+          "main.js" not in sandbox and "ComWps" not in sandbox)
+    check("the WPS prompt asks whether the panel opens",
           "Open panel" in sandbox,
-          "a ribbon tab renders from ribbon.xml with no JS, so a tab proves nothing")
+          "a ribbon tab alone does not prove the pane and sidecar work")
 
     # ---- balanced Pascal blocks (cheap syntax smoke test) -----------------
+    # Every `end` closes a begin, a try or a case. Counting only `end;` against
+    # `begin` was off by one per `end else` and per try block, and balanced only
+    # by coincidence. String literals are blanked first so a message containing
+    # the word cannot count.
     code = iss[iss.index("[Code]"):] if "[Code]" in iss else ""
-    begins = len(re.findall(r"\bbegin\b", code))
-    ends = len(re.findall(r"\bend[;.]", code))
-    check("begin/end are balanced in [Code]", begins == ends,
-          f"begin={begins} end={ends} -- not proof of correctness, only of gross imbalance")
+    code = re.sub(r"'[^'\n]*'", "''", code)
+    openers = len(re.findall(r"\b(?:begin|try|case)\b", code))
+    ends = len(re.findall(r"\bend\b", code))
+    check("begin/try/case and end are balanced in [Code]", openers == ends,
+          f"openers={openers} end={ends} -- not proof of correctness, only of gross imbalance")
 
     print()
     if FAILURES:
