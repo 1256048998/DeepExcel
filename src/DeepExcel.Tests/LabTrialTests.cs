@@ -359,6 +359,26 @@ namespace DeepExcel.Tests
         }
 
         [ExcelFact]
+        public void Code_with_a_message_box_is_refused_in_the_copy_before_it_can_block()
+        {
+            // Nobody can click a dialog in the hidden copy. The executor's
+            // static check refuses MsgBox code outright, quickly, and the copy
+            // is left untouched.
+            UserBook(out var copy);
+            var clock = Stopwatch.StartNew();
+
+            var trial = LabRunner.RunAsync(Request(copy,
+                "Sub T()\r\n  If MsgBox(\"覆盖 C 列吗？\", vbYesNo) = vbYes Then Range(\"C1\").Value = \"是\"\r\nEnd Sub",
+                TimeSpan.FromSeconds(30))).Result;
+
+            Assert.False(trial.TimedOut);
+            Assert.False(trial.Success);
+            Assert.Contains("MsgBox", trial.Error ?? "");
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(25), clock.Elapsed.ToString());
+            Assert.Equal(0, trial.Diff?.AffectedCells ?? 0);
+        }
+
+        [ExcelFact]
         public void Endless_loop_is_killed_at_the_timeout()
         {
             UserBook(out var copy);
