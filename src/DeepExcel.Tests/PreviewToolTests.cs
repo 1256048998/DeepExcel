@@ -931,5 +931,83 @@ namespace DeepExcel.Tests
             Assert.True(preview.IsNoOp);
             Assert.Contains(preview.Warnings, w => w.Contains("找不到"));
         }
+
+        // ------------------------------------------------------------------
+        // fill_formula_down
+        // ------------------------------------------------------------------
+
+        [Theory]
+        [InlineData("=B2*C2", 1, "=B3*C3")]
+        [InlineData("=$B$2*C2", 3, "=$B$2*C5")]
+        [InlineData("=SUM(B$2:B2)", 1, "=SUM(B$2:B3)")]
+        [InlineData("=\"A1\"&B2", 1, "=\"A1\"&B3")]
+        [InlineData("='Q1 2026'!A1+Sheet2!$A1", 2, "='Q1 2026'!A3+Sheet2!$A3")]
+        [InlineData("=LOG10(A1)", 1, "=LOG10(A2)")]
+        [InlineData("=SUM(A:A)+SUM(2:2)", 1, "=SUM(A:A)+SUM(3:3)")]
+        [InlineData("=SUM($2:$2)", 1, "=SUM($2:$2)")]
+        [InlineData("=[@金额]*2", 1, "=[@金额]*2")]
+        public void Formula_references_shift_like_autofill(string formula, int rows, string expected)
+        {
+            Assert.Equal(expected, FormulaShift.ShiftRows(formula, rows));
+        }
+
+        [Fact]
+        public void Fill_formula_down_lists_each_filled_cell_with_its_shifted_formula()
+        {
+            var sheet = new GridSheet()
+                .Set("D2", 6.0, "=B2*C2")
+                .Set("D4", 99.0)
+                .Set("D5", 1.0, "=X5");
+            // row_count counts the source row too: D2:D5.
+            var preview = new PreviewBuilder(sheet).Build("fill_formula_down",
+                Args("from_address", "D2", "row_count", 4));
+
+            Assert.Equal(3, preview.AffectedCells);
+            Assert.Equal("=B3*C3", At(preview, "D3").After);
+            Assert.Equal(ChangeKind.Add, At(preview, "D3").Kind);
+            Assert.Equal("99", At(preview, "D4").Before);
+            Assert.Equal("=B5*C5", At(preview, "D5").After);
+            Assert.Null(At(preview, "D2"));
+        }
+
+        [Fact]
+        public void Fill_formula_down_from_a_numbered_label_cannot_promise_the_values()
+        {
+            // AutoFill turns "第1组" into a series; the cells it lands on are
+            // certain, the exact values are Excel's call.
+            var sheet = new GridSheet().Set("A1", "第1组");
+            var preview = new PreviewBuilder(sheet).Build("fill_formula_down",
+                Args("from_address", "A1", "row_count", 3));
+
+            Assert.Equal(2, preview.AffectedCells);
+            Assert.True(preview.RequiresConfirmation);
+            Assert.Contains(preview.Warnings, w => w.Contains("自动填充"));
+        }
+
+        [Fact]
+        public void Fill_formula_down_copies_plain_text_and_blanks()
+        {
+            var sheet = new GridSheet()
+                .Rows("A1", new object[] { "北京", null })
+                .Rows("A2", new object[] { "x", "y" });
+            var preview = new PreviewBuilder(sheet).Build("fill_formula_down",
+                Args("from_address", "A1:B1", "row_count", 2));
+
+            Assert.Equal("北京", At(preview, "A2").After);
+            // The blank source cell is copied too: B2 is cleared.
+            Assert.Equal(ChangeKind.Clear, At(preview, "B2").Kind);
+            Assert.False(preview.RequiresConfirmation);
+        }
+
+        [Fact]
+        public void Fill_formula_down_with_no_room_to_fill_changes_nothing()
+        {
+            var sheet = new GridSheet().Set("A1", 1.0, "=B1");
+            var preview = new PreviewBuilder(sheet).Build("fill_formula_down",
+                Args("from_address", "A1", "row_count", 1));
+
+            Assert.True(preview.IsNoOp);
+            Assert.Contains(preview.Warnings, w => w.Contains("row_count"));
+        }
     }
 }

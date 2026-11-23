@@ -564,6 +564,108 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// fill_formula_down: from_address AutoFilled down to row_count rows in
+        /// total, the source rows included (ToolDispatcher.ExecuteFillDown).
+        ///
+        /// Formulas are exact: each lands with its relative rows shifted, a
+        /// multi-row source repeating in step. Plain text, single numbers and
+        /// blanks are copied as they are. What AutoFill turns into a series --
+        /// "第1组", dates, several rows of numbers -- is Excel's call: those
+        /// cells are listed (which cells get overwritten is certain), the
+        /// values are not promised, and the preview interrupts.
+        /// </summary>
+        private ChangePreview BuildFillFormulaDown(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "from_address", "address");
+            var total = GetInt(args, "row_count");
+            if (target == null || total == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少源区域或行数");
+            }
+            var failed = ReadGrid(toolName, target, out var source);
+            if (failed != null) return failed;
+
+            var preview = new ChangePreview { ToolName = toolName };
+            var fillRows = total.Value - source.Rows;
+            if (fillRows < 1)
+            {
+                preview.Warnings.Add($"row_count（{total.Value}）不大于源区域的行数（{source.Rows}），执行会报错，不会改动任何格");
+                Finalize(preview);
+                return preview;
+            }
+            if ((long)fillRows * source.Cols > ExcelRangeReader.MaxCellsRead)
+            {
+                return ChangePreview.NotPreviewable(toolName,
+                    $"填充区域超过 {ExcelRangeReader.MaxCellsRead} 个单元格，无法逐格预览，已自动创建快照");
+            }
+
+            var block = new CellRect(source.Rect.Sheet, source.Rect.Row2 + 1, source.Rect.Col1,
+                source.Rect.Row1 + total.Value - 1, source.Rect.Col2);
+            var dest = _reader.Read(target.Sheet, LocalAddress(block));
+            if (dest.Count < fillRows * source.Cols) return Unreadable(toolName);
+
+            var series = new List<CellSnapshot>();
+            for (var r = 0; r < fillRows; r++)
+            {
+                var offset = source.Rows + r;
+                var from = offset % source.Rows;
+                for (var c = 0; c < source.Cols; c++)
+                {
+                    var origin = source[from, c];
+                    var cell = dest[r * source.Cols + c];
+                    string after;
+                    if (origin.HasFormula)
+                    {
+                        after = FormulaShift.ShiftRows(origin.Formula, offset - from);
+                    }
+                    else if (origin.IsEmpty)
+                    {
+                        after = "";
+                    }
+                    else if (CopiedAsIs(origin, source.Rows))
+                    {
+                        after = Describe(origin);
+                    }
+                    else
+                    {
+                        if (!series.Contains(origin)) series.Add(origin);
+                        after = "（Excel 自动填充序列）";
+                    }
+
+                    var before = Describe(cell);
+                    if (string.Equals(before, after, StringComparison.Ordinal)) continue;
+                    preview.Changes.Add(new CellChange
+                    {
+                        Address = cell.Address,
+                        Before = before,
+                        After = after,
+                        Kind = after.Length == 0 ? ChangeKind.Clear : cell.IsEmpty ? ChangeKind.Add : ChangeKind.Overwrite,
+                        OverwritesFormula = cell.HasFormula
+                    });
+                }
+            }
+            if (series.Count > 0)
+            {
+                preview.Warnings.Add($"源区域里的 {Examples(series)} 会按 Excel 自动填充规则延续（如递增序号、日期），填出的具体值以执行结果为准");
+                preview.RequiresConfirmation = true;
+            }
+            Finalize(preview);
+            return preview;
+        }
+
+        /// <summary>
+        /// Constants AutoFill copies unchanged: from a one-row source, a plain
+        /// number, a boolean, or text with no digit in it for Excel to count up.
+        /// </summary>
+        private static bool CopiedAsIs(CellSnapshot origin, int sourceRows)
+        {
+            if (sourceRows != 1 || origin.IsDate) return false;
+            var raw = RawValue(origin);
+            if (raw is double || raw is bool) return true;
+            return raw is string text && !text.Any(char.IsDigit);
+        }
+
+        /// <summary>
         /// Text that text_to_number converts at a cost the user would not
         /// guess from "turn text into numbers": codes with leading zeros, and
         /// long digit strings such as ID numbers. Both are irreversible once

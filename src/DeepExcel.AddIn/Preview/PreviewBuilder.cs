@@ -141,6 +141,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildUnmergeCells(toolName, args);
                     case "delete_sheet":
                         return BuildDeleteSheet(toolName, args);
+                    case "fill_formula_down":
+                        return BuildFillFormulaDown(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:
