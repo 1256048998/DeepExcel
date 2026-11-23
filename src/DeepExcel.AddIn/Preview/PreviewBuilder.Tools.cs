@@ -320,6 +320,41 @@ namespace DeepExcel.AddIn.Preview
         }
 
         /// <summary>
+        /// remove_duplicates: rows compared on every column of the range,
+        /// walked bottom up; a row already seen below is deleted
+        /// (DataCleaner.RemoveDuplicates). So the lowest copy is the one kept.
+        /// </summary>
+        private ChangePreview BuildRemoveDuplicates(string toolName, IDictionary<string, object> args)
+        {
+            var target = ResolveTarget(args, "range_address", "address", "range");
+            if (target == null)
+            {
+                return ChangePreview.NotPreviewable(toolName, "缺少目标区域");
+            }
+            var failed = ReadGrid(toolName, target, out var grid);
+            if (failed != null) return failed;
+
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var deleted = new List<int>();
+            for (var r = grid.Rows - 1; r >= 0; r--)
+            {
+                var key = CleaningRules.RowKey(Enumerable.Range(0, grid.Cols).Select(c => RawValue(grid[r, c])));
+                if (!seen.Add(key)) deleted.Add(grid.Rect.Row1 + r);
+            }
+            deleted.Reverse();
+
+            var preview = EntireRowsDeleted(toolName, target, grid, deleted);
+            if (deleted.Count > 0)
+            {
+                // Excel's own Remove Duplicates keeps the first copy; this keeps
+                // the last. When copies differ in other columns, that decides
+                // which version survives.
+                preview.Warnings.Insert(0, "重复的行保留最下面的一行，删除上面的（与 Excel 自带的「删除重复项」相反）");
+            }
+            return preview;
+        }
+
+        /// <summary>
         /// Rows the executor removes with EntireRow.Delete(). The whole row
         /// goes, not just the range's part of it, so anything in other columns
         /// of those rows is named: the user asked about a range and would not

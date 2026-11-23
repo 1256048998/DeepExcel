@@ -753,7 +753,7 @@ namespace DeepExcel.AddIn.Tools
 
         private string GetRowKey(Range range, int rowIndex, int colCount, int[] columns)
         {
-            var key = "";
+            var values = new List<object>();
             int startCol = range.Column;
             int startRow = range.Row;
             int row = startRow + rowIndex - 1;
@@ -763,7 +763,7 @@ namespace DeepExcel.AddIn.Tools
                 foreach (var col in columns)
                 {
                     var cell = (Range)range.Worksheet.Cells[row, startCol + col - 1];
-                    key += cell.Value2?.ToString() + "|";
+                    values.Add(cell.Value2);
                 }
             }
             else
@@ -771,11 +771,11 @@ namespace DeepExcel.AddIn.Tools
                 for (int c = 0; c < colCount; c++)
                 {
                     var cell = (Range)range.Worksheet.Cells[row, startCol + c];
-                    key += cell.Value2?.ToString() + "|";
+                    values.Add(cell.Value2);
                 }
             }
 
-            return key;
+            return CleaningRules.RowKey(values);
         }
 
         private string ToProperCase(string s)

@@ -121,6 +121,20 @@ namespace DeepExcel.AddIn.Tools
             return value == null || string.IsNullOrWhiteSpace(value.ToString());
         }
 
+        /// <summary>
+        /// remove_duplicates' identity for a row: each value's ToString(),
+        /// "|"-terminated. Two all-blank rows are duplicates of each other.
+        /// </summary>
+        public static string RowKey(System.Collections.Generic.IEnumerable<object> values)
+        {
+            var key = new System.Text.StringBuilder();
+            foreach (var value in values)
+            {
+                key.Append(value?.ToString()).Append('|');
+            }
+            return key.ToString();
+        }
+
         public static bool IsSpecialChar(char c)
         {
             if (char.IsControl(c) && c != '\t' && c != '\n' && c != '\r') return true;

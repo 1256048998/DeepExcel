@@ -120,6 +120,8 @@ namespace DeepExcel.AddIn.Preview
                         return BuildSplitText(toolName, args);
                     case "delete_blank_rows":
                         return BuildDeleteBlankRows(toolName, args);
+                    case "remove_duplicates":
+                        return BuildRemoveDuplicates(toolName, args);
                     case "text_to_number":
                         return BuildPerCell(toolName, args, v => CleaningRules.TextToNumber(v), Stringify, NumbersThatLoseDigits);
                     default:

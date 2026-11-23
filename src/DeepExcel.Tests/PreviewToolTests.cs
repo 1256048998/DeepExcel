@@ -637,5 +637,37 @@ namespace DeepExcel.Tests
             var sheet = new GridSheet().Rows("A1", new object[] { "a" }, new object[] { "b" });
             Assert.True(new PreviewBuilder(sheet).Build("delete_blank_rows", Args("range_address", "A1:A2")).IsNoOp);
         }
+
+        // ------------------------------------------------------------------
+        // remove_duplicates
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public void Remove_duplicates_keeps_the_last_copy_like_the_executor()
+        {
+            // The executor walks bottom-up and deletes rows it has already
+            // seen, so the lowest copy survives -- the opposite of Excel's own
+            // Remove Duplicates, which is worth saying out loud.
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "姓名", "金额" },
+                new object[] { "张三", 5.0 },
+                new object[] { "李四", 6.0 },
+                new object[] { "张三", 5.0 },
+                new object[] { "张三", 7.0 });
+            var preview = new PreviewBuilder(sheet).Build("remove_duplicates", Args("range_address", "A1:B5"));
+
+            Assert.Equal(new[] { 2 }, preview.DeletedRows.ToArray());
+            Assert.Contains(preview.Warnings, w => w.Contains("最下面"));
+        }
+
+        [Fact]
+        public void Remove_duplicates_treats_repeated_blank_rows_as_duplicates()
+        {
+            var sheet = new GridSheet().Rows("A1",
+                new object[] { "a" }, new object[] { null }, new object[] { null }, new object[] { null });
+            var preview = new PreviewBuilder(sheet).Build("remove_duplicates", Args("range_address", "A1:A4"));
+
+            Assert.Equal(new[] { 2, 3 }, preview.DeletedRows.ToArray());
+        }
     }
 }
