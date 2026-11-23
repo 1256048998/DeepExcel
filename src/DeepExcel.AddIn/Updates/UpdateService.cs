@@ -24,6 +24,21 @@ namespace DeepExcel.AddIn.Updates
         Blocked,
     }
 
+    /// <summary>What <see cref="UpdateService.ApplyOnExit"/> decided.</summary>
+    public enum ExitApplyDecision
+    {
+        /// <summary>Nothing downloaded and verified, or updating is off.</summary>
+        NotReady,
+        /// <summary>The banner already started the updater this session.</summary>
+        AlreadyLaunched,
+        /// <summary>This version failed to install too often; the user installs it by hand.</summary>
+        Exhausted,
+        /// <summary>Another process still has DeepExcel loaded; it applies the update when it closes.</summary>
+        InUseElsewhere,
+        Launched,
+        LaunchFailed,
+    }
+
     /// <summary>
     /// One reportable moment in the update cycle.
     ///
@@ -59,9 +74,11 @@ namespace DeepExcel.AddIn.Updates
     /// That is also why nothing here is allowed to be noisy — a failed check
     /// must cost the user nothing and must never block startup.
     ///
-    /// Installing is deliberately not automatic. The installer needs Excel
-    /// closed, and closing an application with the user's unsaved work in it is
-    /// not a decision this code gets to make.
+    /// Installing never closes Excel. The installer needs Excel closed, and
+    /// closing an application with the user's unsaved work in it is not a
+    /// decision this code gets to make -- so a ready update installs either
+    /// when the user clicks "restart and install", or when they close Excel
+    /// themselves (<see cref="ApplyOnExit"/>).
     /// </summary>
     public sealed class UpdateService
     {
@@ -76,6 +93,9 @@ namespace DeepExcel.AddIn.Updates
         private readonly UpdateJournal _journal;
         private readonly Action<UpdateEvent> _telemetry;
         private readonly object _gate = new object();
+
+        /// <summary>The updater has been started once this session; never twice.</summary>
+        private volatile bool _launched;
 
         public UpdateService(
             UpdateOptions options = null,
@@ -468,6 +488,11 @@ namespace DeepExcel.AddIn.Updates
         /// </summary>
         public bool LaunchInstaller(out string error)
         {
+            return LaunchInstaller(out error, userInitiated: true);
+        }
+
+        private bool LaunchInstaller(out string error, bool userInitiated)
+        {
             error = null;
             StagedUpdate staged;
             lock (_gate)
@@ -506,38 +531,16 @@ namespace DeepExcel.AddIn.Updates
                 string runner = Path.Combine(staged.Directory, UpdateStage.UpdaterFileName);
                 File.Copy(source, runner, overwrite: true);
 
-                var arguments = new System.Text.StringBuilder();
-                arguments.Append("--stage \"").Append(staged.Directory).Append("\"");
-                arguments.Append(" --installed-version ").Append(InstalledVersion);
-                arguments.Append(" --channel ").Append(Options.Channel);
-                arguments.Append(" --wait-pid ").Append(
-                    Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
-                // Fifteen minutes, not the three-minute default. Closing Excel
-                // means answering a save prompt per dirty workbook, and a user
-                // who steps away mid-prompt should not come back to an update
-                // that quietly gave up and left no sign it was ever running.
-                arguments.Append(" --wait-seconds ").Append(
-                    UserInitiatedWaitSeconds.ToString(CultureInfo.InvariantCulture));
-                // The user just asked for this and is waiting, so a failure is
-                // worth a dialog. Nothing else passes this flag: an updater that
-                // can pop a modal box unprompted would interrupt people at
-                // random for reasons they cannot place.
-                arguments.Append(" --notify");
-
-                string host = TryGetHostExecutable();
-                if (host != null)
-                {
-                    arguments.Append(" --relaunch \"").Append(host).Append("\"");
-                }
-
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = runner,
-                    Arguments = arguments.ToString(),
+                    Arguments = BuildUpdaterArguments(
+                        staged, userInitiated, userInitiated ? TryGetHostExecutable() : null),
                     WorkingDirectory = staged.Directory,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                 });
+                _launched = true;
 
                 // Counted here, not when the updater reports back — by then this
                 // process is gone. An installer killed by antivirus, a crash, a
@@ -547,9 +550,10 @@ namespace DeepExcel.AddIn.Updates
                 Logger.Instance.Info(
                     LogCategory,
                     string.Format(CultureInfo.InvariantCulture,
-                        "已启动更新程序（第 {0} 次尝试），等待 Excel 退出",
-                        _journal.AttemptsFor(staged.Release.Version)));
-                Emit("launch", "started", null, InstalledVersion, staged.Release.Version, 0);
+                        "已启动更新程序（第 {0} 次尝试{1}），等待 Excel 退出",
+                        _journal.AttemptsFor(staged.Release.Version), userInitiated ? "" : "，退出时自动安装"));
+                Emit("launch", "started", userInitiated ? null : "on_exit",
+                     InstalledVersion, staged.Release.Version, 0);
                 return true;
             }
             catch (Exception ex)
@@ -558,6 +562,103 @@ namespace DeepExcel.AddIn.Updates
                 Logger.Instance.Error(LogCategory, error, ex);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// Called as Excel shuts down: install a ready update now, silently.
+        ///
+        /// Closing Excel is the one moment the installer's precondition is met
+        /// without asking anyone for anything, so a user who never clicks the
+        /// banner still gets the update. Everything about this path is quiet: no
+        /// dialog on failure and no relaunched Excel -- the user just closed it
+        /// on purpose. It steps aside when another process still has DeepExcel
+        /// loaded (a second Excel window), because the updater would only find
+        /// that process and give up, burning one of the version's attempts; the
+        /// last one to close applies the update instead.
+        /// </summary>
+        public ExitApplyDecision ApplyOnExit()
+        {
+            try
+            {
+                StagedUpdate staged;
+                lock (_gate)
+                {
+                    staged = Staged;
+                }
+                if (!IsUsable || Status != UpdateStatus.Ready || staged == null)
+                {
+                    return ExitApplyDecision.NotReady;
+                }
+                if (_launched)
+                {
+                    return ExitApplyDecision.AlreadyLaunched;
+                }
+                if (_journal.IsExhausted(staged.Release.Version))
+                {
+                    return ExitApplyDecision.Exhausted;
+                }
+
+                int self = Process.GetCurrentProcess().Id;
+                foreach (LeaseHolder holder in UpdateLease.FindHolders(_stageRoot))
+                {
+                    if (holder.ProcessId != self)
+                    {
+                        Logger.Instance.Info(
+                            LogCategory,
+                            "另一个进程（" + holder.ProcessId.ToString(CultureInfo.InvariantCulture) +
+                            "）仍加载着 DeepExcel，更新留给它退出时安装");
+                        return ExitApplyDecision.InUseElsewhere;
+                    }
+                }
+
+                return LaunchInstaller(out _, userInitiated: false)
+                    ? ExitApplyDecision.Launched
+                    : ExitApplyDecision.LaunchFailed;
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning(LogCategory, "退出时安装更新失败：" + ex.Message);
+                return ExitApplyDecision.LaunchFailed;
+            }
+        }
+
+        /// <summary>
+        /// The updater's command line. The two paths differ only in what the
+        /// user is told: the clicked path may show a failure and reopens Excel;
+        /// the exit path does neither.
+        /// </summary>
+        internal string BuildUpdaterArguments(StagedUpdate staged, bool userInitiated, string hostExecutable)
+        {
+            var arguments = new System.Text.StringBuilder();
+            arguments.Append("--stage \"").Append(staged.Directory).Append("\"");
+            arguments.Append(" --installed-version ").Append(InstalledVersion);
+            arguments.Append(" --channel ").Append(Options.Channel);
+            arguments.Append(" --wait-pid ").Append(
+                Process.GetCurrentProcess().Id.ToString(CultureInfo.InvariantCulture));
+            // Fifteen minutes, not the three-minute default. Closing Excel
+            // means answering a save prompt per dirty workbook, and a user
+            // who steps away mid-prompt should not come back to an update
+            // that quietly gave up and left no sign it was ever running.
+            arguments.Append(" --wait-seconds ").Append(
+                UserInitiatedWaitSeconds.ToString(CultureInfo.InvariantCulture));
+            if (userInitiated)
+            {
+                // The user just asked for this and is waiting, so a failure is
+                // worth a dialog. Nothing else passes this flag: an updater that
+                // can pop a modal box unprompted would interrupt people at
+                // random for reasons they cannot place.
+                arguments.Append(" --notify");
+                if (hostExecutable != null)
+                {
+                    arguments.Append(" --relaunch \"").Append(hostExecutable).Append("\"");
+                }
+            }
+            return arguments.ToString();
+        }
+
+        internal void MarkLaunchedForTest()
+        {
+            _launched = true;
         }
 
         private static string TryGetHostExecutable()

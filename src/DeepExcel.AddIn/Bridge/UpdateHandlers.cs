@@ -186,6 +186,37 @@ namespace DeepExcel.AddIn.Bridge
             }
         }
 
+        /// <summary>
+        /// Excel is closing: install a ready update now, without asking.
+        ///
+        /// Called from OnBeginShutdown. Does nothing unless a verified update is
+        /// already staged; never throws, and never delays the shutdown by more
+        /// than copying one small executable and starting it.
+        /// </summary>
+        public void ApplyStagedUpdateOnExit()
+        {
+            try
+            {
+                UpdateService service;
+                lock (_updateGate)
+                {
+                    // Never created means never checked, so nothing is staged.
+                    service = _updateService;
+                }
+                StopUpdateTimer();
+                if (service == null)
+                {
+                    return;
+                }
+                ExitApplyDecision decision = service.ApplyOnExit();
+                Logger.Instance.Info("Update", "退出时安装更新：" + decision);
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Warning("Update", "退出时安装更新异常：" + ex.Message);
+            }
+        }
+
         private void StopUpdateTimer()
         {
             lock (_updateGate)

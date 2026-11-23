@@ -676,6 +676,8 @@ namespace DeepExcel.AddIn
         public void OnBeginShutdown(ref Array custom)
         {
             Log("OnBeginShutdown called");
+            // 已下载验签的更新：Excel 正在关，正好静默安装（不弹窗、不重开 Excel）
+            try { _bridge?.ApplyStagedUpdateOnExit(); } catch (Exception ex) { Log("ApplyStagedUpdateOnExit failed: " + ex.Message); }
             // ★ C-2 修复：关闭时恢复 AccessVBOM 原始值，避免全局降级 Office 安全策略
             try { RestoreVbaSecurity(); } catch (Exception ex) { Log("RestoreVbaSecurity in OnBeginShutdown failed: " + ex.Message); }
         }
