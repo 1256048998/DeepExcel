@@ -26,7 +26,7 @@ namespace DeepExcel.AddIn.Executor
     /// <summary>
     /// VBA 执行期间的弹窗兜底。_app.Run 在 Excel 的 UI 线程上同步跑，这时弹出的对话框没人能点
     /// （任务窗格也被一起卡住），Excel 就一直挂着。这里起一个后台线程，只看目标进程在守护开始
-    /// 之后新出现的 #32770 对话框：
+    /// 之后新出现的 #32770 对话框（以及 Office 自己的 NUIDialog，只能关闭，见下）：
     ///
     /// - 询问类只点「否 / 取消 / 中止」，绝不点「是 / 重试 / 忽略」——宁可让代码少做一步，
     ///   也不替用户同意覆盖、删除之类的事
@@ -38,6 +38,15 @@ namespace DeepExcel.AddIn.Executor
     public sealed class DialogGuard : IDisposable
     {
         private const string DialogClass = "#32770";
+
+        /// <summary>
+        /// Office 新式对话框（Excel 自己的提示，如 ALERT、删除工作表确认）。它的按钮不是 Win32
+        /// 子窗口，读不到也点不了，只能发 WM_CLOSE——效果等同按 Esc / 取消，正合「宁可少做一步」。
+        /// 2026-11-23 真 Excel 实测：只认 #32770 时这类弹窗一直挂着，等它的调用永不返回。
+        /// </summary>
+        private const string OfficeDialogClass = "NUIDialog";
+
+        private readonly HashSet<IntPtr> _officePending = new HashSet<IntPtr>();
         private const int WM_COMMAND = 0x0111;
         private const int WM_CLOSE = 0x0010;
         private const int BN_CLICKED = 0;
@@ -109,6 +118,17 @@ namespace DeepExcel.AddIn.Executor
             foreach (var hwnd in DialogsOf(_processId))
             {
                 if (_seen.Contains(hwnd)) continue;
+                if (ClassOf(hwnd) == OfficeDialogClass)
+                {
+                    // 第一次看到先等一轮，让它画完；下一轮还在就关掉
+                    if (_officePending.Add(hwnd)) continue;
+                    _seen.Add(hwnd);
+                    var office = new HandledDialog { Title = WindowText(hwnd), Text = "", Clicked = "关闭（相当于取消）" };
+                    lock (_lock) _handled.Add(office);
+                    Logger.Instance.Warning("DialogGuard", "Closing Office dialog: " + office);
+                    PostMessage(hwnd, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+                    continue;
+                }
                 // 刚创建的对话框按钮可能还没建好，等它可见、有子窗口再处理
                 var buttons = Buttons(hwnd);
                 if (buttons.Count == 0) continue;
@@ -146,7 +166,11 @@ namespace DeepExcel.AddIn.Executor
             EnumWindows((hwnd, _) =>
             {
                 GetWindowThreadProcessId(hwnd, out var pid);
-                if (pid == processId && IsWindowVisible(hwnd) && ClassOf(hwnd) == DialogClass) found.Add(hwnd);
+                if (pid == processId && IsWindowVisible(hwnd))
+                {
+                    var cls = ClassOf(hwnd);
+                    if (cls == DialogClass || cls == OfficeDialogClass) found.Add(hwnd);
+                }
                 return true;
             }, IntPtr.Zero);
             return found;
