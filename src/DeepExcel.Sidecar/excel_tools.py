@@ -229,8 +229,7 @@ async def explore_workbook(args):
     if not explorer.configured():
         return _wrap_result({"success": False, "error": "子 agent 还没配置好（会话尚未初始化）",
                              "suggestion": "直接用 list / find / inspect_sheet 自己查"})
-    host = explorer._config.get("host", "excel")
-    tools = [t for t in register_all_tools(host) if t.name in explorer.EXPLORER_TOOLS]
+    tools = [t for t in register_all_tools() if t.name in explorer.EXPLORER_TOOLS]
 
     async def publish(text: str):
         ui_events.PROGRESS.set(text)
@@ -596,15 +595,6 @@ async def create_pivot_table(args):
 @tool("execute_vba", "执行 VBA 代码（Sub DeepExcel_TempMacro）", {"code": str})
 async def execute_vba(args):
     result = await call_csharp("execute_vba", {"code": args["code"]})
-    return _wrap_result(result)
-
-
-@tool("execute_jsa", "执行 WPS JSA 代码（ES6 语法，对象模型与 VBA 一致：Application/Workbook/Worksheet/Range）", {"code": str})
-async def execute_jsa(args):
-    """★ WPS 端专用：当宿主是 WPS 表格时，用此工具替代 execute_vba。
-    JSA 语法为 ES6（let/const/箭头函数），对象模型与 VBA 完全一致。
-    Excel 端不支持此工具，会返回错误。"""
-    result = await call_csharp("execute_jsa", {"code": args["code"]})
     return _wrap_result(result)
 
 
@@ -997,54 +987,8 @@ async def send_keys(args):
     return _wrap_result(result)
 
 
-# 只在某个宿主实现的工具。另一个宿主注册它，模型调用就必然拿到"未知工具"。
-_HOST_ONLY_TOOLS = {
-    "execute_jsa": "wps",
-}
-
-# 旧 WPS JS 加载项的工具分发实际实现的工具（它只实现了 Excel 的一小半），WPS 会话
-# 只注册这里列出的工具。
-#
-# 已无入口：DEEPEXCEL_HOST=wps 只有那个 JS 加载项会设，而它已删除——WPS 现在加载
-# 和 Excel 同一个 COM 加载项，sidecar 按 excel 宿主启动，拿到完整工具集。这一套
-# （连同 execute_jsa）待整体清理。
-WPS_HOST_TOOLS = frozenset({
-    "read_range", "find", "list", "write_formula", "write_value", "write_range",
-    "read_workbook", "read_selection", "sort_data", "filter_data",
-    "merge_cells", "unmerge_cells", "add_sheet", "delete_sheet", "rename_sheet",
-    "set_number_format", "set_column_width", "freeze_panes", "fill_formula_down",
-    "copy_range", "clear_range", "insert_rows", "delete_rows", "insert_columns",
-    "delete_columns", "set_cell_style", "write_table", "execute_jsa",
-})
-
-# 不经过宿主工具分支的工具：走独立消息通道（clarify），两个宿主都能用
-SIDECAR_CHANNEL_TOOLS = frozenset({"clarify_intent", "todo_write", "update_workbook_notes", "load_skill",
-                                   "present_plan"})
-
-# 宿主原语：宿主分发器里有这个分支，但不注册给模型，只由侧车工具调用
-WPS_HOST_PRIMITIVES = frozenset({"sheet_snapshot"})
-
-# 在侧车里计算、只依赖宿主原语的工具 → 它需要的原语
-SIDECAR_COMPUTED_TOOLS = {"inspect_sheet": "sheet_snapshot"}
-
-# 在侧车里起子会话、只用只读工具的工具：两个宿主都能用（子会话的工具再按宿主过滤）
-SIDECAR_SESSION_TOOLS = frozenset({"explore_workbook"})
-
-
-def host_supports_tool(host: str, name: str) -> bool:
-    if _HOST_ONLY_TOOLS.get(name, host) != host:
-        return False
-    if name in SIDECAR_SESSION_TOOLS:
-        return True
-    if host == "wps":
-        if name in SIDECAR_COMPUTED_TOOLS:
-            return SIDECAR_COMPUTED_TOOLS[name] in WPS_HOST_PRIMITIVES
-        return name in WPS_HOST_TOOLS or name in SIDECAR_CHANNEL_TOOLS
-    return True
-
-
-def register_all_tools(host: str = "excel") -> list:
-    """返回当前宿主可用的 @tool 工具对象列表。
+def register_all_tools() -> list:
+    """返回全部 @tool 工具对象列表。
 
     这份列表同时决定 MCP 注册和 allowed_tools，是工具清单的唯一来源；
     system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
@@ -1062,7 +1006,7 @@ def register_all_tools(host: str = "excel") -> list:
         create_pivot_table,
         refresh_pivot, group_pivot_date,
         set_pivot_value_display, set_pivot_totals, add_pivot_slicer,
-        execute_vba, execute_jsa, execute_python,
+        execute_vba, execute_python,
         create_snapshot, rollback,
         add_sheet, delete_sheet, rename_sheet,
         set_number_format, set_column_width,
@@ -1076,18 +1020,4 @@ def register_all_tools(host: str = "excel") -> list:
         # ★ Computer Use 工具
         screenshot_excel, send_keys,
     ]
-    return [t for t in tools if host_supports_tool(host, t.name)]
-
-
-def host_tool_note(host: str, registered: list) -> str:
-    """系统提示词里的 <available-tools> 是按 Excel 写的全集。WPS 会话只注册了
-    WPS 真正能执行的那部分，这里补一段说明，免得模型按提示词去找不存在的工具。"""
-    if host != "wps":
-        return ""
-    return (
-        "\n\n<host-tools>\n当前宿主是 WPS 表格。本会话只提供以下工具，"
-        "提示词其他地方提到、但不在此列的工具在 WPS 下不可用，不要尝试调用；"
-        "需要时改用 execute_jsa 或告诉用户该功能请在 Excel 中完成：\n"
-        + ", ".join(sorted(registered))
-        + "\n</host-tools>"
-    )
+    return tools

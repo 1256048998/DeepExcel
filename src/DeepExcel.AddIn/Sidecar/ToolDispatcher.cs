@@ -182,7 +182,7 @@ namespace DeepExcel.AddIn.Sidecar
         /// </summary>
         internal static readonly HashSet<string> ForegroundOnlyTools = new HashSet<string>(StringComparer.Ordinal)
         {
-            "execute_vba", "execute_python", "execute_jsa", "send_keys",
+            "execute_vba", "execute_python", "send_keys",
             "read_selection", "screenshot_excel", "freeze_panes",
         };
 

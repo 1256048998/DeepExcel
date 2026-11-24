@@ -41,10 +41,10 @@ function findStep(messages: Message[], id: string): ToolStep | undefined {
   return undefined
 }
 
-const CODE_ARG: Record<string, string> = { execute_vba: 'code', execute_jsa: 'code', execute_python: 'code' }
+const CODE_ARG: Record<string, string> = { execute_vba: 'code', execute_python: 'code' }
 
 function generatingLabel(name: string, lines?: number, chars?: number): string {
-  const what = name === 'execute_vba' ? 'VBA' : name === 'execute_jsa' ? 'JS 宏'
+  const what = name === 'execute_vba' ? 'VBA'
     : name === 'execute_python' ? 'Python' : ''
   if (what) return `正在编写 ${what}${lines ? `（${lines} 行）` : ''}…`
   return `正在准备「${toolLabel(name)}」${chars ? `（${chars} 字）` : ''}…`

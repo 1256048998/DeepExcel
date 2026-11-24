@@ -33,7 +33,7 @@ def _fake_query(script):
 
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
-    explorer.configure({"ANTHROPIC_BASE_URL": "https://example.invalid"}, "fake-model", "excel")
+    explorer.configure({"ANTHROPIC_BASE_URL": "https://example.invalid"}, "fake-model")
     yield
     monkeypatch.setattr(explorer, "run_query", explorer._default_query)
 
@@ -172,7 +172,7 @@ def test_fresh_progress_replaces_the_stuck_warning():
 
 def test_subagents_get_only_read_only_tools_and_the_same_endpoint():
     from excel_tools import register_all_tools
-    tools = [t for t in register_all_tools("excel") if t.name in explorer.EXPLORER_TOOLS]
+    tools = [t for t in register_all_tools() if t.name in explorer.EXPLORER_TOOLS]
     assert sorted(t.name for t in tools) == sorted(explorer.EXPLORER_TOOLS)
     options = explorer._options(tools)
     assert options.tools == []

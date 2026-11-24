@@ -43,9 +43,9 @@ EXPLORER_PROMPT = """你是 DeepExcel 的摸底子 agent，替主 agent 查清�
 _config: dict = {}
 
 
-def configure(env: dict, model: str | None, host: str) -> None:
+def configure(env: dict, model: str | None) -> None:
     _config.clear()
-    _config.update({"env": dict(env or {}), "model": model, "host": host})
+    _config.update({"env": dict(env or {}), "model": model})
 
 
 def configured() -> bool:

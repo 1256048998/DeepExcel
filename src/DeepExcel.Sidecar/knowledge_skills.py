@@ -44,7 +44,7 @@ class Skill:
     files: list[str] = field(default_factory=list)
     # 这份知识讲的是哪些工具（frontmatter 的 tools:）；也用于遥测改写「用户实际遇到的报错」
     tools: list[str] = field(default_factory=list)
-    # 只适用于哪些宿主（frontmatter 的 hosts:），空表示都适用
+    # 只适用于哪些宿主（frontmatter 的 hosts:），空表示都适用；索引只列适用于 excel 的
     hosts: list[str] = field(default_factory=list)
 
 
@@ -100,13 +100,12 @@ def catalog() -> dict[str, Skill]:
     return skills
 
 
-def index_prompt(skills: dict[str, Skill] | None = None, host: str | None = None) -> str:
-    """host：只列适用于这个宿主的技能（frontmatter hosts: excel / wps；不写就是两边都适用）。
-    WPS 会话里不列 VBA 技能、Excel 会话里不列 JSA 技能，省得模型去读用不上的知识。
-    不按 tools: 过滤——WPS 没注册清洗工具，但中文数据清洗的知识照样用得上。"""
+def index_prompt(skills: dict[str, Skill] | None = None) -> str:
+    """Excel 和 WPS 加载的是同一个 COM 加载项，侧车只有 excel 一种宿主。
+    frontmatter 写了 hosts: 却不含 excel 的技能不列——服务端早先下发的知识包里
+    可能还缓存着只给已删除的 WPS 宿主模式用的技能，列出来模型会去调不存在的工具。"""
     skills = catalog() if skills is None else skills
-    if host is not None:
-        skills = {name: s for name, s in skills.items() if not s.hosts or host in s.hosts}
+    skills = {name: s for name, s in skills.items() if not s.hosts or "excel" in s.hosts}
     if not skills:
         return ""
     lines = [

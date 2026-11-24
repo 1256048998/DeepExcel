@@ -37,7 +37,7 @@ stdout 一行一个 JSON：
 |---|---|---|
 | `tool_start` | `id`, `name`, `args` | 模型发出一次工具调用。`id` 是 SDK 的 tool_use_id；`name` 不带 `mcp__excel__` 前缀；`args` 是显示用副本（长字符串截断到 4000 字，二维数组只留 `{__shape:[行,列], head:[前 3 行]}`） |
 | `tool_end` | `id`, `name`, `ok`, `duration_ms`, `summary?`, `error?`, `check?` | 与同 `id` 的 `tool_start` 配对。`summary` 是一句话结果（「20 行 × 4 列」）；`error` 是 `{code, message, hint?}`；`check` 是写后自动体检 `{ok, summary}`（新增公式错误、新增外部链接），面板只在 `ok: false` 时显示；`checkpoint_id` 是这一步执行前单独存的检查点，面板据此显示「回到这一步之前」（发 `rollback_snapshot`） |
-| `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_jsa / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
+| `tool_gen` | `id`, `name`, `chars`, `lines?`, `preview?` | 模型还在生成这次调用的参数（每 250ms 最多一次）。代码类工具（execute_vba / execute_python）带目前写到的代码 `preview`（最后 4000 字）；其他工具只报 `chars`。之后同一 `id` 的 `tool_start` 原地接替这一行 |
 | `thinking_start` | `id` | 模型开始一段思考（SDK 的 thinking 块）。块没有自己的 id，侧车按出现顺序编号 `th-1`、`th-2`… |
 | `thinking_delta` | `id`, `text` | 思考文字的增量，攒够 240 字或隔 200ms 才发一次。面板拼进同一张思考卡片，生成时展开 |
 | `thinking_end` | `id`, `chars`, `duration_ms` | 这段思考结束，面板收成「思考了 N 秒」。本轮 `stream_end` 时还没收到的，面板也一律收起 |
@@ -102,7 +102,6 @@ stdout 一行一个 JSON：
 - `permission_request.preview.trial`：`success`、`error`、`timed_out`、`duration_ms`、`errors_before` / `errors_after`（公式错误格数）、`note`（执行器提示，含自动点掉的弹窗）、`not_representative[]`（外部链接、数据连接、自带宏时事件被关、代码读路径 / 其他工作簿 / 时间随机数）、`stale`。`changes` 是副本前后的公式文本差异。没能试跑（副本起不来、csv 等格式）时没有 `trial`，`previewable=false`，`reason` 带上原因。
 - 用户之后改到的格和试跑改动的区域相交：宿主发 `permission_preview_stale {request_id, message}`，面板标出过期并给「重新试跑」，点了发 `rerun_trial {request_id}`；宿主重新存副本再跑，用同一个 `request_id` 再发一次 `permission_request`。
 - 允许后在真实工作簿上执行的是同一段代码（照常快照），副本从不拷回。超时 20 秒结束副本进程；副本进程按 PID + 创建时间登记在 `%LOCALAPPDATA%\DeepExcel\lab\processes.json`，主人进程不在了就在下次启动或试跑前回收。副本实例里插件保持被动（`ThisAddIn.IsAutomationInstance`：UserControl=false 且不可见），不建面板、不起侧车。
-- WPS 的 `execute_jsa` 没有副本试跑。
 
 ## 首次使用
 

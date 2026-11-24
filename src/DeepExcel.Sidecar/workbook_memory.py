@@ -62,7 +62,7 @@ def root_dir() -> Path:
 
 
 def key_hash(workbook_key: str) -> str:
-    """与 C# ConversationHistory.GetFileName / WPS conversation-store 一致：SHA256 前 16 字节小写 hex"""
+    """与 C# ConversationHistory.GetFileName 一致：SHA256 前 16 字节小写 hex"""
     return hashlib.sha256(str(workbook_key).encode("utf-8")).digest()[:16].hex()
 
 
@@ -189,7 +189,7 @@ _SHEET_ARGS = {
 _ACTIVE_SHEET_TOOLS = frozenset({"create_chart", "create_combo_chart"})
 # 只改视图、不改内容
 _VIEW_ONLY_TOOLS = frozenset({"freeze_panes"})
-_CODE_TOOLS = frozenset({"execute_vba", "execute_jsa"})
+_CODE_TOOLS = frozenset({"execute_vba"})
 
 
 def _write_targets(tool: str, args: dict, active_sheet: str | None) -> list[tuple[str | None, tuple | None, str]]:
@@ -443,8 +443,7 @@ def use_context(context: Any) -> WorkbookMemory | None:
     _active_sheet = None
     if isinstance(context, dict):
         workbook = context.get("workbook")
-        # Excel：workbook.activeSheet；WPS：activeSheet
-        sheet = workbook.get("activeSheet") if isinstance(workbook, dict) else context.get("activeSheet")
+        sheet = workbook.get("activeSheet") if isinstance(workbook, dict) else None
         _active_sheet = sheet if isinstance(sheet, str) and sheet else None
     key = context.get("workbookKey") if isinstance(context, dict) else None
     if not is_persistent_key(key):

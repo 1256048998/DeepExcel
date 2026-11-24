@@ -62,7 +62,7 @@ SYSTEM_PROMPT = """<system-intro>
 结构操作：add_sheet / delete_sheet / rename_sheet / copy_range / clear_range / insert_rows / delete_rows / insert_columns / delete_columns / freeze_panes
 图表：create_chart / create_combo_chart / add_data_labels / set_chart_title / set_chart_colors / export_chart
 透视表：create_pivot_table / refresh_pivot / group_pivot_date / set_pivot_value_display / set_pivot_totals / add_pivot_slicer
-代码执行：execute_vba / execute_jsa（仅 WPS）/ execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
+代码执行：execute_vba / execute_python（会弹安全确认窗；execute_python 只能做纯计算，碰不到工作簿）
 快照：修改类工具执行前会自动备份（结果里的 backup_snapshot_id）；撤销用 rollback，create_snapshot 只在需要额外检查点时用
 Computer Use：screenshot_excel / send_keys（截图 Excel 界面 + 模拟键盘，用于操作对话框/快捷键/弹窗）
 其他：clarify_intent / todo_write（三步以上的任务先列计划，边做边更新状态）/ present_plan（提交变更方案等用户批准；「只出方案」模式下必须用它收尾）
@@ -500,14 +500,4 @@ send_keys：
 请经常参考以上规则和示例，确保操作准确。
 如果遇到复杂任务，请先规划再执行。
 </system-reminder>
-
-<wps-host-awareness>
-★ 宿主类型感知：工具返回的 context 字段包含 host_type 字段，值为 "excel" 或 "wps"。
-当 host_type == "wps" 时，当前宿主是 WPS 表格，请遵守以下规则：
-- 用 execute_jsa 工具执行宏代码（而非 execute_vba），JSA 语法为 ES6
-- JSA 对象模型与 VBA 一致（Application/Workbook/Worksheet/Range），但语法用 let/const/箭头函数
-- 不要调用 execute_vba（WPS 个人版无 VBA，会失败）
-- 其他工具（read_range/write_value/sort_data 等）行为与 Excel 端一致，可正常使用
-当 host_type == "excel" 或未指定时，使用 execute_vba，不要使用 execute_jsa（Excel 不支持）。
-</wps-host-awareness>
 """

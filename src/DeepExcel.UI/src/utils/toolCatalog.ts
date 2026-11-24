@@ -59,7 +59,6 @@ const SKILL_TITLES: Record<string, string> = {
   'sales-reporting': '销售报表',
   'ar-aging-reconciliation': '应收账龄与对账',
   'vba-writing-debugging': 'VBA 编写与调试',
-  'wps-jsa': 'WPS JSA 宏',
 }
 
 export const TOOL_LABELS: Record<string, Label> = {
@@ -118,7 +117,6 @@ export const TOOL_LABELS: Record<string, Label> = {
 
   // 代码
   execute_vba: a => `运行 VBA${codeLines(a.code)}`,
-  execute_jsa: a => `运行 JS 宏${codeLines(a.code)}`,
   execute_python: a => `运行 Python 计算${codeLines(a.code)}`,
 
   // 快照

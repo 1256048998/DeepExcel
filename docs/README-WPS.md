@@ -66,9 +66,6 @@ COM 加载项是同一份代码，WPS 和 Excel 对象模型不一致的地方�
   开发机上的 stdole 来自 Office 装进 GAC 的那份。拿到一台这样的机器验证之前，不能宣称支持纯 WPS 机器。
 - **逐项工具。** 真机跑通的是面板、对话、读写、建表画图；透视表、快照回滚、VBA（WPS 个人版默认不带 VBA 环境）
   等还没有在 WPS 上逐个走过。
-- **侧车里的 WPS 宿主模式已经用不到。** `sidecar.py` / `excel_tools.py` 里按 `DEEPEXCEL_HOST=wps` 切换的那套
-  （`WPS_HOST_TOOLS` 工具子集、`execute_jsa`、`wps-jsa` 知识技能）只有旧 JS 加载项会打开。COM 加载项在 WPS 里
-  启动 sidecar 时不设这个变量，WPS 会话拿到的是和 Excel 一样的完整工具集。这部分代码待清理。
 
 ## 本地开发
 

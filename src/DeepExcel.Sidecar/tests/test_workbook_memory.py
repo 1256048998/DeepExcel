@@ -163,7 +163,6 @@ def test_inserting_rows_above_a_zone_counts_as_touching_it():
 
 def test_code_that_names_a_protected_sheet_is_refused():
     assert wm.check_write("execute_vba", {"code": 'Worksheets("汇总").Range("A1").Value = 1'}, ZONES, "其他")
-    assert wm.check_write("execute_jsa", {"code": "Application.Sheets.Item('汇总').Range('A1').Value2 = 1"}, ZONES, None)
     assert wm.check_write("execute_vba", {"code": "ActiveSheet.Range(\"A1\").Value = 1"}, ZONES, "汇总")
     assert wm.check_write("execute_vba", {"code": 'Worksheets("其他").Range("A1").Value = 1'}, ZONES, "明细") is None
 
@@ -174,11 +173,11 @@ def test_no_zones_means_no_checks_and_unknown_sheets_ask_for_a_name():
     assert refusal and "表名" in refusal
 
 
-def test_active_sheet_comes_from_either_host():
-    wm.use_context({"workbookKey": KEY, "workbook": {"activeSheet": "明细"}})   # Excel
+def test_active_sheet_comes_from_the_workbook_context():
+    wm.use_context({"workbookKey": KEY, "workbook": {"activeSheet": "明细"}})
     assert wm.active_sheet() == "明细"
-    wm.use_context({"workbookKey": KEY, "activeSheet": "汇总"})                  # WPS
-    assert wm.active_sheet() == "汇总"
+    wm.use_context({"workbookKey": KEY, "workbook": {}})
+    assert wm.active_sheet() is None
 
 
 def test_the_hook_denies_protected_writes(tmp_path):

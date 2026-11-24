@@ -142,7 +142,7 @@ async def test_present_plan_emits_a_plan_proposal_event(monkeypatch):
         sent.append(msg)
 
     monkeypatch.setattr(ipc_module, "write_message", fake_write)
-    tool = next(t for t in register_all_tools("wps") if t.name == "present_plan")
+    tool = next(t for t in register_all_tools() if t.name == "present_plan")
     out = await tool.handler({"summary": "整理花名册", "steps": [{"action": "统一日期", "target": "花名册!D:D"}]})
     payload = json.loads(out["content"][0]["text"])
     assert payload["success"] and "等待批准" in payload["data"]["message"]
@@ -152,6 +152,6 @@ async def test_present_plan_emits_a_plan_proposal_event(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_present_plan_refuses_an_empty_plan():
-    tool = next(t for t in register_all_tools("excel") if t.name == "present_plan")
+    tool = next(t for t in register_all_tools() if t.name == "present_plan")
     payload = json.loads((await tool.handler({"summary": "", "steps": []}))["content"][0]["text"])
     assert payload["success"] is False

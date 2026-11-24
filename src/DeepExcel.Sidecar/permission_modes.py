@@ -23,7 +23,7 @@ LABELS = {DEFAULT: "每步确认", ACCEPT_WRITES: "自动应用写入", PLAN: "�
 
 # 自动应用写入模式下仍然要逐次确认的：不可预演的代码、删除、清空、回滚
 ALWAYS_CONFIRM = frozenset({
-    "execute_vba", "execute_jsa", "execute_python", "send_keys",
+    "execute_vba", "execute_python", "send_keys",
     "delete_rows", "delete_columns", "delete_sheet", "delete_blank_rows",
     "clear_range", "rollback",
 })

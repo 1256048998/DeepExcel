@@ -19,7 +19,7 @@ kind:
     steer_delivered {count}                        任务中插话已交给模型
     steer_deferred  {count}                        本轮没来得及注入，作为下一条消息处理
 
-宿主（C# / WPS）原样转发，不解释内容；只有面板渲染它。
+宿主（C# 加载项）原样转发，不解释内容；只有面板渲染它。
 """
 
 from __future__ import annotations
@@ -333,7 +333,7 @@ def watchdog_status(idle_s: float, running_tool: tuple[str, float] | None,
 # 模型写一段 60 行的 VBA 或一张 500 行的表，参数要一个 token 一个 token 生成，
 # 可能要几十秒。以前这段时间面板什么都没有；现在从流式事件里取出正在生成的
 # 参数，边写边显示（Claude Code 写文件时也是这样）。
-CODE_FIELDS = {"execute_vba": "code", "execute_jsa": "code", "execute_python": "code"}
+CODE_FIELDS = {"execute_vba": "code", "execute_python": "code"}
 TOOL_GEN_INTERVAL = 0.25
 _CODE_PREVIEW_CHARS = 4000
 

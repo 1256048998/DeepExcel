@@ -52,7 +52,7 @@ export type ToolStep = {
   args?: Record<string, unknown>
   // generating：模型还在生成参数（代码边写边显示），尚未真正调用
   status: 'generating' | 'running' | 'ok' | 'error'
-  // 代码类工具（VBA / JS 宏 / Python）的代码；生成中是目前写到的部分
+  // 代码类工具（VBA / Python）的代码；生成中是目前写到的部分
   code?: string
   genChars?: number
   summary?: string

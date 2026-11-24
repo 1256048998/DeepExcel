@@ -52,9 +52,7 @@ for _stream_name in ('stdout', 'stderr', 'stdin'):
 
 import anyio
 import base64
-import json
 import os
-import re
 import threading
 import time
 from pathlib import Path
@@ -84,47 +82,11 @@ import workbook_memory
 import ui_events
 import sdk_compat
 sdk_compat.install()
-from excel_tools import host_tool_note, register_all_tools
+from excel_tools import register_all_tools
 from model_windows import apply_context_window
 from ipc import _message_buffer, read_message, route_message, write_message
 from ipc import _init_buffer, request_permission, take_steer_messages
 from system_prompt import SYSTEM_PROMPT
-
-
-def _load_wps_local_config():
-    """Load the current Excel configuration for the WPS host.
-
-    WPS starts the same per-user sidecar without the C# bridge that normally
-    sends a config message. API keys remain DPAPI-protected and are decrypted
-    only in memory for the current Windows user.
-    """
-    try:
-        appdata = os.environ.get("APPDATA", "")
-        config_path = os.path.join(appdata, "DeepExcel", "config.json")
-        with open(config_path, "r", encoding="utf-8") as stream:
-            config = json.load(stream)
-        provider = config.get("CurrentProvider") or config.get("currentProvider") or "anthropic"
-        if not re.fullmatch(r"[A-Za-z0-9_-]+", provider):
-            raise ValueError("invalid provider key")
-        providers = config.get("Providers") or config.get("providers") or {}
-        provider_config = providers.get(provider) or {}
-        model = config.get("CurrentModel") or config.get("currentModel") or provider_config.get("DefaultModel")
-        base_url = provider_config.get("BaseUrl") or provider_config.get("baseUrl") or "https://api.anthropic.com"
-
-        credential_path = os.path.join(appdata, "DeepExcel", "credentials", f"key_{provider}.crypt")
-        with open(credential_path, "r", encoding="utf-8") as stream:
-            protected = base64.b64decode(stream.read().strip(), validate=True)
-        import win32crypt
-        api_key = win32crypt.CryptUnprotectData(protected, None, None, None, 0)[1].decode("utf-8")
-        if not api_key:
-            raise ValueError("empty API key")
-        general = config.get("General") or config.get("general") or {}
-        max_turns = general.get("MaxTurns") or general.get("maxTurns")
-        return {"base_url": base_url, "model": model, "api_key": api_key, "max_turns": max_turns}
-    except Exception as exc:
-        sys.stderr.write(f"[sidecar] WPS local config unavailable: {type(exc).__name__}: {exc}\n")
-        sys.stderr.flush()
-        return None
 
 
 # 需要经过确认流程的工具。
@@ -135,7 +97,6 @@ def _load_wps_local_config():
 _HIGH_RISK_TOOLS = {
     # 任意代码：无法预演，只能快照 + 明确告知
     "execute_vba",
-    "execute_jsa",
     "execute_python",
     "send_keys",
     # 破坏性结构操作
@@ -159,7 +120,6 @@ _HIGH_RISK_TOOLS = {
 # 只有 VBA/Python 这类"我信任它能跑代码"的授权适合记住。
 _REMEMBERABLE_TOOLS = {
     "execute_vba",
-    "execute_jsa",
     "execute_python",
     "send_keys",
 }
@@ -916,7 +876,7 @@ async def _emit_tool_start(block) -> None:
     args = block.input if isinstance(block.input, dict) else {}
     _run.start(block.id, name)
     _tool_args[block.id] = args
-    # 旧消息：C# / WPS 用它记对话历史和任务轨迹
+    # 旧消息：C# 用它记对话历史和任务轨迹
     await write_message({"type": "tool_use", "tool": block.name, "args": args})
     await write_message(ui_events.envelope(
         "tool_start", id=block.id, name=name, args=ui_events.summarize_args(args)))
@@ -1303,21 +1263,19 @@ async def main():
         sys.stderr.write("[sidecar] stdin_reader_loop started, waiting for config...\n")
         sys.stderr.flush()
 
-        # Excel sends config over stdin. WPS has no C# bridge, so it reuses the
-        # same current-user config and DPAPI credential written by Excel.
-        cfg = _load_wps_local_config() if os.environ.get("DEEPEXCEL_HOST") == "wps" else None
-        if cfg is None and os.environ.get("DEEPEXCEL_HOST") != "wps":
-            try:
-                with anyio.fail_after(30.0):
-                    cfg = await _message_buffer["config"].get()
-                sys.stderr.write(
-                    f"[sidecar] config received: base_url={cfg.get('base_url')}, "
-                    f"model={cfg.get('model')}, mode={cfg.get('routing_mode', 'byok')}, "
-                    f"hasKey={bool(cfg.get('api_key'))}, hasToken={bool(cfg.get('auth_token'))}\n")
-                sys.stderr.flush()
-            except TimeoutError:
-                sys.stderr.write("[sidecar] WARNING: config timeout (30s), falling back to env vars\n")
-                sys.stderr.flush()
+        # C# 加载项（Excel 和 WPS 里是同一个）启动后经 stdin 发 config 消息
+        cfg = None
+        try:
+            with anyio.fail_after(30.0):
+                cfg = await _message_buffer["config"].get()
+            sys.stderr.write(
+                f"[sidecar] config received: base_url={cfg.get('base_url')}, "
+                f"model={cfg.get('model')}, mode={cfg.get('routing_mode', 'byok')}, "
+                f"hasKey={bool(cfg.get('api_key'))}, hasToken={bool(cfg.get('auth_token'))}\n")
+            sys.stderr.flush()
+        except TimeoutError:
+            sys.stderr.write("[sidecar] WARNING: config timeout (30s), falling back to env vars\n")
+            sys.stderr.flush()
 
         routing_mode = (cfg or {}).get("routing_mode", "byok")
         env_config, model = build_env_config(cfg, os.environ)
@@ -1362,15 +1320,13 @@ async def main():
         # 真正的优化在于扩展系统提示词长度，系统提示词占总 token 的比例越大，
         # KV Cache 命中率越高。当前 SYSTEM_PROMPT 约 1000 tokens，建议扩展到 5000+。
 
-        # 注册工具到 MCP server。按宿主注册：WPS 专用的 execute_jsa 不出现在 Excel 会话里
-        host = "wps" if os.environ.get("DEEPEXCEL_HOST") == "wps" else "excel"
-        host_tools = register_all_tools(host)
+        # 注册工具到 MCP server
+        all_tools = register_all_tools()
         # 分头摸底的子会话用同一个模型、同一个出口
-        explorer.configure(env_config, model, host)
-        server = create_sdk_mcp_server(name="excel", tools=host_tools)
-        system_prompt = SYSTEM_PROMPT + host_tool_note(host, [t.name for t in host_tools])
+        explorer.configure(env_config, model)
+        server = create_sdk_mcp_server(name="excel", tools=all_tools)
         # 知识技能索引放在末尾：正文不常驻，模型按需 load_skill
-        system_prompt += knowledge_skills.index_prompt(host=host)
+        system_prompt = SYSTEM_PROMPT + knowledge_skills.index_prompt()
 
         options = ClaudeAgentOptions(
             model=model,
@@ -1383,7 +1339,7 @@ async def main():
             mcp_servers={"excel": server},
             # 免确认名单从注册表生成，不再手写（手写版本曾漏掉 20 个工具）。
             # 真正的放行/确认由 PreToolUse 钩子决定，这里只是兜底。
-            allowed_tools=[f"mcp__excel__{t.name}" for t in host_tools],
+            allowed_tools=[f"mcp__excel__{t.name}" for t in all_tools],
             system_prompt=system_prompt,
             max_turns=max_turns,  # ★ 来自设置 MaxTurns，见 resolve_max_turns
             env=env_config,  # ★ DeepSeek 配置必须在这里传

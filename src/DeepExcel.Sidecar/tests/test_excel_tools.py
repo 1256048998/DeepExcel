@@ -87,20 +87,16 @@ async def test_clean_data_passes_operations_list():
         assert call_args[1]["operations"] == ["trim_spaces", "remove_duplicates"]
 
 
-def _registered_tool_names(host="excel"):
+def _registered_tool_names():
     from excel_tools import register_all_tools
     names = []
-    for t in register_all_tools(host):
+    for t in register_all_tools():
         n = getattr(t, 'name', None) or getattr(t, '__name__', None)
         if n is None:
             fn = getattr(t, 'handler', None) or getattr(t, 'fn', None)
             n = getattr(fn, '__name__', None) if fn else None
         names.append(n)
     return names
-
-
-# 只在 WPS 宿主实现的工具（Excel 端没有对应分支是预期的）
-_WPS_ONLY_TOOLS = {"execute_jsa"}
 
 
 def test_every_host_call_has_a_csharp_handler():
@@ -117,7 +113,7 @@ def test_every_host_call_has_a_csharp_handler():
     called = set(re.findall(r'call_csharp\(\s*"(\w+)"', py))
     handled = set(re.findall(r'case "(\w+)":', cs))
     assert called, "没解析到任何 call_csharp 调用，正则可能过时了"
-    missing = sorted(called - handled - _WPS_ONLY_TOOLS)
+    missing = sorted(called - handled)
     assert missing == [], f"这些工具在 C# 侧没有实现，调用必然失败：{missing}"
 
 
@@ -126,17 +122,8 @@ def test_placeholder_tools_are_not_offered_to_the_model(name):
     """这些工具要么宿主没实现，要么只是在 Python 里回显参数，没有任何作用，
     却每轮占用模型的上下文，还会诱导模型去调用。"""
     import sidecar
-    assert name not in _registered_tool_names("excel")
-    assert name not in _registered_tool_names("wps")
+    assert name not in _registered_tool_names()
     assert f'"{name}"' not in open(sidecar.__file__, encoding="utf-8").read()
-
-
-def test_wps_only_tools_are_registered_only_for_wps():
-    assert "execute_jsa" not in _registered_tool_names("excel")
-    assert "execute_jsa" in _registered_tool_names("wps")
-    # WPS 宿主模式只注册 WPS_HOST_TOOLS 那部分（见 test_host_tools.py），
-    # 所以反过来：WPS 能用的（除 execute_jsa 外）Excel 一定也能用。
-    assert set(_registered_tool_names("wps")) - {"execute_jsa"} <= set(_registered_tool_names("excel"))
 
 
 def test_system_prompt_tool_list_matches_what_is_registered():
@@ -153,6 +140,6 @@ def test_system_prompt_tool_list_matches_what_is_registered():
     for line in block.strip().splitlines():
         body = re.sub(r"（[^）]*）", "", line.split("：", 1)[-1])
         listed |= set(re.findall(r"\b[a-z]+(?:_[a-z]+)*\b", body))
-    registered = set(_registered_tool_names("excel")) | set(_registered_tool_names("wps"))
+    registered = set(_registered_tool_names())
     assert sorted(listed - registered) == [], "清单里有不存在的工具"
     assert sorted(registered - listed) == [], "已注册的工具没写进清单"

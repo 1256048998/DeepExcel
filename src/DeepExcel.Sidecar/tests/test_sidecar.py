@@ -101,8 +101,8 @@ async def test_a_broken_confirmation_flow_denies_high_risk_tools(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_jsa_asks_like_vba(monkeypatch):
-    """execute_jsa 在 WPS 里跑任意代码，与 VBA 同级：要确认，且可"允许并记住\""""
+async def test_vba_asks_once_then_is_remembered(monkeypatch):
+    """execute_vba 跑任意代码：要确认，且可"允许并记住\""""
     import sidecar
     asked = []
 
@@ -112,8 +112,8 @@ async def test_jsa_asks_like_vba(monkeypatch):
 
     monkeypatch.setattr(sidecar, "request_permission", fake_request)
     sidecar._allowed_tools_session.clear()
-    first = await sidecar._pre_tool_use_hook({"tool_name": "mcp__excel__execute_jsa", "tool_input": {"code": "1"}}, "id", None)
-    second = await sidecar._pre_tool_use_hook({"tool_name": "mcp__excel__execute_jsa", "tool_input": {"code": "2"}}, "id", None)
+    first = await sidecar._pre_tool_use_hook({"tool_name": "mcp__excel__execute_vba", "tool_input": {"code": "1"}}, "id", None)
+    second = await sidecar._pre_tool_use_hook({"tool_name": "mcp__excel__execute_vba", "tool_input": {"code": "2"}}, "id", None)
     assert _decision(first) == "allow" and _decision(second) == "allow"
-    assert asked == ["execute_jsa"]
+    assert asked == ["execute_vba"]
     sidecar._allowed_tools_session.clear()

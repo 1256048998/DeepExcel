@@ -1,9 +1,10 @@
 """Live end-to-end check of the sidecar's ui_event stream against a real model.
 
-Starts sidecar.py the way WPS does (DEEPEXCEL_HOST=wps: it reads the current
-user's DeepExcel config and DPAPI credential itself, so this script never sees
-the API key), plays a fake host that answers tool calls, and prints the event
-stream. One tool call is made to fail on purpose so the error path is exercised.
+Starts sidecar.py the way the COM add-in does (a config message over stdin;
+the API key comes from the current user's DeepExcel config and DPAPI credential
+and only passes through memory), plays a fake host that answers tool calls, and
+prints the event stream. One tool call is made to fail on purpose so the error
+path is exercised.
 
 Costs a few thousand tokens on whatever model is configured. Not part of CI.
 
@@ -23,8 +24,10 @@ Costs a few thousand tokens on whatever model is configured. Not part of CI.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -41,6 +44,54 @@ PROMPT = (
 FAKE_VALUES = [["一月", "二月", "三月"], [1, 2, 3], [4, 5, 6], [7, 8, 9]]
 
 
+def _local_config() -> dict | None:
+    """读当前用户的 DeepExcel 配置和 DPAPI 凭据，拼成 C# 加载项发给侧车的 config 消息。
+    Key 只在内存里经过，不打印、不落盘。"""
+    try:
+        appdata = os.environ.get("APPDATA", "")
+        with open(os.path.join(appdata, "DeepExcel", "config.json"), "r", encoding="utf-8") as stream:
+            config = json.load(stream)
+        provider = config.get("CurrentProvider") or config.get("currentProvider") or "anthropic"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", provider):
+            raise ValueError("invalid provider key")
+        providers = config.get("Providers") or config.get("providers") or {}
+        provider_config = providers.get(provider) or {}
+        model = config.get("CurrentModel") or config.get("currentModel") or provider_config.get("DefaultModel")
+        base_url = provider_config.get("BaseUrl") or provider_config.get("baseUrl") or "https://api.anthropic.com"
+        credential_path = os.path.join(appdata, "DeepExcel", "credentials", f"key_{provider}.crypt")
+        with open(credential_path, "r", encoding="utf-8") as stream:
+            protected = base64.b64decode(stream.read().strip(), validate=True)
+        import win32crypt
+        api_key = win32crypt.CryptUnprotectData(protected, None, None, None, 0)[1].decode("utf-8")
+        if not api_key:
+            raise ValueError("empty API key")
+        general = config.get("General") or config.get("general") or {}
+        max_turns = general.get("MaxTurns") or general.get("maxTurns")
+        return {"type": "config", "routing_mode": "byok", "base_url": base_url, "model": model,
+                "api_key": api_key, "max_turns": max_turns}
+    except Exception as exc:
+        print(f"local DeepExcel config unavailable: {type(exc).__name__}: {exc}")
+        return None
+
+
+_CONFIG_LINE: bytes | None = None
+
+
+def _spawn(*args, **kwargs) -> subprocess.Popen:
+    """像 C# 加载项那样起侧车：进程一起来先发 config 消息"""
+    global _CONFIG_LINE
+    if _CONFIG_LINE is None:
+        cfg = _local_config()
+        if cfg is None:
+            raise SystemExit(1)
+        _CONFIG_LINE = (json.dumps(cfg, ensure_ascii=False) + "\n").encode("utf-8")
+        del cfg
+    proc = subprocess.Popen(*args, **kwargs)
+    proc.stdin.write(_CONFIG_LINE)
+    proc.stdin.flush()
+    return proc
+
+
 def fake_result(tool: str, args: dict, attempt: dict) -> dict:
     if tool == "read_range":
         return {"success": True, "data": {"address": args.get("address"), "values": FAKE_VALUES}}
@@ -55,8 +106,8 @@ def fake_result(tool: str, args: dict, attempt: dict) -> dict:
 
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -129,8 +180,8 @@ def interrupt_scenario() -> int:
     第一轮让模型调用一个「很慢」的工具（假宿主故意不回结果），按停止；
     然后问「1+1 等于几，只回答数字」。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -185,8 +236,8 @@ def interrupt_scenario() -> int:
 def steer_scenario() -> int:
     """任务进行中插话：第一个工具执行期间用户说「改写到 F2」，模型应当照做。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -239,16 +290,8 @@ def steer_scenario() -> int:
 def codegen_scenario() -> int:
     """模型写一段 VBA：写的过程中应当收到带代码预览的 tool_gen，之后同一 id 的 tool_start。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="excel", PYTHONIOENCODING="utf-8")
-    # Excel 会话才有 execute_vba；配置照样从本机读（DEEPEXCEL_HOST=excel 时侧车等 config 消息，
-    # 这里借 WPS 的读取逻辑在本进程里准备好再发过去，Key 只经过内存）
-    sys.path.insert(0, os.path.dirname(SIDECAR))
-    import sidecar as sidecar_module  # noqa: E402
-    cfg = sidecar_module._load_wps_local_config()
-    if not cfg:
-        print("local DeepExcel config unavailable")
-        return 1
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -257,8 +300,6 @@ def codegen_scenario() -> int:
         proc.stdin.write((json.dumps(msg, ensure_ascii=False) + "\n").encode("utf-8"))
         proc.stdin.flush()
 
-    send({"type": "config", "routing_mode": "byok", **cfg})
-    del cfg
     send({"type": "user_message", "context": {},
           "text": "用 execute_vba 写一个大约 25 行的宏：遍历 Sheet1 的 A2:A200，把负数标红、把空单元格填 0，"
                   "最后在 B1 写上处理了多少个单元格。直接调用工具，不要先解释。"})
@@ -299,8 +340,8 @@ def codegen_scenario() -> int:
 def plan_scenario() -> int:
     """多步任务：模型应当先用 todo_write 列计划，并随进度更新状态。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -347,8 +388,8 @@ def inspect_scenario() -> int:
     fixture = os.path.join(ROOT, "src", "DeepExcel.Sidecar", "tests", "fixtures", "snapshot_payroll.json")
     with open(fixture, encoding="utf-8") as stream:
         snapshot = json.load(stream)
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -412,8 +453,8 @@ def _amount_snapshot(broken_row=None):
 def postwrite_scenario() -> int:
     """填公式后写后体检报 D5 与上下不一致：模型应当自己再写一次把 D5 修好，然后才汇报。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -536,8 +577,8 @@ def explore_scenario() -> int:
     结论交回后主 agent 说清应收 / 应付在哪、汇总引用了哪些表。"""
     sys.stdout.reconfigure(encoding="utf-8")
     books = _big_workbook()
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -596,7 +637,7 @@ def explore_scenario() -> int:
 
 def _one_turn(text: str, context: dict, answer, env: dict, timeout: float = 240) -> tuple[list, str]:
     """起一个新的侧车进程（= 一次新会话）跑一轮，返回（工具调用 [(名字, 参数)]、回复文本）"""
-    proc = subprocess.Popen(
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -637,7 +678,7 @@ def memory_scenario() -> int:
     import tempfile
     sys.stdout.reconfigure(encoding="utf-8")
     memory_dir = tempfile.mkdtemp(prefix="deepexcel-memory-")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8", DEEPEXCEL_MEMORY_DIR=memory_dir)
+    env = dict(os.environ, PYTHONIOENCODING="utf-8", DEEPEXCEL_MEMORY_DIR=memory_dir)
     context = {"workbookKey": r"C:\测试\2026 经营分析.xlsx", "workbookName": "2026 经营分析.xlsx"}
 
     def host(tool, args):
@@ -696,8 +737,8 @@ def modes_scenario() -> int:
     """权限模式：第一轮「只出方案」——宿主不能收到任何写入，模型用 present_plan 交方案；
     第二轮批准后按「自动应用写入」执行——写入不弹确认，宿主收到写入。同一个进程（同一会话）。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )
@@ -761,7 +802,7 @@ def modes_scenario() -> int:
         problems.append("the proposal has no steps")
     if not second["writes"]:
         problems.append("approved plan was not executed")
-    asked_for_writes = [t for t in second["asked"] if t not in ("execute_vba", "execute_jsa", "execute_python",
+    asked_for_writes = [t for t in second["asked"] if t not in ("execute_vba", "execute_python",
                                                                   "delete_rows", "delete_columns", "delete_sheet",
                                                                   "clear_range", "rollback")]
     if asked_for_writes:
@@ -775,7 +816,7 @@ def skill_scenario() -> int:
     """知识技能：身份证号被存成了数字。模型应当先 load_skill 读中文数据清洗，
     然后告诉用户后几位已经丢了、要从源文件重新导入，而不是自己补全。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
     context = {"workbookKey": "", "workbookName": "员工花名册.xlsx", "activeSheet": "花名册"}
     ids = [410102199003071000, 110105198512120000, 320106197708250000]
     values = [["姓名", "身份证号", "入职日期"]] + [[n, i, "2026年3月1日"] for n, i in zip(["张三", "李四", "王五"], ids)]
@@ -809,8 +850,8 @@ def skill_scenario() -> int:
 def ask_scenario() -> int:
     """提问卡：有两处不确定时，模型用 clarify_intent 的 questions 一次问清；回答后接着做。"""
     sys.stdout.reconfigure(encoding="utf-8")
-    env = dict(os.environ, DEEPEXCEL_HOST="wps", PYTHONIOENCODING="utf-8")
-    proc = subprocess.Popen(
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    proc = _spawn(
         [sys.executable, SIDECAR], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, env=env, cwd=os.path.dirname(SIDECAR),
     )

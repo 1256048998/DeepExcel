@@ -9,7 +9,7 @@ from excel_tools import register_all_tools
 
 BUNDLED = ("delivery-quality", "cn-data-cleaning", "cn-formula-writing", "cn-financial-reconciliation",
            "cn-payroll-tax", "cn-attendance-roster", "sales-reporting", "ar-aging-reconciliation",
-           "vba-writing-debugging", "wps-jsa")
+           "vba-writing-debugging")
 
 
 @pytest.fixture(autouse=True)
@@ -47,18 +47,20 @@ def test_index_lists_every_skill_with_description():
         assert f"- {name}（" in index
 
 
-def test_index_lists_only_skills_for_this_host():
-    excel, wps = knowledge_skills.index_prompt(host="excel"), knowledge_skills.index_prompt(host="wps")
-    assert "- vba-writing-debugging（" in excel and "- wps-jsa（" not in excel
-    assert "- wps-jsa（" in wps and "- vba-writing-debugging（" not in wps
-    # 没声明 hosts 的两边都有：WPS 没注册清洗工具，但清洗知识照样用得上
-    assert "- cn-data-cleaning（" in excel and "- cn-data-cleaning（" in wps
+def test_index_skips_skills_cached_for_a_host_that_no_longer_exists(empty_cache):
+    """旧知识包里只给 WPS 宿主模式用的技能（hosts: wps）还可能在缓存里，不能列给模型"""
+    directory = _write_skill(empty_cache, "old-wps-only")
+    text = (directory / "SKILL.md").read_text(encoding="utf-8")
+    (directory / "SKILL.md").write_text(text.replace("version: 1\n", "version: 1\nhosts: wps\n"), encoding="utf-8")
+    assert knowledge_skills.catalog()["old-wps-only"].hosts == ["wps"]
+    index = knowledge_skills.index_prompt()
+    assert "- old-wps-only（" not in index
+    assert "- vba-writing-debugging（" in index and "- cn-data-cleaning（" in index
 
 
 def test_index_stays_small():
     # 索引常驻 system prompt，正文按需读；技能多了以后索引本身也不能膨胀
-    for host in ("excel", "wps"):
-        assert len(knowledge_skills.index_prompt(host=host)) < 2500
+    assert len(knowledge_skills.index_prompt()) < 2500
 
 
 def test_index_is_empty_without_skills():
@@ -126,14 +128,13 @@ def test_long_extra_file_is_truncated(empty_cache):
     assert content.endswith("已截断）") and len(content) < knowledge_skills.MAX_FILE_CHARS + 50
 
 
-@pytest.mark.parametrize("host", ["excel", "wps"])
-def test_load_skill_is_registered_for_both_hosts(host):
-    assert "load_skill" in {t.name for t in register_all_tools(host)}
+def test_load_skill_is_registered():
+    assert "load_skill" in {t.name for t in register_all_tools()}
 
 
 @pytest.mark.asyncio
 async def test_load_skill_tool_returns_content():
-    tool = next(t for t in register_all_tools("excel") if t.name == "load_skill")
+    tool = next(t for t in register_all_tools() if t.name == "load_skill")
     out = await tool.handler({"name": "cn-data-cleaning"})
     payload = json.loads(out["content"][0]["text"])
     assert payload["success"] and "科学计数法" in payload["data"]["content"]
@@ -142,14 +143,14 @@ async def test_load_skill_tool_returns_content():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("file", [None, "", "null", "None", "SKILL.md"])
 async def test_load_skill_treats_placeholder_file_as_body(file):
-    tool = next(t for t in register_all_tools("excel") if t.name == "load_skill")
+    tool = next(t for t in register_all_tools() if t.name == "load_skill")
     args = {"name": "cn-formula-writing"} if file is None else {"name": "cn-formula-writing", "file": file}
     payload = json.loads((await tool.handler(args))["content"][0]["text"])
     assert payload["success"] and "版本兼容" in payload["data"]["content"]
 
 
 def test_load_skill_file_is_optional_in_schema():
-    tool = next(t for t in register_all_tools("excel") if t.name == "load_skill")
+    tool = next(t for t in register_all_tools() if t.name == "load_skill")
     assert tool.input_schema["required"] == ["name"]
 
 
