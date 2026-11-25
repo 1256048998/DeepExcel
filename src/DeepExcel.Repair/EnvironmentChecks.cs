@@ -35,6 +35,11 @@ namespace DeepExcel.Repair
                     false));
             }
 
+            if (IsWpsInstalled())
+            {
+                report.AddNote(WpsDisabledHint);
+            }
+
             if (!IsWebView2Installed())
             {
                 report.Add(new Finding(
@@ -128,6 +133,44 @@ namespace DeepExcel.Repair
             }
             catch (Exception)
             {
+            }
+        }
+
+        /// <summary>
+        /// WPS can keep a registered, loadable add-in switched off by its own
+        /// startup guard ("此电脑已禁用可能拖慢启动速度的第三方加载项"). Seen on a
+        /// real WPS 12.1 machine on 2026-11-25: DeepExcel was correctly registered
+        /// for WPS, activated in 32- and 64-bit, yet WPS never loaded it and hid
+        /// it from its COM add-in list until the user allowed it there. That
+        /// decision is not stored anywhere in the Kingsoft registry we could
+        /// find, so this tool can only point at the switch.
+        /// </summary>
+        public const string WpsDisabledHint =
+            "WPS 里看不到 DeepExcel 时：在 WPS 表格的「工具」（或「开发工具」）→「COM 加载项」里，" +
+            "若提示加载项已被禁用（如「此电脑已禁用可能拖慢启动速度的第三方加载项」），" +
+            "点「启用」或「点击此处进行管理」放行 DeepExcel，" +
+            "确定后重新打开 WPS。";
+
+        public static bool IsWpsInstalled()
+        {
+            return KeyExists(RegistryHive.CurrentUser, RegistryView.Default, @"Software\Kingsoft\Office")
+                || KeyExists(RegistryHive.LocalMachine, RegistryView.Registry64, @"SOFTWARE\Kingsoft\Office")
+                || KeyExists(RegistryHive.LocalMachine, RegistryView.Registry32, @"SOFTWARE\Kingsoft\Office");
+        }
+
+        private static bool KeyExists(RegistryHive hive, RegistryView view, string path)
+        {
+            try
+            {
+                using (var root = RegistryKey.OpenBaseKey(hive, view))
+                using (var key = root.OpenSubKey(path))
+                {
+                    return key != null;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
             }
         }
 

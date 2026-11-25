@@ -3,7 +3,7 @@
 DeepExcel 对外只分发单文件 `DeepExcel.Setup.exe`。同一个安装器同时支持 Microsoft Excel 和 WPS 表格：
 
 - Excel：按当前用户写入真实的 32/64 位 COM 注册表视图，安装后分别用 32/64 位 CLR 做激活验证，同时安装 x86/x64/ARM64 WebView2 loader。
-- WPS：加载和 Excel 同一个 COM 加载项。安装器把它登记到 `HKCU\Software\Kingsoft\Office\ET\AddIns`（加 `AddinsWL` 白名单值、清 `AddinsCL` 禁用值），并清理旧版本留下的 WPS JS 加载项（`publish.xml` 里的 DeepExcel 节点和 `jsaddons\DeepExcel_*` 目录，其他 WPS 插件不动）。
+- WPS：加载和 Excel 同一个 COM 加载项。安装器把它登记到 `HKCU\Software\Kingsoft\Office\ET\AddIns`（加 `AddinsWL` 白名单值、清 `AddinsCL` 禁用值）。WPS 另有一道「此电脑已禁用可能拖慢启动速度的第三方加载项」开关，会把登记正确、能激活的加载项关掉并从 COM 加载项列表里藏起来；2026-11-25 真机上查遍 Kingsoft 的 HKCU/HKLM 注册表都没找到它记在哪，所以安装完成页和诊断与修复只能提示用户在「COM 加载项」里点「点击此处进行管理」放行一次，并清理旧版本留下的 WPS JS 加载项（`publish.xml` 里的 DeepExcel 节点和 `jsaddons\DeepExcel_*` 目录，其他 WPS 插件不动）。
 - 两个宿主共享安装器内置的 Python 3.11 和 sidecar，用户不需安装 Python。
 - 安装器检测 WebView2 Runtime，缺失时调用已验证 Microsoft 签名的 Evergreen bootstrapper。
 

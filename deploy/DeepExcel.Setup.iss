@@ -731,6 +731,21 @@ begin
   RegDeleteValue(HKCU, 'Software\Kingsoft\Office\ET\AddinsCL', progId);
 end;
 
+// WPS has two switches that can keep a correctly registered DeepExcel off, and
+// the installer can only clear the first:
+//   * a never-seen COM add-in goes into ET\AddinsCL and WPS shows
+//     "已禁用的COM加载项" -- RegisterWpsComAddIn removes that value;
+//   * a startup guard, "此电脑已禁用可能拖慢启动速度的第三方加载项", that also
+//     hides the add-in from WPS's COM add-in list. Seen on a real WPS 12.1
+//     machine on 2026-11-25; the decision is stored nowhere in the Kingsoft
+//     registry (HKCU or HKLM) we could find, so the user has to allow it once.
+// DeepExcel.Repair shows the same text (EnvironmentChecks.WpsDisabledHint).
+function WpsEnableHint(): string;
+begin
+  Result := 'WPS 里看不到 DeepExcel 时：在 WPS 表格「工具」（或「开发工具」）→「COM 加载项」里，' + #13#10 +
+            '若提示加载项已被禁用，点「启用」或「点击此处进行管理」放行 DeepExcel，确定后重新打开 WPS。';
+end;
+
 procedure UnregisterWpsComAddIn(const progId: string);
 begin
   RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Kingsoft\Office\ET\AddIns\' + progId);
@@ -972,15 +987,19 @@ begin
     // makes a successful install look broken.
     if (not ExcelInstalled) and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
-             '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 +
-             '若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”即可。' + #13#10 + #13#10 +
+             '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +
+             WpsEnableHint() + #13#10 + #13#10 +
              '这台电脑上没有检测到 Microsoft Excel；以后装了 Excel 也能直接用，' + #13#10 +
              '若看不到 DeepExcel 选项卡，请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复。', mbInformation, MB_OK);
-    if ExcelInstalled and (not IsSilentRun()) then
+    if ExcelInstalled and IsWpsInstalled() and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
              '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +
-             'WPS 若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”即可。', mbInformation, MB_OK);
+             WpsEnableHint(), mbInformation, MB_OK);
+    if ExcelInstalled and (not IsWpsInstalled()) and (not IsSilentRun()) then
+      MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
+             '请关闭并重新打开 Excel，' + #13#10 +
+             '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。', mbInformation, MB_OK);
   end;
 end;
 

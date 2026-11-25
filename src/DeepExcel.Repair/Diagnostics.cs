@@ -89,8 +89,21 @@ namespace DeepExcel.Repair
     public sealed class Report
     {
         private readonly List<Finding> _findings = new List<Finding>();
+        private readonly List<string> _notes = new List<string>();
 
         public IReadOnlyList<Finding> Findings { get { return _findings; } }
+
+        /// <summary>
+        /// Guidance for things this tool cannot see or fix (a host's own
+        /// enable switch). Notes are not findings: they never change the exit
+        /// code or turn a healthy report into "problems found".
+        /// </summary>
+        public IReadOnlyList<string> Notes { get { return _notes; } }
+
+        public void AddNote(string note)
+        {
+            _notes.Add(note);
+        }
 
         public void Add(Finding finding)
         {
@@ -130,18 +143,24 @@ namespace DeepExcel.Repair
 
         public string Render()
         {
+            var builder = new StringBuilder();
             if (_findings.Count == 0)
             {
-                return "DeepExcel 自检通过，未发现问题。";
+                builder.AppendLine("DeepExcel 自检通过，未发现问题。");
             }
-
-            var builder = new StringBuilder();
-            builder.AppendLine(string.Format("发现 {0} 个问题：", _findings.Count));
-            foreach (var finding in _findings)
+            else
             {
-                builder.AppendLine("  " + finding);
+                builder.AppendLine(string.Format("发现 {0} 个问题：", _findings.Count));
+                foreach (var finding in _findings)
+                {
+                    builder.AppendLine("  " + finding);
+                }
             }
-            return builder.ToString();
+            foreach (var note in _notes)
+            {
+                builder.AppendLine("提示：" + note);
+            }
+            return builder.ToString().TrimEnd();
         }
     }
 }

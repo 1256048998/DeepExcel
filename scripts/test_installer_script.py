@@ -280,6 +280,20 @@ def main():
           "the verification treats a missing runtime as blocking on every machine")
     check("Excel is still always registered regardless of detection",
           "ExcelEnabled := True;" in iss)
+    # WPS's startup guard ("此电脑已禁用可能拖慢启动速度的第三方加载项") keeps a
+    # correctly registered add-in off and out of its COM add-in list; nothing
+    # the installer writes clears it, so both finish messages must say how.
+    finish = re.findall(r"if ([^\n]*?) then\s*MsgBox\('DeepExcel 安装完成！'(.*?)mbInformation", iss, re.S)
+    wps_finish = [body for cond, body in finish if "not IsWpsInstalled()" not in cond]
+    check("every finish message a WPS machine can see says how to allow the add-in",
+          len(finish) >= 3 and len(wps_finish) >= 2
+          and all("WpsEnableHint()" in body for body in wps_finish)
+          and "点击此处进行管理" in iss,
+          "a WPS user whose guard is on sees 'installed' and no DeepExcel tab")
+    check("Excel-only machines are not told about WPS",
+          any("not IsWpsInstalled()" in cond and "WpsEnableHint()" not in body for cond, body in finish))
+    check("the finish messages no longer name only the first-seen prompt",
+          "点 DeepExcel.AddIn 旁的“启用”即可" not in iss)
 
     # ---- sandbox verification script stays parseable ----------------------
     # verify-install-sandbox.ps1 is UTF-8 without a BOM, and Windows PowerShell
