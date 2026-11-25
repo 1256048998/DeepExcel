@@ -143,3 +143,29 @@ def test_system_prompt_tool_list_matches_what_is_registered():
     registered = set(_registered_tool_names())
     assert sorted(listed - registered) == [], "清单里有不存在的工具"
     assert sorted(registered - listed) == [], "已注册的工具没写进清单"
+
+
+# ---- every tool description has the same shape ----------------------------
+# <what it does>。何时用：…。[不要用于：…。]看返回：…。[失败时：…。]
+# The model reads 65 of these on every turn; finding "when to use" and "what to
+# check in the result" in the same place on all of them is the point.
+
+_SECTIONS = ("何时用：", "不要用于：", "看返回：", "失败时：")
+
+
+@pytest.mark.parametrize("tool", __import__("excel_tools").register_all_tools(), ids=lambda t: t.name)
+def test_every_description_has_the_shared_shape(tool):
+    text = tool.description
+    assert not text.startswith(_SECTIONS), "the first sentence says what the tool does"
+    assert "何时用：" in text and "看返回：" in text, text
+    positions = [text.find(label) for label in _SECTIONS if label in text]
+    assert positions == sorted(positions), "sections keep their order"
+    for label in _SECTIONS:
+        assert text.count(label) <= 1, label
+
+
+def test_descriptions_and_the_envelope_use_the_same_status_names():
+    import excel_tools
+    text = "".join(t.description for t in excel_tools.register_all_tools())
+    for status in (excel_tools.STATUS_PARTIAL, excel_tools.STATUS_CHECK_FAILED):
+        assert "status=" + status in text, status

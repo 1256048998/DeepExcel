@@ -4,8 +4,150 @@ from claude_agent_sdk import tool
 from ipc import call_csharp, call_csharp_clarify
 
 
+# ---------------------------------------------------------------------------
+# Result envelope
+#
+# Every tool result the model reads starts with the same keys, in this order:
+#   ok             bool   -- did the call do what was asked
+#   status         str    -- done | partial | check_failed | failed
+#   checkpoint_id  str    -- only for steps that changed the workbook: rollback
+#                            to it undoes this step and everything after it
+#   next           str    -- only when the model has something to do about the
+#                            result: the next call to make or the thing to stop on
+#   warnings       [str]  -- only when non-empty: things to mention to the user
+# followed by the host's original fields (success / data / error / suggestion /
+# verification / changes / backup_snapshot_id ...). Those stay because the
+# panel parses the same text (ui_events.parse_tool_result reads success/error).
+# ---------------------------------------------------------------------------
+
+STATUS_DONE = "done"
+STATUS_PARTIAL = "partial"
+STATUS_CHECK_FAILED = "check_failed"
+STATUS_FAILED = "failed"
+
+ENVELOPE_KEYS = ("ok", "status", "checkpoint_id", "next", "warnings")
+
+_NEXT_ON_FAILURE = "按 error 改正参数后可以再试一次；同样的错误不要原样重试，第二次还失败就停下来，向用户说明原因和可选方案"
+_NEXT_ON_INTERRUPT = "用户已中断：停下来等用户的新指示，不要重试"
+_NEXT_ON_DECLINE = "用户拒绝了这一步：不要重试，也不要换个工具或用代码绕过，问用户想怎么改"
+_NEXT_ON_CHECK_FAILED = ("先按 verification.summary 修正这一步（改不好就用 rollback 传 checkpoint_id 回到这一步之前），"
+                         "修好再向用户汇报")
+_NEXT_ON_TRUNCATED = "只列出了一部分：缩小范围（sheets / 地址）或换更具体的条件再查"
+
+
+def _is_decline(text: str) -> bool:
+    # 只认用户自己点「否」的文字（SecurityGateway：「用户取消了高风险操作」）。
+    # 「Excel 拒绝了这次操作」「已拒绝执行」是参数或代码的问题，要改了再试，不能当成用户拒绝。
+    return any(marker in text for marker in ("用户取消", "用户拒绝"))
+
+
+def _warnings_of(result: dict, data) -> list:
+    warnings = []
+    single = result.get("warning")
+    if isinstance(single, str) and single.strip():
+        warnings.append(single.strip())
+    listed = data.get("warnings") if isinstance(data, dict) else None
+    if isinstance(listed, list):
+        warnings.extend(str(w).strip() for w in listed if str(w or "").strip())
+    seen = set()
+    return [w for w in warnings if not (w in seen or seen.add(w))]
+
+
+def _partial_next(data) -> str | None:
+    """读取类结果没读全时下一步怎么做；读全了返回 None。"""
+    if not isinstance(data, dict):
+        return None
+    hint = data.get("hint") if isinstance(data.get("hint"), str) and data.get("hint").strip() else None
+    paging = data.get("paging")
+    if isinstance(paging, dict) and (paging.get("next_offset") is not None or paging.get("columns_truncated")):
+        if hint:
+            return hint.strip()
+        offset = paging.get("next_offset")
+        if offset is not None:
+            return f"还有没读的行：需要时用同一个 address 加 offset={offset} 继续读；不需要就别读完整张表"
+        return "只返回了前几列：其余列用更窄的地址读取"
+    if data.get("truncated") is True:
+        return hint.strip() if hint else _NEXT_ON_TRUNCATED
+    if data.get("status") == "partial":
+        return hint.strip() if hint else "结论只覆盖了一部分，下结论前对没覆盖到的部分再确认"
+    return None
+
+
+def build_envelope(result: dict) -> dict:
+    """C# / 本地工具的原始结果 → 模型读到的统一信封（见上方说明）。不是 dict 的原样返回。"""
+    if not isinstance(result, dict):
+        return result
+    data = result.get("data")
+    ok = result.get("success") is not False
+    warnings = _warnings_of(result, data)
+    next_step = None
+
+    if not ok:
+        status = STATUS_FAILED
+        error = str(result.get("error") or "")
+        suggestion = result.get("suggestion")
+        if result.get("error_code") == "interrupted":
+            next_step = _NEXT_ON_INTERRUPT
+        elif _is_decline(error):
+            next_step = _NEXT_ON_DECLINE
+        elif isinstance(suggestion, str) and suggestion.strip():
+            next_step = suggestion.strip()
+        else:
+            next_step = _NEXT_ON_FAILURE
+    else:
+        verification = result.get("verification")
+        if isinstance(verification, dict) and verification.get("ok") is False:
+            status = STATUS_CHECK_FAILED
+            next_step = _NEXT_ON_CHECK_FAILED
+        else:
+            next_step = _partial_next(data)
+            status = STATUS_PARTIAL if next_step else STATUS_DONE
+
+    envelope = {"ok": ok, "status": status}
+    checkpoint = result.get("checkpoint_id")
+    if isinstance(checkpoint, str) and checkpoint:
+        envelope["checkpoint_id"] = checkpoint
+    if next_step:
+        envelope["next"] = next_step
+    if warnings:
+        envelope["warnings"] = warnings
+    for key, value in result.items():
+        # 单数的 warning 已并进 warnings，原样再带一份只会让模型读两遍
+        if key not in ENVELOPE_KEYS and key != "warning":
+            envelope[key] = value
+    return envelope
+
+
+# ---------------------------------------------------------------------------
+# Tool descriptions
+#
+# Every description has the same shape so the model can find the same thing in
+# the same place on all tools:
+#   <what it does and its limits>。何时用：…。[不要用于：…。]看返回：…。[失败时：…。]
+# 「失败时」 is only written when the tool has its own advice; the envelope's
+# `next` already covers the generic case. tests/test_excel_tools.py checks the
+# shape on every registered tool.
+# ---------------------------------------------------------------------------
+
+_CHECK_WRITE = "status=check_failed 时先按 verification.summary 修正再汇报；checkpoint_id 传给 rollback 只撤销这一步"
+_CHECK_PLAIN = "ok=true 即完成"
+
+
+def _describe(what: str, *, use: str, check: str, avoid: str | None = None, on_fail: str | None = None) -> str:
+    def sentence(text: str) -> str:
+        text = text.strip()
+        return text if text.endswith("。") else text + "。"
+    parts = [sentence(what), sentence("何时用：" + use)]
+    if avoid:
+        parts.append(sentence("不要用于：" + avoid))
+    parts.append(sentence("看返回：" + check))
+    if on_fail:
+        parts.append(sentence("失败时：" + on_fail))
+    return "".join(parts)
+
+
 def _wrap_result(csharp_result: dict) -> dict:
-    """把 C# 返回的 dict 包装成 MCP 工具返回格式。
+    """把 C# 返回的 dict 包装成 MCP 工具返回格式（内容是统一信封，见 build_envelope）。
     ★ 当 C# 返回 success=false 时设置 is_error=true，
     防止 LLM 把失败当成功继续推理，触发死循环重试。"""
     is_error = False
@@ -13,7 +155,7 @@ def _wrap_result(csharp_result: dict) -> dict:
         is_error = True
     return {
         "content": [
-            {"type": "text", "text": json.dumps(csharp_result, ensure_ascii=False)}
+            {"type": "text", "text": json.dumps(build_envelope(csharp_result), ensure_ascii=False)}
         ],
         "is_error": is_error,
     }
@@ -81,9 +223,12 @@ def _optional_int(args: dict, key: str):
 
 @tool(
     "read_range",
-    "读取指定范围的单元格数据。整列/整行（A:A、1:1）会自动收到已用区域；一次最多 200 行（limit 可放大到 500），"
-    "结果里 paging.next_offset 不为空就说明还有下一页，用同一个 address 加 offset 继续读。"
-    "找东西在哪用 find，看有哪些表/名称/图表用 list，不要为了找数据把整张表读一遍。",
+    _describe(
+        '读一块区域的值和公式；整列/整行（A:A、1:1）自动收到已用区域，一次最多 200 行（limit 最大 500）',
+        use='要具体单元格的值、核对某几行、写入前读一下要覆盖的区域',
+        avoid='找东西在哪（用 find）、看有哪些表/名称/图表（用 list）、为了找数据把整张表逐页读完',
+        check='status=partial 表示没读完，next 给出下一页怎么读（同一个 address 加 offset）；需要时再读',
+    ),
     {
         "type": "object",
         "properties": {
@@ -106,9 +251,12 @@ async def read_range(args):
 
 @tool(
     "find",
-    "在工作簿里搜索文本（相当于 Ctrl+F 的「查找全部」）：返回每个匹配的工作表、地址、值和公式。"
-    "定位某个科目/客户/关键字、查哪些公式引用了某张表时先用它，比逐页 read_range 快得多。"
-    "total 是真实命中数，truncated=true 表示只列出了前 max_results 个。",
+    _describe(
+        '在整个工作簿里搜文本（相当于 Ctrl+F 的「查找全部」），返回每处匹配的工作表、地址、值和公式',
+        use='定位某个科目/客户/关键字，或查哪些公式引用了某张表（scope=formulas 搜 Sheet2!）',
+        avoid='读取整块数据（用 read_range）',
+        check='total 是真实命中数；status=partial 表示只列出了前 max_results 个，按 next 缩小范围',
+    ),
     {
         "type": "object",
         "properties": {
@@ -137,8 +285,11 @@ async def find(args):
 
 @tool(
     "list",
-    "列出工作簿里的对象：sheets（工作表、可见性、已用区域）、names（定义的名称及引用）、tables（表格及列名）、"
-    "pivots（数据透视表及数据源）、charts（图表及所在表）。弄清工作簿结构、找表名/名称时用它。",
+    _describe(
+        '列出工作簿里的对象：sheets（工作表、可见性、已用区域）、names（定义的名称及引用）、tables（表格及列名）、pivots（数据透视表及数据源）、charts（图表及所在表）',
+        use='弄清工作簿结构、找表名/名称/图表名',
+        check='data 里就是清单，ok=true 即可直接用',
+    ),
     {
         "type": "object",
         "properties": {
@@ -154,12 +305,13 @@ async def list_objects(args):
 
 @tool(
     "inspect_sheet",
-    "分析一张工作表的结构（接手陌生或复杂的表时先用它）：blocks 层给出表上有几块数据、每块的标题、"
-    "多级表头（列名路径如「扣款/养老」）、数据行范围、合计行、每列类型；formulas 层按 R1C1 归纳公式模式"
-    "（如 =[数量]*[单价] 覆盖 D2:D500）、标出同列公式不一致，并列出异常候选（合计漏行、被改成死值、"
-    "孤立偏离、断链引用）；objects 层列表格/图表/透视表；dependencies 层列跨表和外部工作簿引用。"
-    "每层带 status：complete 是全表结论，partial 表示大表只读了一部分；header_uncertain=true 时"
-    "先用 read_range 读前几行确认表头。异常只是候选，改之前先问用户。",
+    _describe(
+        '分析一张工作表的结构：blocks 层给出有几块数据、每块的标题、多级表头（列名路径如「扣款/养老」）、数据行范围、合计行、每列类型；formulas 层按 R1C1 归纳公式模式（如 =[数量]*[单价] 覆盖 D2:D500）、标出同列公式不一致，并列出异常候选（合计漏行、被改成死值、孤立偏离、断链引用）；objects 层列表格/图表/透视表；dependencies 层列跨表和外部工作簿引用',
+        use='接手陌生或复杂的表（多级表头、一张表上好几块、公式多）时先用它',
+        avoid='只要几个具体单元格的值（用 read_range）',
+        check='每层带 status：complete 是全表结论，partial 表示大表只读了一部分；header_uncertain=true 时先用 read_range 读前几行确认表头；异常只是候选，改之前先问用户',
+        on_fail='按 next 改用 list(kind=sheets) 和 read_range 直接读',
+    ),
     {
         "type": "object",
         "properties": {
@@ -194,10 +346,13 @@ async def inspect_sheet(args):
 
 @tool(
     "explore_workbook",
-    "大工作簿分头摸底：把要查的问题拆成最多 4 个互不重叠的子任务（通常按表分组），每个子任务由一个"
-    "独立的只读子 agent 并行去查（它们能用 list / find / inspect_sheet / read_range），只把结论交回来，"
-    "你的上下文不会被几十次读取的原始数据塞满。适合表多（5 张以上）或表大、而问题涉及多张表的时候；"
-    "一两张表、或只查一个具体位置时直接自己查，不要用它。结论未经你核实，写入前对关键位置再确认。",
+    _describe(
+        '大工作簿分头摸底：把问题拆成最多 4 个互不重叠的子任务（通常按表分组），每个由一个独立的只读子 agent 并行去查（它们能用 list / find / inspect_sheet / read_range），只把结论交回来，你的上下文不会被几十次读取的原始数据塞满',
+        use='表多（5 张以上）或表大、而问题涉及多张表',
+        avoid='一两张表、或只查一个具体位置（直接自己查）',
+        check='结论未经你核实，写入或向用户下结论前对关键位置用 read_range 确认；有的子任务没完成时看 tasks 里各自的 status',
+        on_fail='按 next 改用 list / find / inspect_sheet 自己查',
+    ),
     {
         "type": "object",
         "properties": {
@@ -252,7 +407,12 @@ async def explore_workbook(args):
     })
 
 
-@tool("write_formula", "向指定单元格写入 Excel 公式（以 = 开头）", {"address": str, "formula": str})
+@tool("write_formula", _describe(
+        '向一个单元格写入公式（以 = 开头）；写后自动体检，并检查这一列公式模式是否和上下一致',
+        use='用户要求写公式，或需要一个会随数据更新的计算结果',
+        avoid='写纯文本或数字（用 write_value）、整列同一公式（写一格后用 fill_formula_down）',
+        check=_CHECK_WRITE,
+    ), {"address": str, "formula": str})
 async def write_formula(args):
     result = await call_csharp("write_formula", {
         "address": args["address"],
@@ -261,7 +421,12 @@ async def write_formula(args):
     return _wrap_result(await _pattern_check(result, args["address"]))
 
 
-@tool("write_value", "向指定单元格写入纯文本/数字值（不解析为公式，写入张三会显示张三而不是=\"张三\"）", {"address": str, "value": str})
+@tool("write_value", _describe(
+        '向一个单元格写入纯文本或数字，不解析为公式（写「张三」显示张三而不是 ="张三"）',
+        use='改一个单元格的值',
+        avoid='写一片区域（用 write_range，快得多）、写公式（用 write_formula）',
+        check=_CHECK_WRITE,
+    ), {"address": str, "value": str})
 async def write_value(args):
     result = await call_csharp("write_value", {
         "address": args["address"],
@@ -270,7 +435,12 @@ async def write_value(args):
     return _wrap_result(result)
 
 
-@tool("write_range", "批量写入二维数组到指定起始单元格（比逐个 write_value 快 100 倍，无弹窗）。address 是左上角单元格（如 A1 或 Sheet3!A1），values 是二维数组。", {"address": str, "values": list})
+@tool("write_range", _describe(
+        '从左上角单元格起批量写入二维数组（比逐格 write_value 快 100 倍，无弹窗）；address 是左上角（如 A1 或 Sheet3!A1），values 是二维数组，以 = 开头的元素按公式写入',
+        use='写表头和多行数据、一次填一整块',
+        avoid='只改一个格（用 write_value）',
+        check=_CHECK_WRITE,
+    ), {"address": str, "values": list})
 async def write_range(args):
     result = await call_csharp("write_range", {
         "address": args["address"],
@@ -332,11 +502,12 @@ _CLARIFY_OPTION = {
 
 @tool(
     "clarify_intent",
-    "向用户提问以澄清模糊指令。面板把问题渲染成提问卡，用户点选或自己填写后一次提交。"
-    "只问一件事：question + options；有几处不确定时用 questions 一次问清（最多 4 题），不要一轮一轮地问。"
-    "每题：question 问题；header 2~6 字的短标签（如「汇总口径」）；options 2~4 个选项，"
-    "可写成 {label: 选项, description: 一句话说明后果}；multi_select 为 true 时可多选。"
-    "用户总能选「其他」自己填，不必把「其他」列进选项",
+    _describe(
+        '向用户提问以澄清模糊指令：面板把问题渲染成提问卡，用户点选或自己填写后一次提交。只问一件事用 question + options；几处不确定时用 questions 一次问清（最多 4 题）。每题：question 问题；header 2~6 字的短标签（如「汇总口径」）；options 2~4 个选项，可写成 {label: 选项, description: 一句话说明后果}；multi_select 为 true 时可多选；用户总能选「其他」自己填，不必把「其他」列进选项',
+        use='指令有歧义、而猜错代价大（覆盖数据、口径不同结果不同）',
+        avoid='一轮一轮地追问（一次问清）、能从表里看出答案的事',
+        check='data.user_answer 是用户的回答，按它继续',
+    ),
     {
         "type": "object",
         "properties": {
@@ -396,9 +567,12 @@ def normalize_todos(raw) -> list:
 
 @tool(
     "todo_write",
-    "维护本次任务的计划清单（面板顶部显示进度）。三步以上的任务开始前先列出计划；"
-    "每开始一步把它标为 in_progress（同一时间只有一条），做完立刻标 completed；发现新步骤就加进去。"
-    "todos 是完整清单（每次都传全部条目）：[{content: 步骤描述, status: pending|in_progress|completed}]",
+    _describe(
+        '维护本次任务的计划清单（面板顶部显示进度）。todos 是完整清单（每次都传全部条目）：[{content: 步骤描述, status: pending|in_progress|completed}]',
+        use='三步以上的任务开始前先列计划；每开始一步把它标为 in_progress（同一时间只有一条），做完立刻标 completed；发现新步骤就加进去',
+        avoid='一两步就能做完的事',
+        check=_CHECK_PLAIN,
+    ),
     {"todos": list},
 )
 async def todo_write(args):
@@ -430,9 +604,11 @@ def normalize_plan(args: dict) -> dict:
 
 @tool(
     "present_plan",
-    "提交一份变更方案给用户批准（「只出方案」模式下必须用它收尾；其他模式下改动很大时也可以先用它对齐）。"
-    "summary：一句话说要做什么；steps：每一步 {action: 做什么, target: 表和区域, detail: 怎么做}；"
-    "risks：风险点（会覆盖什么、有什么不确定）。提交后本轮结束，等用户批准，不要接着执行",
+    _describe(
+        '提交一份变更方案给用户批准。summary 一句话说要做什么；steps 每一步 {action: 做什么, target: 表和区域, detail: 怎么做}；risks 风险点（会覆盖什么、有什么不确定）',
+        use='「只出方案」模式下必须用它收尾；其他模式下改动很大时也可以先用它对齐',
+        check='提交后本轮结束：不要再调用工具，用一两句话说明方案要点，请用户批准',
+    ),
     {
         "type": "object",
         "properties": {
@@ -469,9 +645,13 @@ async def present_plan(args):
 
 @tool(
     "update_workbook_notes",
-    "整份重写这个工作簿的记忆（NOTES.md，只存在用户电脑上，下次会话自动带给你）。"
-    "保留四个小节：## 结构怪癖 / ## 用户偏好 / ## 做过的改动 / ## 禁区。禁区每行一个「- 表名」或「- 表名!A1:D20」，"
-    "只能加不能删。notes 是完整的新内容（Markdown），不是增量",
+    _describe(
+        '整份重写这个工作簿的记忆（NOTES.md，只存在用户电脑上，下次会话自动带给你）。保留四个小节：## 结构怪癖 / ## 用户偏好 / ## 做过的改动 / ## 禁区；禁区每行一个「- 表名」或「- 表名!A1:D20」，只能加不能删。notes 是完整的新内容（Markdown），不是增量',
+        use='发现了值得下次记住的结构怪癖、用户偏好、重要改动或禁区',
+        avoid='记具体数据、这次对话的过程',
+        check=_CHECK_PLAIN,
+        on_fail='工作簿没保存过时没有地方存：告诉用户先保存，这次要记的内容直接在回复里说明',
+    ),
     {"notes": str},
 )
 async def update_workbook_notes(args):
@@ -498,8 +678,12 @@ async def update_workbook_notes(args):
 
 @tool(
     "load_skill",
-    "读取一份专业知识（<knowledge-skills> 里列出的技能）。先只传 name 读正文；"
-    "正文里提到补充文件（如 wps.md）时再传 file 读它",
+    _describe(
+        '读取一份专业知识（<knowledge-skills> 里列出的技能）。先只传 name 读正文；正文里提到补充文件（如 wps.md）时再传 file 读它',
+        use='任务涉及技能清单里的主题时，动手前先读',
+        check='data.content 是正文',
+        on_fail='名字写错时按 next 列出的可用名字再试',
+    ),
     {
         "type": "object",
         "properties": {
@@ -518,25 +702,44 @@ async def load_skill(args):
     return _wrap_result(knowledge_skills.load(args.get("name") or "", file))
 
 
-@tool("read_workbook", "读取当前工作簿的结构信息", {})
+@tool("read_workbook", _describe(
+        '读取当前工作簿的结构信息（工作表、已用区域等）',
+        use='消息里没有「工作簿结构」摘要、或摘要标了「索引不完整」时',
+        avoid='摘要已经够用时（直接用摘要）',
+        check=_CHECK_PLAIN,
+    ), {})
 async def read_workbook(args):
     result = await call_csharp("read_workbook", {})
     return _wrap_result(result)
 
 
-@tool("read_attachment", "读取用户上传的附件文件内容（xlsx/xls/csv/txt/json 等）。当用户消息提到附件或要求处理附件文件时使用此工具。", {"file_name": str})
+@tool("read_attachment", _describe(
+        '读取用户上传的附件内容（xlsx/xls/csv/txt/json 等）',
+        use='用户消息提到附件或要求处理附件文件时',
+        avoid='读工作簿本身的数据（用 read_range）',
+        check=_CHECK_PLAIN,
+        on_fail='file_name 用用户消息里给出的附件文件名，不要自己猜',
+    ), {"file_name": str})
 async def read_attachment(args):
     result = await call_csharp("read_attachment", {"file_name": args["file_name"]})
     return _wrap_result(result)
 
 
-@tool("read_selection", "读取当前选中的单元格信息", {})
+@tool("read_selection", _describe(
+        '读取用户当前选中的单元格：地址、值和公式',
+        use='用户说「这里」「选中的」「这几格」时',
+        check=_CHECK_PLAIN,
+    ), {})
 async def read_selection(args):
     result = await call_csharp("read_selection", {})
     return _wrap_result(result)
 
 
-@tool("fill_formula_down", "将公式向下填充到指定行数", {"from_address": str, "row_count": int})
+@tool("fill_formula_down", _describe(
+        '把 from_address 里的公式向下填充 row_count 行（相对引用跟着变）',
+        use='整列套用同一公式：先 write_formula 写第一格，再用它填充',
+        check=_CHECK_WRITE,
+    ), {"from_address": str, "row_count": int})
 async def fill_formula_down(args):
     result = await call_csharp("fill_formula_down", {
         "from_address": args["from_address"],
@@ -547,7 +750,12 @@ async def fill_formula_down(args):
     return _wrap_result(await _pattern_check(result, args["from_address"], rows=rows))
 
 
-@tool("replace_formula", "在指定范围内批量替换公式中的字符串", {"range_address": str, "find": str, "replace": str})
+@tool("replace_formula", _describe(
+        '在指定区域内批量替换公式文本里的字符串（如把 Sheet1! 换成 Sheet2!）',
+        use='批量改引用、改函数名',
+        avoid='改单元格的值（用 write_value / write_range）',
+        check=_CHECK_WRITE,
+    ), {"range_address": str, "find": str, "replace": str})
 async def replace_formula(args):
     result = await call_csharp("replace_formula", {
         "range_address": args["range_address"],
@@ -557,7 +765,11 @@ async def replace_formula(args):
     return _wrap_result(await _pattern_check(result, args["range_address"]))
 
 
-@tool("clean_data", "执行数据清洗操作（unify_date/remove_duplicates/highlight_missing/trim_spaces/text_to_number）", {"range_address": str, "operations": list})
+@tool("clean_data", _describe(
+        '对区域执行数据清洗操作：unify_date / remove_duplicates / highlight_missing / trim_spaces / text_to_number',
+        use='去重（remove_duplicates）、统一日期、去首尾空格、文本型数字转数字、标出缺失值',
+        check=_CHECK_PLAIN + '；remove_duplicates 会删行，先告诉用户删了多少',
+    ), {"range_address": str, "operations": list})
 async def clean_data(args):
     result = await call_csharp("clean_data", {
         "range_address": args["range_address"],
@@ -566,7 +778,12 @@ async def clean_data(args):
     return _wrap_result(result)
 
 
-@tool("create_chart", "基于数据范围创建图表", {"data_range": str, "chart_type": str, "title": str, "x_label": str, "y_label": str})
+@tool("create_chart", _describe(
+        '基于数据区域创建图表（chart_type 如 column / line / pie / bar）',
+        use='用户要图表；图表类型由你结合数据判断后显式传入',
+        avoid='柱状+折线双轴（用 create_combo_chart）',
+        check=_CHECK_PLAIN + '；之后改标题/颜色/标签要用图表名时，用 list(kind=charts) 查',
+    ), {"data_range": str, "chart_type": str, "title": str, "x_label": str, "y_label": str})
 async def create_chart(args):
     result = await call_csharp("create_chart", {
         "data_range": args["data_range"],
@@ -578,7 +795,12 @@ async def create_chart(args):
     return _wrap_result(result)
 
 
-@tool("create_pivot_table", "基于数据范围创建数据透视表", {"source_range": str, "destination_sheet": str, "pivot_table_name": str, "row_fields": list, "column_fields": list, "value_fields": list, "value_function": str})
+@tool("create_pivot_table", _describe(
+        '基于数据区域在目标工作表创建数据透视表（行字段、列字段、值字段、汇总方式）',
+        use='按维度汇总、交叉统计',
+        avoid='只要一个简单合计（用 write_formula 写 SUM / SUMIF）',
+        check=_CHECK_PLAIN + '；之后刷新或调整时传你起的 pivot_table_name',
+    ), {"source_range": str, "destination_sheet": str, "pivot_table_name": str, "row_fields": list, "column_fields": list, "value_fields": list, "value_function": str})
 async def create_pivot_table(args):
     result = await call_csharp("create_pivot_table", {
         "source_range": args["source_range"],
@@ -592,37 +814,66 @@ async def create_pivot_table(args):
     return _wrap_result(result)
 
 
-@tool("execute_vba", "执行 VBA 代码（Sub DeepExcel_TempMacro）", {"code": str})
+@tool("execute_vba", _describe(
+        '执行一段 VBA（入口过程按 Sub DeepExcel_TempMacro 运行，只写过程体也可以），会弹安全确认窗',
+        use='现有工具做不到的操作',
+        avoid='现有工具能完成的事（优先用专门工具，它们有备份和体检）',
+        check='ok=true 只说明宏跑完了，不说明结果对：涉及数据时用 read_range 读回关键位置',
+        on_fail='按 error 修代码后再试一次；用户取消了就不要重试',
+    ), {"code": str})
 async def execute_vba(args):
     result = await call_csharp("execute_vba", {"code": args["code"]})
     return _wrap_result(result)
 
 
-@tool("execute_python", "执行纯计算的 Python 代码（字符串处理、正则、数学计算）。碰不到工作簿：读写 Excel 请用对应的工具或 execute_vba。脚本失败不会影响工作簿。", {"code": str})
+@tool("execute_python", _describe(
+        '执行纯计算的 Python 代码（字符串处理、正则、数学计算），碰不到工作簿，失败也不影响工作簿',
+        use='复杂文本处理或计算，算完再用写入工具写回',
+        avoid='读写工作簿（用对应工具或 execute_vba）、写文件到磁盘',
+        check='ok=true 时 data 里是代码的输出',
+    ), {"code": str})
 async def execute_python(args):
     result = await call_csharp("execute_python", {"code": args["code"]})
     return _wrap_result(result)
 
 
-@tool("create_snapshot", "创建当前工作簿快照（用于回滚）", {})
+@tool("create_snapshot", _describe(
+        '手动给当前工作簿做一个快照',
+        use='大改之前想多留一个回退点（修改类工具执行前已会自动备份，一般不需要）',
+        check='返回的快照 ID 可传给 rollback',
+    ), {})
 async def create_snapshot(args):
     result = await call_csharp("create_snapshot", {})
     return _wrap_result(result)
 
 
-@tool("add_sheet", "添加新的空白工作表（sheet）到当前工作簿", {"name": str})
+@tool("add_sheet", _describe(
+        '在当前工作簿添加一张新的空白工作表',
+        use='要把结果放到新表、或用户要新建表',
+        check=_CHECK_PLAIN,
+        on_fail='重名时换个名字',
+    ), {"name": str})
 async def add_sheet(args):
     result = await call_csharp("add_sheet", {"name": args["name"]})
     return _wrap_result(result)
 
 
-@tool("delete_sheet", "删除指定名称的工作表", {"name": str})
+@tool("delete_sheet", _describe(
+        '删除指定名称的工作表',
+        use='用户明确要删一张表',
+        check=_CHECK_PLAIN + '；其他表引用它的公式会变成 #REF!，删之前先向用户确认',
+    ), {"name": str})
 async def delete_sheet(args):
     result = await call_csharp("delete_sheet", {"name": args["name"]})
     return _wrap_result(result)
 
 
-@tool("rename_sheet", "重命名工作表", {"old_name": str, "new_name": str})
+@tool("rename_sheet", _describe(
+        '重命名工作表',
+        use='改表名',
+        check=_CHECK_PLAIN,
+        on_fail='重名或含非法字符时换个名字',
+    ), {"old_name": str, "new_name": str})
 async def rename_sheet(args):
     result = await call_csharp("rename_sheet", {
         "old_name": args["old_name"],
@@ -631,7 +882,12 @@ async def rename_sheet(args):
     return _wrap_result(result)
 
 
-@tool("set_number_format", "设置单元格区域的数字格式（如 #,##0.00 / 0% / yyyy-mm-dd）", {"address": str, "format": str})
+@tool("set_number_format", _describe(
+        '设置区域的数字格式（如 #,##0.00 / 0% / yyyy-mm-dd）',
+        use='改显示格式；值本身不变',
+        avoid='把文本转成数字（用 clean_data 的 text_to_number 或 clean_amount）',
+        check=_CHECK_PLAIN,
+    ), {"address": str, "format": str})
 async def set_number_format(args):
     result = await call_csharp("set_number_format", {
         "address": args["address"],
@@ -640,7 +896,11 @@ async def set_number_format(args):
     return _wrap_result(result)
 
 
-@tool("set_column_width", "设置列宽（auto_fit=True 时自动适应宽度，忽略 width）", {"address": str, "width": float, "auto_fit": bool})
+@tool("set_column_width", _describe(
+        '设置列宽；auto_fit=true 时自动适应内容宽度（忽略 width）',
+        use='内容显示不全或排版需要',
+        check=_CHECK_PLAIN,
+    ), {"address": str, "width": float, "auto_fit": bool})
 async def set_column_width(args):
     result = await call_csharp("set_column_width", {
         "address": args["address"],
@@ -650,7 +910,12 @@ async def set_column_width(args):
     return _wrap_result(result)
 
 
-@tool("sort_data", "对指定区域按行排序（不会交换列）。range_address: 数据区域（如 'A1:D100'，含表头则从表头行开始）；sort_column: 列字母如 'B' 或列序号如 '2'；descending: true降序/false升序；has_header: 【必传】第一行是否为列标题，是→true(表头不参与排序)，否→false。必须根据 read_range 结果判断后传入", {"range_address": str, "sort_column": str, "descending": bool, "has_header": bool})
+@tool("sort_data", _describe(
+        "对区域按某一列排序（整行一起移动，不会交换列）。range_address 含表头时从表头行开始；sort_column 写列字母如 'B' 或列序号如 '2'；descending 为 true 降序；has_header【必传】第一行是否表头，要根据读过的内容判断",
+        use='按某列排序',
+        avoid='只看前几名（读出来自己排）',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str, "sort_column": str, "descending": bool, "has_header": bool})
 async def sort_data(args):
     result = await call_csharp("sort_data", {
         "range_address": args["range_address"],
@@ -661,7 +926,12 @@ async def sort_data(args):
     return _wrap_result(result)
 
 
-@tool("filter_data", "对指定区域应用自动筛选（column_index 从 1 开始，criteria 如 '>100' 或 '北京'）", {"range_address": str, "column_index": int, "criteria": str})
+@tool("filter_data", _describe(
+        "对区域应用自动筛选（column_index 从 1 开始，criteria 如 '>100' 或 '北京'）",
+        use='用户要在表上筛出符合条件的行',
+        avoid='只是要统计符合条件的数量（用 COUNTIF 公式）',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str, "column_index": int, "criteria": str})
 async def filter_data(args):
     result = await call_csharp("filter_data", {
         "range_address": args["range_address"],
@@ -671,19 +941,33 @@ async def filter_data(args):
     return _wrap_result(result)
 
 
-@tool("merge_cells", "合并指定区域的单元格", {"address": str})
+@tool("merge_cells", _describe(
+        '合并指定区域的单元格',
+        use='做标题、排版',
+        avoid='数据区域（合并会让排序、筛选、公式出问题，数据区先劝用户别合并）',
+        check=_CHECK_PLAIN,
+    ), {"address": str})
 async def merge_cells(args):
     result = await call_csharp("merge_cells", {"address": args["address"]})
     return _wrap_result(result)
 
 
-@tool("unmerge_cells", "拆分指定区域内所有合并单元格", {"address": str})
+@tool("unmerge_cells", _describe(
+        '拆分区域内所有合并单元格',
+        use='要对数据排序、筛选、公式处理前',
+        check=_CHECK_PLAIN + '；拆开后只有左上角有值，需要时接着用 fill_blank_cells 补齐',
+    ), {"address": str})
 async def unmerge_cells(args):
     result = await call_csharp("unmerge_cells", {"address": args["address"]})
     return _wrap_result(result)
 
 
-@tool("set_cell_style", "设置单元格样式（颜色支持 hex 如 #FF0000 或颜色名 red/blue/green）", {"address": str, "font_name": str, "font_size": float, "bold": bool, "italic": bool, "font_color": str, "bg_color": str, "h_align": str, "v_align": str, "wrap_text": bool})
+@tool("set_cell_style", _describe(
+        '设置单元格样式：字体、字号、粗体、斜体、字体颜色、背景色、对齐、自动换行（颜色可写 hex 如 #FF0000 或 red/blue/green）',
+        use='表头加粗、标色、对齐',
+        avoid='按条件着色（用 apply_conditional_format）',
+        check=_CHECK_PLAIN,
+    ), {"address": str, "font_name": str, "font_size": float, "bold": bool, "italic": bool, "font_color": str, "bg_color": str, "h_align": str, "v_align": str, "wrap_text": bool})
 async def set_cell_style(args):
     result = await call_csharp("set_cell_style", {
         "address": args["address"],
@@ -700,7 +984,11 @@ async def set_cell_style(args):
     return _wrap_result(result)
 
 
-@tool("copy_range", "复制源区域到目标位置（含格式和公式）", {"source_address": str, "dest_address": str})
+@tool("copy_range", _describe(
+        '把源区域复制到目标位置（含格式和公式）；目标区域比源大时按源的形状重复填充',
+        use='复制一块表、把公式复制到别处',
+        check=_CHECK_WRITE,
+    ), {"source_address": str, "dest_address": str})
 async def copy_range(args):
     result = await call_csharp("copy_range", {
         "source_address": args["source_address"],
@@ -715,7 +1003,12 @@ async def copy_range(args):
     return _wrap_result(result)
 
 
-@tool("clear_range", "清空区域（clear_type: contents=只清内容, formats=只清格式, all=全部）", {"address": str, "clear_type": str})
+@tool("clear_range", _describe(
+        '清空区域：clear_type 为 contents 只清内容、formats 只清格式、all 全部清掉',
+        use='用户要清掉一块内容或格式',
+        avoid='删除整行整列（用 delete_rows / delete_columns）',
+        check=_CHECK_PLAIN,
+    ), {"address": str, "clear_type": str})
 async def clear_range(args):
     result = await call_csharp("clear_range", {
         "address": args["address"],
@@ -724,7 +1017,11 @@ async def clear_range(args):
     return _wrap_result(result)
 
 
-@tool("insert_rows", "在第 row 行前插入 count 行", {"row": int, "count": int})
+@tool("insert_rows", _describe(
+        '在第 row 行前插入 count 行',
+        use='要在表中间加行',
+        check=_CHECK_PLAIN,
+    ), {"row": int, "count": int})
 async def insert_rows(args):
     result = await call_csharp("insert_rows", {
         "row": args["row"],
@@ -733,7 +1030,12 @@ async def insert_rows(args):
     return _wrap_result(result)
 
 
-@tool("delete_rows", "从第 row 行开始删除 count 行", {"row": int, "count": int})
+@tool("delete_rows", _describe(
+        '从第 row 行开始删除 count 行',
+        use='用户明确要删某几行',
+        avoid='删空行（用 delete_blank_rows）',
+        check=_CHECK_PLAIN + '；删行会让下方数据上移、引用它的公式可能变 #REF!',
+    ), {"row": int, "count": int})
 async def delete_rows(args):
     result = await call_csharp("delete_rows", {
         "row": args["row"],
@@ -742,7 +1044,11 @@ async def delete_rows(args):
     return _wrap_result(result)
 
 
-@tool("insert_columns", "在第 column 列前插入 count 列（column 从 1 开始）", {"column": int, "count": int})
+@tool("insert_columns", _describe(
+        '在第 column 列前插入 count 列（column 从 1 开始）',
+        use='要在表中间加列',
+        check=_CHECK_PLAIN,
+    ), {"column": int, "count": int})
 async def insert_columns(args):
     result = await call_csharp("insert_columns", {
         "column": args["column"],
@@ -751,7 +1057,11 @@ async def insert_columns(args):
     return _wrap_result(result)
 
 
-@tool("delete_columns", "从第 column 列开始删除 count 列（column 从 1 开始）", {"column": int, "count": int})
+@tool("delete_columns", _describe(
+        '从第 column 列开始删除 count 列（column 从 1 开始）',
+        use='用户明确要删某几列',
+        check=_CHECK_PLAIN + '；引用被删列的公式会变 #REF!',
+    ), {"column": int, "count": int})
 async def delete_columns(args):
     result = await call_csharp("delete_columns", {
         "column": args["column"],
@@ -760,13 +1070,22 @@ async def delete_columns(args):
     return _wrap_result(result)
 
 
-@tool("freeze_panes", "冻结窗格（在指定单元格左上角冻结，如 'B2' 冻结 A 列和 1 行）", {"address": str})
+@tool("freeze_panes", _describe(
+        "冻结窗格：在指定单元格的左上方冻结（'B2' 冻结 A 列和第 1 行）",
+        use='表头或首列滚动时要保持可见',
+        check=_CHECK_PLAIN,
+    ), {"address": str})
 async def freeze_panes(args):
     result = await call_csharp("freeze_panes", {"address": args["address"]})
     return _wrap_result(result)
 
 
-@tool("apply_conditional_format", "应用条件格式（rule_type: color_scale/data_bar/highlight_rules/cell_value）", {"address": str, "rule_type": str, "rule_args": dict})
+@tool("apply_conditional_format", _describe(
+        '给区域应用条件格式（rule_type: color_scale / data_bar / highlight_rules / cell_value）',
+        use='按数值大小着色、数据条、标出超过阈值的格',
+        avoid='固定颜色（用 set_cell_style）',
+        check=_CHECK_PLAIN,
+    ), {"address": str, "rule_type": str, "rule_args": dict})
 async def apply_conditional_format(args):
     result = await call_csharp("apply_conditional_format", {
         "address": args["address"],
@@ -776,7 +1095,12 @@ async def apply_conditional_format(args):
     return _wrap_result(result)
 
 
-@tool("write_table", "将指定区域转换为 Excel 表格（ListObject，自带筛选和样式）", {"address": str, "table_name": str})
+@tool("write_table", _describe(
+        '把区域转换为 Excel 表格（ListObject，自带筛选和样式）',
+        use='用户要「套用表格格式」、要结构化引用',
+        check=_CHECK_PLAIN,
+        on_fail='区域和已有表格重叠时先用 list(kind=tables) 看已有表格',
+    ), {"address": str, "table_name": str})
 async def write_table(args):
     result = await call_csharp("write_table", {
         "address": args["address"],
@@ -785,19 +1109,32 @@ async def write_table(args):
     return _wrap_result(result)
 
 
-@tool("rollback", "把工作簿恢复到指定快照。修改类工具的结果里带 backup_snapshot_id（本回合第一次修改前自动做的备份），传入它即可撤销本回合的修改；结果里的 checkpoint_id 是这一步执行前的检查点，传入它只撤销这一步及之后的修改；恢复前会自动另存当前状态，恢复本身也可撤销。", {"snapshot_id": str})
+@tool("rollback", _describe(
+        '把工作簿恢复到指定快照；恢复前会自动另存当前状态，恢复本身也可撤销',
+        use='撤销修改：传 backup_snapshot_id 撤销本回合的全部修改；传某一步结果里的 checkpoint_id 只撤销这一步及之后',
+        check='ok=true 后告诉用户恢复到了哪一步',
+    ), {"snapshot_id": str})
 async def rollback(args):
     result = await call_csharp("rollback", {"snapshot_id": args["snapshot_id"]})
     return _wrap_result(result)
 
 
-@tool("delete_blank_rows", "删除指定区域内的空行（整行都为空的行将被删除，下方数据自动上移）", {"range_address": str})
+@tool("delete_blank_rows", _describe(
+        '删除区域内整行都为空的行，下方数据自动上移',
+        use='清掉数据中间的空行',
+        avoid='删除指定行（用 delete_rows）',
+        check=_CHECK_PLAIN + '；会删行，汇报时说删了几行',
+    ), {"range_address": str})
 async def delete_blank_rows(args):
     result = await call_csharp("delete_blank_rows", {"range_address": args["range_address"]})
     return _wrap_result(result)
 
 
-@tool("split_text_to_columns", "按分隔符拆分文本到多列（从指定列开始向右扩展）", {"range_address": str, "delimiter": str})
+@tool("split_text_to_columns", _describe(
+        '按分隔符把一列文本拆到右侧多列',
+        use='「张三,销售部」这类合在一格的信息要分开',
+        check=_CHECK_PLAIN + '；拆出的列会覆盖右侧原有内容，右侧有数据时先确认',
+    ), {"range_address": str, "delimiter": str})
 async def split_text_to_columns(args):
     result = await call_csharp("split_text_to_columns", {
         "range_address": args["range_address"],
@@ -806,13 +1143,22 @@ async def split_text_to_columns(args):
     return _wrap_result(result)
 
 
-@tool("fill_blank_cells", "向下填充空白单元格（用上方最近的非空值填充空白单元格）", {"range_address": str})
+@tool("fill_blank_cells", _describe(
+        '向下填充空白单元格：每个空格填上方最近的非空值',
+        use='合并单元格拆开后、或分组标签只写在第一行时补齐',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str})
 async def fill_blank_cells(args):
     result = await call_csharp("fill_blank_cells", {"range_address": args["range_address"]})
     return _wrap_result(result)
 
 
-@tool("highlight_duplicates", "高亮标记重复值（相同值的单元格标为浅红色背景）", {"range_address": str, "color": str})
+@tool("highlight_duplicates", _describe(
+        '把区域内重复的值标成浅红色背景（color 可改）',
+        use='只想标出重复、不删除',
+        avoid='直接删重复（用 clean_data 的 remove_duplicates）',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str, "color": str})
 async def highlight_duplicates(args):
     result = await call_csharp("highlight_duplicates", {
         "range_address": args["range_address"],
@@ -821,19 +1167,32 @@ async def highlight_duplicates(args):
     return _wrap_result(result)
 
 
-@tool("remove_special_chars", "去除文本中的特殊字符（非打印字符、不可见字符、不间断空格等）", {"range_address": str})
+@tool("remove_special_chars", _describe(
+        '去除文本里的特殊字符（非打印字符、不可见字符、不间断空格等）',
+        use='从系统导出的数据匹配不上、看起来一样却不相等时',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str})
 async def remove_special_chars(args):
     result = await call_csharp("remove_special_chars", {"range_address": args["range_address"]})
     return _wrap_result(result)
 
 
-@tool("clean_amount", "清洗金额数据：去除货币符号（¥/$/€）、千分位逗号，转为数字格式", {"range_address": str})
+@tool("clean_amount", _describe(
+        '清洗金额：去掉货币符号（¥/$/€）和千分位逗号，转成数字',
+        use='金额列是文本、求和为 0 或报错时',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str})
 async def clean_amount(args):
     result = await call_csharp("clean_amount", {"range_address": args["range_address"]})
     return _wrap_result(result)
 
 
-@tool("merge_columns", "合并多列内容为一列（用指定分隔符连接，跳过空值）", {"range_address": str, "delimiter": str, "target_column": str})
+@tool("merge_columns", _describe(
+        '把多列内容用分隔符连成一列（跳过空值），结果写到 target_column',
+        use='姓和名、省市区这类要拼成一列',
+        avoid='合并单元格（用 merge_cells）',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str, "delimiter": str, "target_column": str})
 async def merge_columns(args):
     result = await call_csharp("merge_columns", {
         "range_address": args["range_address"],
@@ -843,7 +1202,11 @@ async def merge_columns(args):
     return _wrap_result(result)
 
 
-@tool("rename_columns", "批量重命名列标题（修改第一行的列名）", {"range_address": str, "new_names": list})
+@tool("rename_columns", _describe(
+        '批量重命名列标题（改区域第一行的列名）',
+        use='统一或改写表头',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str, "new_names": list})
 async def rename_columns(args):
     result = await call_csharp("rename_columns", {
         "range_address": args["range_address"],
@@ -852,13 +1215,22 @@ async def rename_columns(args):
     return _wrap_result(result)
 
 
-@tool("collapse_spaces", "压缩内部多余空格（多个连续空格变为一个）", {"range_address": str})
+@tool("collapse_spaces", _describe(
+        '把文本里连续的多个空格压成一个',
+        use='文本中间有多余空格导致匹配失败',
+        check=_CHECK_PLAIN,
+    ), {"range_address": str})
 async def collapse_spaces(args):
     result = await call_csharp("collapse_spaces", {"range_address": args["range_address"]})
     return _wrap_result(result)
 
 
-@tool("add_data_labels", "为图表添加数据标签（chart_name 为空则操作当前工作表第一个图表）", {"chart_name": str, "position": str, "show_value": bool, "show_category_name": bool, "show_percentage": bool})
+@tool("add_data_labels", _describe(
+        '给图表加数据标签（chart_name 为空时操作当前表的第一个图表）',
+        use='用户要在图上显示数值、类别或百分比',
+        check=_CHECK_PLAIN,
+        on_fail='找不到图表时先用 list(kind=charts) 查图表名',
+    ), {"chart_name": str, "position": str, "show_value": bool, "show_category_name": bool, "show_percentage": bool})
 async def add_data_labels(args):
     result = await call_csharp("add_data_labels", {
         "chart_name": args.get("chart_name", ""),
@@ -870,7 +1242,12 @@ async def add_data_labels(args):
     return _wrap_result(result)
 
 
-@tool("set_chart_title", "设置/修改图表标题（chart_name 为空则操作当前工作表第一个图表）", {"chart_name": str, "title": str})
+@tool("set_chart_title", _describe(
+        '设置或修改图表标题（chart_name 为空时操作当前表的第一个图表）',
+        use='改图表标题',
+        check=_CHECK_PLAIN,
+        on_fail='找不到图表时先用 list(kind=charts) 查图表名',
+    ), {"chart_name": str, "title": str})
 async def set_chart_title(args):
     result = await call_csharp("set_chart_title", {
         "chart_name": args.get("chart_name", ""),
@@ -879,7 +1256,12 @@ async def set_chart_title(args):
     return _wrap_result(result)
 
 
-@tool("set_chart_colors", "设置图表系列颜色（按顺序为每个系列设置颜色，传入 hex 颜色数组如 ['#FF0000','#00FF00']）", {"chart_name": str, "colors": list})
+@tool("set_chart_colors", _describe(
+        "按顺序设置图表各系列颜色（hex 数组，如 ['#FF0000','#00FF00']）",
+        use='用户指定配色',
+        check=_CHECK_PLAIN,
+        on_fail='找不到图表时先用 list(kind=charts) 查图表名',
+    ), {"chart_name": str, "colors": list})
 async def set_chart_colors(args):
     result = await call_csharp("set_chart_colors", {
         "chart_name": args.get("chart_name", ""),
@@ -888,7 +1270,11 @@ async def set_chart_colors(args):
     return _wrap_result(result)
 
 
-@tool("create_combo_chart", "创建组合图（柱状+折线双轴图，line_series_index 指定哪个系列作为折线图）", {"data_range": str, "title": str, "x_label": str, "y_label": str, "secondary_y_label": str, "line_series_index": int})
+@tool("create_combo_chart", _describe(
+        '创建组合图（柱状 + 折线双轴），line_series_index 指定哪个系列画成折线',
+        use='两个量纲不同的指标要放在一张图（如销售额和增长率）',
+        check=_CHECK_PLAIN + '；之后修改要用图表名时，用 list(kind=charts) 查',
+    ), {"data_range": str, "title": str, "x_label": str, "y_label": str, "secondary_y_label": str, "line_series_index": int})
 async def create_combo_chart(args):
     result = await call_csharp("create_combo_chart", {
         "data_range": args["data_range"],
@@ -901,7 +1287,11 @@ async def create_combo_chart(args):
     return _wrap_result(result)
 
 
-@tool("export_chart", "导出图表为图片文件（PNG/JPG/GIF/BMP），返回输出路径", {"chart_name": str, "output_path": str, "format": str})
+@tool("export_chart", _describe(
+        '把图表导出为图片文件（PNG/JPG/GIF/BMP），返回输出路径',
+        use='用户要图表图片',
+        check='ok=true 时把返回的路径告诉用户',
+    ), {"chart_name": str, "output_path": str, "format": str})
 async def export_chart(args):
     result = await call_csharp("export_chart", {
         "chart_name": args.get("chart_name", ""),
@@ -911,7 +1301,12 @@ async def export_chart(args):
     return _wrap_result(result)
 
 
-@tool("refresh_pivot", "刷新数据透视表（数据变化后更新透视表结果）", {"pivot_table_name": str, "sheet_name": str})
+@tool("refresh_pivot", _describe(
+        '刷新数据透视表，让它反映源数据的最新变化',
+        use='改过源数据之后',
+        check=_CHECK_PLAIN,
+        on_fail='找不到透视表时先用 list(kind=pivots) 查名称',
+    ), {"pivot_table_name": str, "sheet_name": str})
 async def refresh_pivot(args):
     result = await call_csharp("refresh_pivot", {
         "pivot_table_name": args.get("pivot_table_name", ""),
@@ -920,7 +1315,12 @@ async def refresh_pivot(args):
     return _wrap_result(result)
 
 
-@tool("group_pivot_date", "透视表日期字段分组（按年/季度/月/日组合，group_by 如 'year,month'）", {"pivot_table_name": str, "field_name": str, "group_by": str, "sheet_name": str})
+@tool("group_pivot_date", _describe(
+        "把透视表的日期字段按年/季度/月/日分组（group_by 如 'year,month'）",
+        use='按月、按季度汇总',
+        check=_CHECK_PLAIN,
+        on_fail='日期字段里有文本或空值时分组会失败，先清洗源数据再刷新',
+    ), {"pivot_table_name": str, "field_name": str, "group_by": str, "sheet_name": str})
 async def group_pivot_date(args):
     result = await call_csharp("group_pivot_date", {
         "pivot_table_name": args.get("pivot_table_name", ""),
@@ -931,7 +1331,11 @@ async def group_pivot_date(args):
     return _wrap_result(result)
 
 
-@tool("set_pivot_value_display", "设置透视表值显示方式（normal/percent_of_column/percent_of_row/percent_of_total/running_total/rank）", {"pivot_table_name": str, "value_field": str, "display_type": str, "base_field": str, "sheet_name": str})
+@tool("set_pivot_value_display", _describe(
+        '设置透视表值的显示方式：normal / percent_of_column / percent_of_row / percent_of_total / running_total / rank',
+        use='要占比、累计或排名',
+        check=_CHECK_PLAIN,
+    ), {"pivot_table_name": str, "value_field": str, "display_type": str, "base_field": str, "sheet_name": str})
 async def set_pivot_value_display(args):
     result = await call_csharp("set_pivot_value_display", {
         "pivot_table_name": args.get("pivot_table_name", ""),
@@ -943,7 +1347,11 @@ async def set_pivot_value_display(args):
     return _wrap_result(result)
 
 
-@tool("set_pivot_totals", "控制透视表总计显示（行总计/列总计）", {"pivot_table_name": str, "show_row_totals": bool, "show_column_totals": bool, "sheet_name": str})
+@tool("set_pivot_totals", _describe(
+        '控制透视表的行总计和列总计是否显示',
+        use='用户要隐藏或显示总计',
+        check=_CHECK_PLAIN,
+    ), {"pivot_table_name": str, "show_row_totals": bool, "show_column_totals": bool, "sheet_name": str})
 async def set_pivot_totals(args):
     result = await call_csharp("set_pivot_totals", {
         "pivot_table_name": args.get("pivot_table_name", ""),
@@ -954,7 +1362,11 @@ async def set_pivot_totals(args):
     return _wrap_result(result)
 
 
-@tool("add_pivot_slicer", "为透视表添加切片器（交互式筛选）", {"pivot_table_name": str, "field_name": str, "sheet_name": str})
+@tool("add_pivot_slicer", _describe(
+        '给透视表的某个字段加切片器（交互式筛选按钮）',
+        use='用户要能点选筛选的报表',
+        check=_CHECK_PLAIN,
+    ), {"pivot_table_name": str, "field_name": str, "sheet_name": str})
 async def add_pivot_slicer(args):
     result = await call_csharp("add_pivot_slicer", {
         "pivot_table_name": args.get("pivot_table_name", ""),
@@ -975,13 +1387,23 @@ async def add_pivot_slicer(args):
 
 # ============================ Computer Use 工具 ============================
 
-@tool("screenshot_excel", "截图 Excel 主窗口（Computer Use）。仅在用户主动要求截图/computer use 时调用，禁止主动截图验证工具执行效果。返回 base64 JPEG（缩放到最大宽 1280px，<300KB）。无需传参。", {})
+@tool("screenshot_excel", _describe(
+        '截图 Excel 主窗口（Computer Use），返回 base64 JPEG（最大宽 1280px，<300KB），无需传参',
+        use='用户主动要求截图 / computer use 时',
+        avoid='主动截图验证工具执行效果（用工具结果和 read_range）',
+        check=_CHECK_PLAIN,
+    ), {})
 async def screenshot_excel(args):
     result = await call_csharp("screenshot_excel", {})
     return _wrap_result(result)
 
 
-@tool("send_keys", "模拟键盘输入到 Excel 窗口（Computer Use）。仅用于操作 Excel 原生对话框/弹窗（如 {ESC} 关闭弹窗）。禁止用快捷键替代专门工具（保存/复制/撤销等用对应工具）。keys 语法：{ENTER}/{ESC}/{TAB}/{UP}/{DOWN} 等；+Shift ^Ctrl %Alt 前缀。", {"keys": str})
+@tool("send_keys", _describe(
+        '向 Excel 窗口模拟键盘输入（Computer Use）。keys 语法：{ENTER} {ESC} {TAB} {UP} {DOWN} 等，+Shift ^Ctrl %Alt 前缀',
+        use='操作 Excel 原生对话框/弹窗（如 {ESC} 关掉弹窗）',
+        avoid='用快捷键替代专门工具（保存、复制、撤销等都有对应工具）',
+        check=_CHECK_PLAIN,
+    ), {"keys": str})
 async def send_keys(args):
     result = await call_csharp("send_keys", {"keys": args["keys"]})
     return _wrap_result(result)
