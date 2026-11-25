@@ -45,6 +45,10 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         public string CurrentConversationId { get; private set; }
 
+        /// <summary>当前对话的引擎会话 id 与指纹（侧车 engine_session 报上来），随对话存盘。</summary>
+        public string EngineSessionId { get; private set; }
+        public string EngineFingerprint { get; private set; }
+
         /// <summary>
         /// ★ 当前对话的消息列表（in-memory）。
         /// 每次 user_message/tool_call/stream_end 时追加，stream_end 时持久化。
@@ -88,6 +92,11 @@ namespace DeepExcel.AddIn.Bridge
             _excelApp = excelApp;
 
             Sidecar = new PythonSidecar(excelActions, excelApp, uiControl, securityGateway);
+            Sidecar.OnEngineSession += (_, sessionId, fingerprint) =>
+            {
+                EngineSessionId = sessionId;
+                EngineFingerprint = fingerprint;
+            };
 
             // 附件目录：用 workboookKey 的 hash 做目录名，避免路径含特殊字符
             int hash = Math.Abs(workbookKey.GetHashCode());
@@ -438,6 +447,8 @@ namespace DeepExcel.AddIn.Bridge
             // 清空内存
             ConversationMessages.Clear();
             CurrentConversationId = Guid.NewGuid().ToString("N");
+            EngineSessionId = null;
+            EngineFingerprint = null;
             PendingClarifyQuestion = null;
             IsBusy = false;
 
@@ -477,6 +488,11 @@ namespace DeepExcel.AddIn.Bridge
                 }
             }
             CurrentConversationId = target.Id;
+            EngineSessionId = target.EngineSessionId;
+            EngineFingerprint = target.EngineFingerprint;
+            // 侧车重启后随 restore_history 带回去：能接上原会话就 resume，接不上退回摘要
+            Sidecar.PendingResumeSessionId = target.EngineSessionId;
+            Sidecar.PendingResumeFingerprint = target.EngineFingerprint;
             PendingClarifyQuestion = null;
             IsBusy = false;
 
@@ -622,6 +638,11 @@ namespace DeepExcel.AddIn.Bridge
                     : (firstUser?.content ?? "新对话");
                 existing.UpdatedAt = DateTime.Now;
                 existing.Messages = new List<Collaboration.HistoryMessage>(ConversationMessages);
+                if (!string.IsNullOrEmpty(EngineSessionId))
+                {
+                    existing.EngineSessionId = EngineSessionId;
+                    existing.EngineFingerprint = EngineFingerprint;
+                }
 
                 Collaboration.ConversationHistory.SaveAll(WorkbookKey, WorkbookName, convs);
                 Logger.Instance.Info("WorkbookSession",

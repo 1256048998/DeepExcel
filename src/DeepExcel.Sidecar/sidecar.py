@@ -77,6 +77,7 @@ from claude_agent_sdk.types import (
 import explorer
 import selfcheck
 import knowledge_skills
+import engine_session
 import permission_modes
 import tools_v2
 import turn_context
@@ -1021,6 +1022,11 @@ async def handle_sdk_message(response, client=None):
                 "compaction", trigger=meta.get("trigger") or "auto", pre_tokens=meta.get("pre_tokens")))
     elif isinstance(response, ResultMessage):
         in_tok, out_tok = _usage_tokens(getattr(response, "usage", None))
+        # ★ 引擎会话 id 报给宿主，随对话存盘；继续这段对话时用它 resume（engine_session.py）
+        session_id = getattr(response, "session_id", None)
+        if engine_session.should_report(session_id):
+            await write_message({"type": "engine_session", "session_id": session_id,
+                                 "fingerprint": _engine_fingerprint})
         await _close_unfinished_tools("no_result", "没有收到这个工具的结果")
         outcome = {
             "success": "success",
@@ -1110,8 +1116,34 @@ async def defer_leftover_steer() -> None:
     })
 
 
-async def run_agent_loop(client, supports_vision: bool = True, model: str = "", base_url: str = ""):
-    """主循环：从 user_message queue 取消息，发给 SDK 处理"""
+# 当前出口的指纹（模型 + base_url），main() 里设好；engine_session 消息和 resume 判断都用它
+_engine_fingerprint = ""
+
+
+async def _maybe_resume(client, reconnect):
+    """继续历史对话：能接上原会话就换成 resume 的客户端，返回 (client, resumed)。"""
+    request = _message_buffer.get("restore_resume")
+    _message_buffer["restore_resume"] = None
+    if request is None or reconnect is None:
+        return client, False
+    session_id, reason = engine_session.resume_target(request, _engine_fingerprint)
+    if not session_id:
+        sys.stderr.write(f"[sidecar] resume skipped ({reason}), falling back to the history summary\n")
+        return client, False
+    try:
+        resumed = await reconnect(session_id)
+    except Exception as exc:  # noqa: BLE001 -- any failure: keep the fresh client and the summary
+        sys.stderr.write(f"[sidecar] resume failed ({type(exc).__name__}: {exc}), falling back to the history summary\n")
+        return client, False
+    sys.stderr.write(f"[sidecar] resumed engine session {session_id}\n")
+    return resumed, True
+
+
+async def run_agent_loop(client, supports_vision: bool = True, model: str = "", base_url: str = "",
+                         reconnect=None):
+    """主循环：从 user_message queue 取消息，发给 SDK 处理。
+
+    reconnect(session_id) -> 新客户端：继续历史对话时用 resume 接上原会话（见 engine_session）。"""
     global _needs_drain
     while True:
         msg = await _message_buffer["user_message"].get()
@@ -1150,6 +1182,12 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
 
         history = _message_buffer.get("restore_history")
         has_history = history and isinstance(history, list) and len(history) > 0
+        if has_history:
+            client, resumed = await _maybe_resume(client, reconnect)
+            if resumed:
+                # 原会话整段都在，摘要不用再发
+                has_history = False
+                _message_buffer["restore_history"] = None
         has_attachments = attachments and isinstance(attachments, list) and len(attachments) > 0
 
         # ★ 本轮消息：上下文块在前、用户的请求在最后（见 turn_context 的说明）。
@@ -1420,7 +1458,26 @@ async def main():
 
         sys.stderr.write(f"[sidecar] creating ClaudeSDKClient, model={model}, base_url={base_url_for_check}, supports_vision={vision_ok}\n")
         sys.stderr.flush()
+        global _engine_fingerprint
+        _engine_fingerprint = engine_session.fingerprint(model, base_url_for_check)
+        current = {"client": None}
+
+        async def reconnect(session_id: str):
+            """断开当前客户端，用 resume 连回 session_id 那段会话"""
+            import dataclasses
+            fresh = ClaudeSDKClient(options=dataclasses.replace(options, resume=session_id))
+            await fresh.connect()
+            old = current["client"]
+            current["client"] = fresh
+            if old is not None:
+                try:
+                    await old.disconnect()
+                except Exception as exc:  # noqa: BLE001
+                    sys.stderr.write(f"[sidecar] old client disconnect failed: {exc}\n")
+            return fresh
+
         client = ClaudeSDKClient(options=options)
+        current["client"] = client
         try:
             await client.connect()
         except Exception as exc:
@@ -1451,9 +1508,10 @@ async def main():
             sys.stderr.write("[sidecar] ClaudeSDKClient connected, entering agent loop\n")
             sys.stderr.flush()
             # 在 task_group 里跑主循环，reader 继续在后台跑
-            await run_agent_loop(client, supports_vision=vision_ok, model=model, base_url=base_url_for_check)
+            await run_agent_loop(client, supports_vision=vision_ok, model=model, base_url=base_url_for_check,
+                                 reconnect=reconnect)
         finally:
-            await client.disconnect()
+            await current["client"].disconnect()
 
         # 主循环退出后，取消 reader
         tg.cancel_scope.cancel()

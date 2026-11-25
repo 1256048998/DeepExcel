@@ -55,6 +55,29 @@ namespace DeepExcel.Tests
             Assert.Equal("w", doc.RootElement.GetProperty("warning").GetString());
         }
 
+        [Fact]
+        public void Restore_history_carries_the_engine_session_only_when_there_is_one()
+        {
+            var messages = new System.Collections.Generic.List<DeepExcel.AddIn.Collaboration.HistoryMessage>
+            {
+                new DeepExcel.AddIn.Collaboration.HistoryMessage { role = "user", content = "汇总一下" },
+            };
+            using (var doc = System.Text.Json.JsonDocument.Parse(
+                PythonSidecar.BuildRestoreHistoryJson(messages, "sess-1", "fp-1")))
+            {
+                var root = doc.RootElement;
+                Assert.Equal("restore_history", root.GetProperty("type").GetString());
+                Assert.Equal("sess-1", root.GetProperty("resume_session_id").GetString());
+                Assert.Equal("fp-1", root.GetProperty("resume_fingerprint").GetString());
+                Assert.Equal(1, root.GetProperty("messages").GetArrayLength());
+            }
+            using (var doc = System.Text.Json.JsonDocument.Parse(
+                PythonSidecar.BuildRestoreHistoryJson(messages, null, null)))
+            {
+                Assert.False(doc.RootElement.TryGetProperty("resume_session_id", out _));
+            }
+        }
+
         // ★ IExcelActions mock 已抽到共享的 FakeExcelActions.cs，
         // 避免接口增加方法时每个测试文件都要各自补一遍 stub
     }

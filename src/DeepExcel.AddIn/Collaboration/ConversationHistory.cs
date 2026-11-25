@@ -189,6 +189,10 @@ namespace DeepExcel.AddIn.Collaboration
         public DateTime? UpdatedAt { get; set; }
         public string WorkbookName { get; set; }    // 冗余字段，历史列表展示用
         public List<HistoryMessage> Messages { get; set; } = new List<HistoryMessage>();
+        /// <summary>这段对话最后一次的引擎会话 id；旧记录没有，继续时退回摘要。</summary>
+        public string EngineSessionId { get; set; }
+        /// <summary>那次会话用的模型 + 出口指纹（侧车算）；和现在不一致时不 resume。</summary>
+        public string EngineFingerprint { get; set; }
     }
 
     /// <summary>历史文件结构</summary>

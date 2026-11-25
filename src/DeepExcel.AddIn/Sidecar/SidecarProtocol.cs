@@ -24,6 +24,11 @@ namespace DeepExcel.AddIn.Sidecar
         public const string TypePermissionRequest = "permission_request";
         /// <summary>面板事件信封（docs/ui-event-protocol.md），宿主原样转发给面板。</summary>
         public const string TypeUiEvent = "ui_event";
+        /// <summary>
+        /// 引擎（Claude Code CLI）的会话 id 和出口指纹。宿主随对话存起来，继续这段对话时
+        /// 随 restore_history 带回去，侧车用 resume 接上原会话，而不是只给一段 8000 字摘要。
+        /// </summary>
+        public const string TypeEngineSession = "engine_session";
 
         // C# → Python（权限响应）
         public const string TypePermissionResponse = "permission_response";

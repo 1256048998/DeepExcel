@@ -24,6 +24,7 @@ _message_buffer: Dict[str, Any] = {
     "cancel": None,           # asyncio.Event，在 _init_buffer() 中创建
     "config": None,           # asyncio.Queue，在 _init_buffer() 中创建
     "restore_history": None,  # ★ 历史对话恢复（list of {role, content}），None 表示无历史
+    "restore_resume": None,  # ★ 继续对话时宿主带回的引擎会话 {session_id, fingerprint}，见 engine_session.py
     "permission_response": {}, # ★ request_id -> decision（"allow"/"deny"），PreToolUse hook 等待
     # ★ 任务进行中用户又发的消息（steer=true）。PostToolUse 钩子在下一个工具结果后把它
     # 注入给模型；本轮结束还没注入的，转成下一条普通用户消息，不会丢。
@@ -120,6 +121,9 @@ def route_message(msg: dict) -> None:
     elif t == "restore_history":
         # ★ 历史对话恢复：存到全局变量，sidecar 主循环会在首条 user_message 时注入
         _message_buffer["restore_history"] = msg.get("messages", [])
+        if msg.get("resume_session_id"):
+            _message_buffer["restore_resume"] = {"session_id": msg.get("resume_session_id"),
+                                                 "fingerprint": msg.get("resume_fingerprint")}
         _log(f"route_message: restore_history stored, count={len(_message_buffer['restore_history'] or [])}")
     elif t == "permission_response":
         # ★ 权限确认响应：存到字典，PreToolUse hook 用 request_id 查找

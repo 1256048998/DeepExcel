@@ -65,6 +65,15 @@ namespace DeepExcel.AddIn.Sidecar
         public event Action<PythonSidecar, string> OnError;
         // ★ AI Native 权限确认：PreToolUse hook 请求用户确认高风险工具
         public event Action<PythonSidecar, string, string, Dictionary<string, object>> OnPermissionRequest;
+        /// <summary>侧车报告引擎会话 id 与出口指纹（engine_session）。</summary>
+        public event Action<PythonSidecar, string, string> OnEngineSession;
+
+        /// <summary>
+        /// 下一次 restore_history 要带上的引擎会话（继续历史对话时由 WorkbookSession 设置，发出后清空）。
+        /// 侧车只在指纹（模型 + 出口）和现在一致、且会话记录还在时才 resume，否则退回摘要。
+        /// </summary>
+        public string PendingResumeSessionId { get; set; }
+        public string PendingResumeFingerprint { get; set; }
 
         public PythonSidecar(IExcelActions excel, Microsoft.Office.Interop.Excel.Application excelApp, Control uiControl, DeepExcel.AddIn.Security.SecurityGateway securityGateway = null)
         {
@@ -321,8 +330,22 @@ namespace DeepExcel.AddIn.Sidecar
         public void SendRestoreHistory(List<DeepExcel.AddIn.Collaboration.HistoryMessage> messages)
         {
             if (messages == null || messages.Count == 0) return;
-            var msg = new { type = SidecarProtocol.TypeRestoreHistory, messages };
-            WriteLine(JsonSerializer.Serialize(msg, _jsonOptions));
+            var resumeId = PendingResumeSessionId;
+            var fingerprint = PendingResumeFingerprint;
+            PendingResumeSessionId = null;
+            PendingResumeFingerprint = null;
+            WriteLine(BuildRestoreHistoryJson(messages, resumeId, fingerprint));
+        }
+
+        /// <summary>restore_history 消息；没有引擎会话时不带 resume 字段（旧侧车照旧只用摘要）。</summary>
+        internal static string BuildRestoreHistoryJson(List<DeepExcel.AddIn.Collaboration.HistoryMessage> messages,
+            string resumeSessionId, string resumeFingerprint)
+        {
+            object msg = string.IsNullOrEmpty(resumeSessionId)
+                ? (object)new { type = SidecarProtocol.TypeRestoreHistory, messages }
+                : new { type = SidecarProtocol.TypeRestoreHistory, messages,
+                        resume_session_id = resumeSessionId, resume_fingerprint = resumeFingerprint };
+            return JsonSerializer.Serialize(msg, _jsonOptions);
         }
 
         public void SendToolResult(string callId, bool success, object data, string error, string suggestion, object context,
@@ -472,6 +495,15 @@ namespace DeepExcel.AddIn.Sidecar
                         }
                         Logger.Instance.Info("PythonSidecar", $"OnPermissionRequest: tool={permTool}, req_id={permReqId}");
                         SafeBeginInvoke(() => OnPermissionRequest?.Invoke(this, permReqId, permTool, permArgs));
+                        break;
+
+                    case SidecarProtocol.TypeEngineSession:
+                        var engineSession = root.TryGetProperty("session_id", out var sidEl) ? sidEl.GetString() : null;
+                        var engineFingerprint = root.TryGetProperty("fingerprint", out var fpEl) ? fpEl.GetString() : null;
+                        if (!string.IsNullOrEmpty(engineSession))
+                        {
+                            SafeBeginInvoke(() => OnEngineSession?.Invoke(this, engineSession, engineFingerprint));
+                        }
                         break;
 
                     case SidecarProtocol.TypeUiEvent:
