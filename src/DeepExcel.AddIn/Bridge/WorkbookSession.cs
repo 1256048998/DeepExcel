@@ -85,6 +85,7 @@ namespace DeepExcel.AddIn.Bridge
         {
             WorkbookKey = workbookKey;
             WorkbookName = workbookName;
+            _excelApp = excelApp;
 
             Sidecar = new PythonSidecar(excelActions, excelApp, uiControl, securityGateway);
 
@@ -248,6 +249,50 @@ namespace DeepExcel.AddIn.Bridge
         /// <summary>两轮之间发生、模型必须知道的事（例如用户回退到了之前的检查点）</summary>
         public List<string> HostNotices { get; set; }
 
+        private readonly Microsoft.Office.Interop.Excel.Application _excelApp;
+
+        // The host does not change while the add-in is loaded, so it is probed once
+        // per process: one Evaluate call the first time a message is sent.
+        private static object _hostInfo;
+        private static readonly object HostInfoLock = new object();
+
+        /// <summary>
+        /// 宿主名称、版本和是否支持动态数组（FILTER / UNIQUE / SEQUENCE 会溢出）。
+        /// 模型据此决定写 =FILTER(...) 还是退回 INDEX/SMALL 那套老写法；侧车只在首轮和压缩后带上。
+        /// 取不到的字段为 null，侧车按「不知道」处理。
+        /// </summary>
+        internal static object ProbeHostInfo(Microsoft.Office.Interop.Excel.Application app)
+        {
+            if (app == null) return null;
+            lock (HostInfoLock)
+            {
+                if (_hostInfo != null) return _hostInfo;
+                string name = null, version = null, build = null;
+                bool? dynamicArrays = null;
+                try { name = app.Name; } catch { }
+                try { version = app.Version; } catch { }
+                try { build = Convert.ToString(app.Build); } catch { }
+                try
+                {
+                    // ROWS(SEQUENCE(2)) is 2 only where dynamic arrays exist; older
+                    // builds return an error value (an Int32 code) instead.
+                    object probe = app.Evaluate("=ROWS(SEQUENCE(2))");
+                    // Excel hands numbers back as double; accept other numeric
+                    // types too (error values are large negative Int32 codes).
+                    dynamicArrays = (probe is double || probe is int || probe is long || probe is decimal)
+                        && Math.Abs(Convert.ToDouble(probe) - 2) < 1e-9;
+                }
+                catch
+                {
+                    // Excel busy (call rejected) or no workbook to evaluate in:
+                    // that says nothing about the host, so try again next message.
+                }
+                var info = new { name, version, build, dynamicArrays };
+                if (dynamicArrays.HasValue && version != null) _hostInfo = info;
+                return info;
+            }
+        }
+
         public object BuildContext(IExcelActions excelActions, bool includeSelection = true)
         {
             try
@@ -324,6 +369,7 @@ namespace DeepExcel.AddIn.Bridge
                     structure = SemanticIndex,
                     userEdits = UserEdits,
                     hostNotices = HostNotices,
+                    host = ProbeHostInfo(_excelApp),
                     timestamp = DateTime.Now.ToString("o"),
                 };
             }

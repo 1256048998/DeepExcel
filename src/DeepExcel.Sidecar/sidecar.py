@@ -78,6 +78,7 @@ import explorer
 import selfcheck
 import knowledge_skills
 import permission_modes
+import turn_context
 import workbook_memory
 import ui_events
 import sdk_compat
@@ -692,7 +693,7 @@ def _collect_pdf_blocks(attachments: list) -> list:
     return blocks
 
 
-def _build_excel_context_lite(context: dict) -> str:
+def _build_excel_context_lite(context: dict, include_structure: bool = True) -> str:
     """从 context 中提取轻量级 Excel 上下文（地址、sheet 名、行列数），
     拼成简短文本注入用户消息。这样 AI 不需要额外调 read_workbook/read_selection。
     """
@@ -742,7 +743,9 @@ def _build_excel_context_lite(context: dict) -> str:
     # it replaces the read_range round-trips the model would otherwise make just
     # to work out what the sheet contains -- which on a large sheet it cannot do
     # completely anyway.
-    structure = context.get("structure")
+    # run_agent_loop passes include_structure=False and lets turn_context decide
+    # whether this turn needs it (only when it changed or after compaction).
+    structure = context.get("structure") if include_structure else None
     if isinstance(structure, str) and structure.strip():
         header += structure.rstrip() + "\n"
 
@@ -855,8 +858,10 @@ _memory_reinject = False
 
 
 def _mark_memory_stale() -> None:
+    """上下文被压缩过：记忆、工作簿结构、宿主信息下一轮都重新带上"""
     global _memory_reinject
     _memory_reinject = True
+    turn_context.reset()
 
 
 def _record_history(tool_use_id: str, name: str, result: dict) -> None:
@@ -1118,22 +1123,18 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
         has_history = history and isinstance(history, list) and len(history) > 0
         has_attachments = attachments and isinstance(attachments, list) and len(attachments) > 0
 
-        # ★ 附件上下文注入：如果有附件，把附件信息拼到用户消息前面
-        final_text = user_text
+        # ★ 本轮消息：上下文块在前、用户的请求在最后（见 turn_context 的说明）。
+        # 工作簿结构和宿主信息只在变了、或压缩过后才重发；当前表、选区、用户改动每轮都带。
+        att_context = ""
         if has_attachments:
             att_context = _build_attachment_context(attachments, supports_vision=supports_vision)
             if att_context:
-                final_text = att_context + "\n\n用户问题：\n" + user_text
                 sys.stderr.write(f"[sidecar] attachment context injected ({len(attachments)} attachments)\n")
-                sys.stderr.flush()
 
-        # ★ 轻量级 Excel 上下文注入：把选中区域地址、sheet 名等信息拼到用户消息前
-        # 这样 AI 不需要额外调 read_workbook/read_selection 就能知道基本信息
-        excel_ctx = _build_excel_context_lite(context)
-        if excel_ctx:
-            final_text = excel_ctx + "\n" + final_text
-            sys.stderr.write(f"[sidecar] excel context lite injected\n")
-            sys.stderr.flush()
+        excel_ctx = _build_excel_context_lite(context, include_structure=False)
+        turn = turn_context.Turn(
+            context.get("structure") if isinstance(context, dict) else None,
+            context.get("host") if isinstance(context, dict) else None)
 
         # ★ 工作簿记忆（CLAUDE.md 的工作簿版）：本会话第一次、用户在面板里改过、或上下文压缩过后注入
         global _memory_reinject
@@ -1141,28 +1142,29 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
             workbook_memory.use_context(context), force=_memory_reinject)
         _memory_reinject = False
         if memory_text:
-            final_text = memory_text + "\n\n" + final_text
             sys.stderr.write(f"[sidecar] workbook memory injected ({len(memory_text)} chars)\n")
-            sys.stderr.flush()
 
-        # ★ 思考过程显示在面板里给用户看：放在消息末尾提醒用中文思考
-        # （2026-09-25 实测 DeepSeek：只写在系统提示词里，思考仍是英文）
-        if thinking_config()["type"] != "disabled":
-            final_text += THINKING_LANGUAGE_NOTE
-
-        # ★ 权限模式（只出方案 / 自动应用写入）：每轮都说，模型不用记
-        mode_note = permission_modes.turn_note()
-        if mode_note:
-            final_text = mode_note + final_text
-
-        # ★ 历史上下文注入：如果 C# 发了 restore_history，把历史对话摘要拼到首条用户消息前。
+        # ★ 历史上下文注入：如果 C# 发了 restore_history（继续之前的对话），把历史对话摘要放进上下文
+        summary = ""
         if has_history:
             summary = _build_history_summary(history)
             if summary:
-                final_text = summary + "\n\n用户问题：\n" + final_text
                 sys.stderr.write(f"[sidecar] history context injected ({len(history)} messages)\n")
-                sys.stderr.flush()
             _message_buffer["restore_history"] = None
+
+        # ★ 思考过程显示在面板里给用户看：放在消息末尾提醒用中文思考
+        # （2026-09-25 实测 DeepSeek：只写在系统提示词里，思考仍是英文）
+        trailer = THINKING_LANGUAGE_NOTE if thinking_config()["type"] != "disabled" else ""
+
+        # ★ 权限模式（只出方案 / 自动应用写入）：每轮都说，紧挨着请求，模型不用记
+        final_text = turn_context.compose(
+            user_text,
+            [summary, memory_text, excel_ctx, att_context, turn.host_text, turn.structure_text],
+            instruction=permission_modes.turn_note(),
+            trailer=trailer)
+        sys.stderr.write(f"[sidecar] turn message assembled ({len(final_text)} chars, "
+                         f"structure={'resent' if turn.structure_sent else 'kept'})\n")
+        sys.stderr.flush()
 
         _message_buffer["turn_active"] = True
         try:
@@ -1189,6 +1191,8 @@ async def run_agent_loop(client, supports_vision: bool = True, model: str = "", 
                 await client.query(final_text)
                 sys.stderr.write("[sidecar] client.query() done, receiving response...\n")
             sys.stderr.flush()
+            # 发出去了才算「模型已经有这份结构」；发送失败的话下一轮还要再带
+            turn.commit()
 
             async with anyio.create_task_group() as inner_tg:
                 async def _cancel_watchdog():
