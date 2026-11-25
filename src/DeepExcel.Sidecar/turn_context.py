@@ -15,7 +15,8 @@ Layout (one message per turn):
 
 The request goes after the context, not before it: Anthropic's long-context
 guidance is to put long material first and the query last, which on a large
-structure summary is exactly the case here. REQUEST_LAST flips it back.
+structure summary is exactly the case here. Decided 2026-11-25: follow
+Claude's guidance and keep the request last. REQUEST_LAST flips it back.
 
 What is sent once instead of every turn:
   * the workbook structure summary -- re-sent only when it changed, or after the
