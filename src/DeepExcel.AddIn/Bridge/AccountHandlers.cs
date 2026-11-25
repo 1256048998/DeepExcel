@@ -32,13 +32,27 @@ namespace DeepExcel.AddIn.Bridge
             Task.Run(work).GetAwaiter().GetResult();
         }
 
+        private readonly object _accountSessionLock = new object();
+
+        /// <summary>
+        /// Set from the moment startup restore is scheduled until it finishes,
+        /// covering the gap before the restore task has even created the session.
+        /// </summary>
+        private volatile bool _accountRestorePending;
+
         private SessionManager RequireSession()
         {
-            if (AccountSession == null)
+            // Startup restore (a pool thread) and a sign-in click (the UI thread)
+            // can both get here first; two managers would put the restored
+            // session and the signed-in one in different objects.
+            lock (_accountSessionLock)
             {
-                AccountSession = new SessionManager();
+                if (AccountSession == null)
+                {
+                    AccountSession = new SessionManager();
+                }
+                return AccountSession;
             }
-            return AccountSession;
         }
 
         /// <summary>
@@ -104,15 +118,21 @@ namespace DeepExcel.AddIn.Bridge
             try
             {
                 var session = AccountSession;
+                // Still restoring the stored sign-in: state reads signedout, but the
+                // panel must ask again shortly rather than show the sign-in page.
+                var restoring = _accountRestorePending || (session != null && session.IsRestoring);
                 if (session == null)
                 {
                     return MakeResponse("account_status", new
                     {
-                        state = "signed_out",
+                        // Same spelling as SessionState.SignedOut below; the panel
+                        // only knows "signedout".
+                        state = "signedout",
                         server_url = (string)null,
                         email = (string)null,
                         mode = (string)null,
-                        entitlement = (object)null
+                        entitlement = (object)null,
+                        restoring
                     });
                 }
 
@@ -131,7 +151,8 @@ namespace DeepExcel.AddIn.Bridge
                     hosted_model = catalog != null && catalog.Count > 0
                         ? Account.SidecarRoutingResolver.PickHostedModel(
                             catalog, ConfigManager.Instance.Current.HostedModel, ConfigManager.Instance.Current.CurrentModel)
-                        : null
+                        : null,
+                    restoring
                 });
             }
             catch (Exception ex)
@@ -322,6 +343,7 @@ namespace DeepExcel.AddIn.Bridge
         /// </summary>
         public void RestoreAccountSessionAsync()
         {
+            _accountRestorePending = true;
             Task.Run(async () =>
             {
                 try
@@ -337,6 +359,10 @@ namespace DeepExcel.AddIn.Bridge
                 catch (Exception ex)
                 {
                     Logger.Instance.Warning("MessageBridge", "Account restore failed: " + ex.Message);
+                }
+                finally
+                {
+                    _accountRestorePending = false;
                 }
             });
         }

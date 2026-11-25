@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { sendToHostWithResponse } from '../bridge'
 import { providerIcons, providerOrder } from '../providerIcons'
 import type { ModelConfig, ProviderInfo } from '../types'
+import { pickSelectedProvider, shouldResetForm } from '../utils/providerSync'
 
 interface Props {
   open: boolean
@@ -71,9 +72,18 @@ export function ModelConfigPanel({ open, onClose }: Props) {
     setModels(next)
   }
 
+  // ★ 弹窗刚打开：下一次 config 到达时选中厂商跟随 currentProvider、表单整体重置。
+  //   除此之外 config 的变化（导入/添加模型、测试连接、删 Key……）都不能改用户选中的厂商，
+  //   见 utils/providerSync.ts。
+  const resyncOnNextConfigRef = useRef(false)
+  // 表单里当前装着哪家厂商的字段；与 selectedProvider 不同时才整体重置表单
+  const formProviderRef = useRef('')
+
   // 打开时加载配置
   useEffect(() => {
     if (open) {
+      resyncOnNextConfigRef.current = true
+      formProviderRef.current = ''
       loadConfig()
       setTestResult(null)
       setSaveMsg('')
@@ -85,10 +95,12 @@ export function ModelConfigPanel({ open, onClose }: Props) {
     }
   }, [open])
 
-  // 加载配置后同步表单
+  // 加载配置后决定选中哪家厂商：只有刚打开弹窗时才跟随 currentProvider
   useEffect(() => {
     if (config) {
-      setSelectedProvider(config.currentProvider)
+      const resync = resyncOnNextConfigRef.current
+      resyncOnNextConfigRef.current = false
+      setSelectedProvider(prev => pickSelectedProvider(prev, config, resync))
     }
   }, [config])
 
@@ -102,6 +114,15 @@ export function ModelConfigPanel({ open, onClose }: Props) {
       const p = config.providers[selectedProvider]
       // ★ 模型优先级列表：直接用后端保存的数组顺序（第 0 个为主模型）
       applyModels(Array.isArray(p.models) ? p.models : [])
+      if (!shouldResetForm(formProviderRef.current, selectedProvider)) {
+        // 同一家厂商的 config 刷新（导入/添加模型、测试连接后的 loadConfig）：
+        // 不动用户正在输入的 Key / Base URL；只在输入框没被改过时跟上"是否已配置 Key"
+        if (apiKey === KEEP_PLACEHOLDER) {
+          setApiKeyMode(mode => (mode === 'revealed' ? mode : p.hasApiKey ? 'hidden' : 'empty'))
+        }
+        return
+      }
+      formProviderRef.current = selectedProvider
       // ★ 重置 API Key 状态：已配置→hidden（password 模式显示 ********），未配置→empty
       setApiKey(KEEP_PLACEHOLDER)
       setApiKeyMode(p.hasApiKey ? 'hidden' : 'empty')
@@ -361,14 +382,12 @@ export function ModelConfigPanel({ open, onClose }: Props) {
       )
       if (resp?.type === 'config_saved' && resp.payload?.success) {
         setSaveMsg('✓ 已保存并应用')
-        // 重新加载配置以更新 hasApiKey 状态
+        // ★ 保存后 Key 已落盘：输入框回到占位状态，再重新加载配置。
+        // 同一厂商的 config 刷新会按最新的 hasApiKey 把 hidden 校正成 empty（如果确实没有 Key），
+        // 这里不能读闭包里的旧 config——那是保存之前的 hasApiKey。
+        setApiKey(KEEP_PLACEHOLDER)
+        setApiKeyMode('hidden')
         await loadConfig()
-        // ★ 保存后重置 API Key 状态：已配置→hidden，未配置→empty
-        const p = config?.providers?.[selectedProvider]
-        if (p) {
-          setApiKey(KEEP_PLACEHOLDER)
-          setApiKeyMode(p.hasApiKey ? 'hidden' : 'empty')
-        }
       } else if (resp?.type === 'error') {
         setSaveMsg('✗ ' + (resp.payload?.message || '保存失败'))
       } else {
