@@ -64,6 +64,19 @@ namespace DeepExcel.AddIn.Account
         public string Email { get; private set; }
         public string ServerUrl { get; private set; }
 
+        /// <summary>
+        /// True while <see cref="RestoreAsync"/> is still talking to the server.
+        /// State reads SignedOut during that window, which is not the same as
+        /// "not signed in": a panel asking now must wait, not show the sign-in
+        /// page (that was the "reopen and it asks me to sign in again" report).
+        /// </summary>
+        public bool IsRestoring
+        {
+            get { return Volatile.Read(ref _restoring) != 0; }
+        }
+
+        private int _restoring;
+
         public event Action<SessionState> StateChanged;
 
         /// <summary>
@@ -94,6 +107,19 @@ namespace DeepExcel.AddIn.Account
         /// must leave the user at the sign-in screen, not break the add-in.
         /// </summary>
         public async Task<SessionState> RestoreAsync(CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _restoring);
+            try
+            {
+                return await RestoreCoreAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _restoring);
+            }
+        }
+
+        private async Task<SessionState> RestoreCoreAsync(CancellationToken cancellationToken)
         {
             TokenVault.PersistedSession stored;
             if (!_vault.TryLoad(out stored) || string.IsNullOrEmpty(stored.ServerUrl))
@@ -281,13 +307,21 @@ namespace DeepExcel.AddIn.Account
 
         private void Persist()
         {
-            _vault.Save(new TokenVault.PersistedSession
+            bool saved = _vault.Save(new TokenVault.PersistedSession
             {
                 ServerUrl = ServerUrl,
                 RefreshToken = _refreshToken,
                 Email = Email,
                 LastVerifiedUtc = _lastVerifiedUtc
             });
+            if (!saved)
+            {
+                // Signed in for this process only: the next start will show the
+                // sign-in page again. Say so, instead of leaving that to be
+                // discovered from a user report.
+                Diagnostics.Logger.Instance.Warning(
+                    "SessionManager", "Session could not be persisted; the next start will be signed out");
+            }
         }
 
         private bool WithinGrace()

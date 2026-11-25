@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { pointsForModel, pointsLabel } from '../utils/points'
 import { sendToHostWithResponse } from '../bridge'
 import { LogoMark } from './Logo'
+import { readAccountReply, readInviteRequired } from '../utils/account'
 
 interface Props {
   open: boolean
@@ -42,6 +43,11 @@ export interface AccountStatus {
   hosted_models?: HostedModel[] | null
   /** 这个会话托管时实际会用的模型（宿主按目录挑好的） */
   hosted_model?: string | null
+  /**
+   * 宿主启动时还在用保存的登录凭据恢复会话（要联网，几秒）。此时 state 还是
+   * signedout，但不代表没登录——面板应稍后再问，而不是马上弹登录页。
+   */
+  restoring?: boolean
 }
 
 export interface HostedModel {
@@ -68,6 +74,15 @@ const STATE_LABELS: Record<AccountStatus['state'], string> = {
 
 /** 密码下限与服务端 RegisterRequest 保持一致 */
 const MIN_PASSWORD_LENGTH = 10
+
+/**
+ * 登录 / 注册在宿主里是两次联网（登录 + 取出口配置），每次最多 20 秒（AuthClient.Timeout）。
+ * 用桥接默认的 5 秒去等，网络稍慢就会先报「无响应」、随后宿主其实登录成功了，
+ * 面板却不知道。等得比宿主的上限长一点。
+ */
+const SIGN_IN_TIMEOUT_MS = 45000
+/** 单次联网的请求（服务器信息、退出登录）：宿主上限 20 秒 */
+const SINGLE_CALL_TIMEOUT_MS = 25000
 
 // 托管模式：当前模型每个任务扣几点 + 各模型点数表（数都是服务端给的）
 function PointsRows({ weights, fallback, currentModel }: {
@@ -126,8 +141,9 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
   const loadStatus = useCallback(async () => {
     try {
       const resp = await sendToHostWithResponse({ type: 'account_status', payload: {} }, 'account_status')
-      const next = resp?.payload as AccountStatus
-      if (next) {
+      const reply = readAccountReply(resp, '读取登录状态失败')
+      if (reply.ok) {
+        const next = reply.status
         applyStatus(next)
         if (next.mode === 'hosted') {
           try {
@@ -158,8 +174,9 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
       const resp = await sendToHostWithResponse(
         { type: 'account_server_meta', payload: {} },
         'account_server_meta',
+        SINGLE_CALL_TIMEOUT_MS,
       )
-      setInviteRequired(Boolean(resp?.payload?.invite_required))
+      setInviteRequired(readInviteRequired(resp))
     } catch {
       setInviteRequired(null)
     }
@@ -197,9 +214,16 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
           },
         },
         'account_status',
+        SIGN_IN_TIMEOUT_MS,
       )
-      if (!resp) throw new Error('服务器无响应，请稍后重试')
-      const next = resp.payload as AccountStatus
+      // 宿主失败时回 type:'error'（密码不对、要邀请码、连不上……），必须显示出来，
+      // 不能当成登录状态吞掉——那就是用户看到的「点了没反应」
+      const reply = readAccountReply(resp, mode === 'signin' ? '登录失败' : '注册失败')
+      if (!reply.ok) {
+        setError(reply.error)
+        return
+      }
+      const next = reply.status
       applyStatus(next)
       // 不保留在内存里，登录态由 C# 侧以 DPAPI 加密持久化
       setPassword('')
@@ -216,9 +240,14 @@ export function AccountPanel({ open, onClose, onStatusChange, variant = 'panel',
     setBusy(true)
     setError('')
     try {
-      const resp = await sendToHostWithResponse({ type: 'account_sign_out', payload: {} }, 'account_status')
-      if (!resp) throw new Error('服务器无响应，请稍后重试')
-      applyStatus(resp.payload as AccountStatus)
+      const resp = await sendToHostWithResponse(
+        { type: 'account_sign_out', payload: {} }, 'account_status', SINGLE_CALL_TIMEOUT_MS)
+      const reply = readAccountReply(resp, '退出登录失败')
+      if (!reply.ok) {
+        setError(reply.error)
+        return
+      }
+      applyStatus(reply.status)
     } catch (e: any) {
       setError(e?.message || '退出登录失败')
     } finally {

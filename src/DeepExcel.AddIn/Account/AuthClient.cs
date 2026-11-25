@@ -26,6 +26,41 @@ namespace DeepExcel.AddIn.Account
 
         private readonly HttpClient _http;
 
+        static AuthClient()
+        {
+            EnsureTls12();
+        }
+
+        /// <summary>
+        /// Makes sure TLS 1.2 is allowed for this process.
+        ///
+        /// The add-in runs inside excel.exe / wps.exe, whose .NET defaults are
+        /// chosen by the host, not by us; on some machines that leaves only
+        /// TLS 1.0 enabled, which modern servers and OS policies refuse. The
+        /// model-list and key-test paths already forced TLS 1.2, which meant
+        /// sign-in only got it if one of those had run first in the same
+        /// process. Adds the flag rather than overwriting, and leaves the OS
+        /// default alone when the process already defers to it.
+        /// </summary>
+        internal static void EnsureTls12()
+        {
+            try
+            {
+                var current = ServicePointManager.SecurityProtocol;
+                if (current == SecurityProtocolType.SystemDefault)
+                {
+                    return;
+                }
+                if ((current & SecurityProtocolType.Tls12) == 0)
+                {
+                    ServicePointManager.SecurityProtocol = current | SecurityProtocolType.Tls12;
+                }
+            }
+            catch (NotSupportedException)
+            {
+            }
+        }
+
         public AuthClient(string serverUrl, HttpMessageHandler handler = null)
         {
             if (string.IsNullOrWhiteSpace(serverUrl))

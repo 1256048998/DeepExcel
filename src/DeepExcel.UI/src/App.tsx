@@ -37,6 +37,7 @@ import { loadPrompts } from './utils/prompts'
 import { HOSTED_PROVIDER, buildHostedModelOptions, buildModelOptions, computeSetupNeeded } from './utils/modelSelection'
 import { GENERIC_STARTERS } from './components/StarterCard'
 import type { StarterView } from './components/StarterCard'
+import { readAccountReply } from './utils/account'
 import { recommendStarters, sampleQuestions, sampleRows, SAMPLE_NUMBER_FORMATS, SAMPLE_SHEET_NAME } from './utils/starter'
 import type { WorkbookOutline } from './utils/starter'
 
@@ -55,6 +56,9 @@ export interface AttachmentInfo {
 }
 
 const WELCOME_DISMISSED_KEY = 'deepexcel.welcomeLogin.dismissed'
+// 宿主恢复登录最多两次联网 × 20 秒；按 1 秒一问，问满 45 次还在恢复就不再等（不弹欢迎页）
+const ACCOUNT_RESTORE_POLLS = 45
+const ACCOUNT_RESTORE_POLL_MS = 1000
 
 function shouldShowWelcome(status: AccountStatus): boolean {
   if (status.state === 'expired') return true
@@ -221,23 +225,36 @@ export default function App() {
   // 之前就知道路由模式：托管用户本地压根没有 API Key，不能把他们误判成
   // "还没配置"然后拦住消息。`account_status` 只读内存里的会话状态，不发网络
   // 请求，所以启动时多这一次很便宜。
+  //
+  // 宿主启动时在后台用保存的凭据恢复登录（要联网）。恢复完成之前它如实回 signedout +
+  // restoring:true：这时弹登录页就是用户看到的「重新打开又要登录」。所以 restoring
+  // 期间隔一会儿再问，直到有结论（或等满上限）再决定弹不弹欢迎页。
   useEffect(() => {
+    let cancelled = false
     void (async () => {
       try {
-        const resp = await sendToHostWithResponse(
-          { type: 'account_status', payload: {} },
-          'account_status'
-        )
-        if (resp?.type === 'account_status' && resp.payload) {
-          const status = resp.payload as AccountStatus
+        for (let attempt = 0; attempt < ACCOUNT_RESTORE_POLLS && !cancelled; attempt++) {
+          const resp = await sendToHostWithResponse(
+            { type: 'account_status', payload: {} },
+            'account_status'
+          )
+          const reply = readAccountReply(resp, '')
+          if (!reply.ok || cancelled) return
+          const status = reply.status
           setAccountStatus(status)
+          if (status.restoring) {
+            await new Promise(resolve => setTimeout(resolve, ACCOUNT_RESTORE_POLL_MS))
+            continue
+          }
           if (shouldShowWelcome(status)) setWelcomeOpen(true)
+          return
         }
       } catch {
         // 读不到就保持 null，setupNeeded 因此不会成立——宁可不引导，
         // 也不要误拦一个其实能正常使用的用户。
       }
     })()
+    return () => { cancelled = true }
   }, [])
 
   // 深浅色：默认跟随宿主（Excel 回 Office 主题），用户可在「更多」里固定；宿主回 system 时看系统深浅色

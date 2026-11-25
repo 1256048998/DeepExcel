@@ -94,12 +94,14 @@ namespace DeepExcel.Tests
             };
         }
 
-        private SessionManager Build(FakeHandler handler, Func<DateTimeOffset> clock = null)
+        private SessionManager Build(
+            FakeHandler handler, Func<DateTimeOffset> clock = null, HttpMessageHandler handlerOverride = null)
         {
             var vault = new TokenVault(_vaultDirectory);
+            HttpMessageHandler transport = handlerOverride ?? handler;
             return new SessionManager(
                 vault,
-                url => new AuthClient(url, handler),
+                url => new AuthClient(url, transport),
                 clock);
         }
 
@@ -391,6 +393,114 @@ namespace DeepExcel.Tests
             var vault = new TokenVault(_vaultDirectory);
             Assert.False(vault.Save(new TokenVault.PersistedSession { RefreshToken = "" }));
             Assert.False(File.Exists(vault.Path_ForTests));
+        }
+
+        // ------------------------------------------------------------------
+        // "Reopen the panel and it asks me to sign in again"
+        // ------------------------------------------------------------------
+
+        [Fact]
+        public async Task SignInSurvivesARestartOfTheHost()
+        {
+            // A new SessionManager over the same vault is what the next Excel /
+            // WPS start gets. It must come back signed in, as the same user.
+            var handler = new FakeHandler
+            {
+                Responder = request => request.RequestUri.AbsolutePath.EndsWith("/endpoint")
+                    ? Json(HttpStatusCode.OK, EndpointBody("byok", null, null))
+                    : Json(HttpStatusCode.OK, TokenPairBody())
+            };
+            await Build(handler).SignInAsync("https://api.example.com", "a@b.com", "password-1234");
+
+            var afterRestart = Build(handler);
+            Assert.Equal(SessionState.SignedIn, await afterRestart.RestoreAsync());
+            Assert.Equal("a@b.com", afterRestart.Email);
+            Assert.Equal("https://api.example.com", afterRestart.ServerUrl);
+        }
+
+        [Fact]
+        public async Task RestoreReportsItselfAsInProgressUntilTheServerAnswers()
+        {
+            // While restore is on the network, State is still SignedOut. The
+            // panel reads IsRestoring to tell "wait" apart from "not signed in".
+            var signIn = new FakeHandler
+            {
+                Responder = request => request.RequestUri.AbsolutePath.EndsWith("/endpoint")
+                    ? Json(HttpStatusCode.OK, EndpointBody("byok", null, null))
+                    : Json(HttpStatusCode.OK, TokenPairBody())
+            };
+            await Build(signIn).SignInAsync("https://api.example.com", "a@b.com", "password-1234");
+
+            var gate = new SemaphoreSlim(0);
+            var slow = new GatedHandler(gate, signIn.Responder);
+            var manager = Build(null, handlerOverride: slow);
+
+            Assert.False(manager.IsRestoring);
+            var restore = Task.Run(() => manager.RestoreAsync());
+            Assert.True(SpinWait.SpinUntil(() => slow.Entered, TimeSpan.FromSeconds(5)));
+            Assert.True(manager.IsRestoring);
+            Assert.Equal(SessionState.SignedOut, manager.State);
+
+            gate.Release(10);
+            Assert.Equal(SessionState.SignedIn, await restore);
+            Assert.False(manager.IsRestoring);
+        }
+
+        [Fact]
+        public async Task RestoreClearsInProgressEvenWhenTheServerIsUnreachable()
+        {
+            var manager = Build(new FakeHandler { Offline = true });
+            await manager.RestoreAsync();
+            Assert.False(manager.IsRestoring);
+        }
+
+        [Fact]
+        public void AccountClientAllowsTls12EvenWhenTheHostProcessDisabledIt()
+        {
+            // excel.exe / wps.exe pick the .NET TLS defaults, not us. Sign-in used
+            // to get TLS 1.2 only if the model-list path had already forced it.
+            var original = ServicePointManager.SecurityProtocol;
+            try
+            {
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls;
+                AuthClient.EnsureTls12();
+                Assert.True((ServicePointManager.SecurityProtocol & SecurityProtocolType.Tls12) != 0);
+                Assert.True((ServicePointManager.SecurityProtocol & SecurityProtocolType.Tls) != 0);
+
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.SystemDefault;
+                AuthClient.EnsureTls12();
+                Assert.Equal(SecurityProtocolType.SystemDefault, ServicePointManager.SecurityProtocol);
+            }
+            finally
+            {
+                ServicePointManager.SecurityProtocol = original;
+            }
+        }
+
+        private sealed class GatedHandler : HttpMessageHandler
+        {
+            private readonly SemaphoreSlim _gate;
+            private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+            private volatile bool _entered;
+
+            public GatedHandler(SemaphoreSlim gate, Func<HttpRequestMessage, HttpResponseMessage> responder)
+            {
+                _gate = gate;
+                _responder = responder;
+            }
+
+            public bool Entered
+            {
+                get { return _entered; }
+            }
+
+            protected override async Task<HttpResponseMessage> SendAsync(
+                HttpRequestMessage request, CancellationToken cancellationToken)
+            {
+                _entered = true;
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                return _responder(request);
+            }
         }
     }
 }
