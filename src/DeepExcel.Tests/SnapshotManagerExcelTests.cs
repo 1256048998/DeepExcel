@@ -108,6 +108,28 @@ namespace DeepExcel.Tests
         private static object V(Workbook wb, string sheet, string addr) => Ws(wb, sheet).Range[addr].Value2;
 
         [ExcelFact]
+        public void Rollback_closes_the_snapshot_copy_and_never_the_users_workbook()
+        {
+            // Closing a workbook whose windows are all hidden closes the *active* workbook
+            // instead (measured on 16.0.20625) -- during a restore that is the user's, unsaved.
+            var wb = NewBook();
+            var path = Path.Combine(_docDir, "用户的.xlsx");
+            wb.SaveAs(path);
+            Ws(wb, "Sheet1").Range["A1"].Value2 = "v1";
+            var mgr = new SnapshotManager(App(), _snapDir);
+            var snap = mgr.TryCreateSnapshot(wb, "test", SnapshotScope.ForSheets("Sheet1"));
+            Ws(wb, "Sheet1").Range["A1"].Value2 = "v2 (unsaved)";
+
+            var r = mgr.Rollback(snap.SnapshotId);
+
+            Assert.True(r.Success, r.Error);
+            var open = App().Workbooks.Cast<Workbook>().Select(b => b.FullName).ToList();
+            Assert.Equal(new[] { path }, open);
+            Assert.Equal("v1", V(wb, "Sheet1", "A1"));
+            Assert.Equal("用户的.xlsx", App().ActiveWorkbook.Name);
+        }
+
+        [ExcelFact]
         public void Rollback_targets_the_snapshots_workbook_even_when_another_one_is_active()
         {
             var target = NewBook();

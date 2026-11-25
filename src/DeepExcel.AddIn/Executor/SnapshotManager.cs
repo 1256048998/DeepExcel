@@ -269,10 +269,7 @@ namespace DeepExcel.AddIn.Executor
             }
             finally
             {
-                if (snap != null)
-                {
-                    try { snap.Close(false); } catch { }
-                }
+                if (snap != null) CloseSnapshotCopy(snap, target, result);
                 ui.Restore();
                 CleanupOldSnapshots();
             }
@@ -283,6 +280,44 @@ namespace DeepExcel.AddIn.Executor
             }
             result.Success = result.Error == null;
             return result;
+        }
+
+        /// <summary>
+        /// 关掉恢复用的快照副本。
+        ///
+        /// Excel 的坑（2026-11-25 真 Excel 实测，16.0.20625）：窗口全部隐藏的工作簿，
+        /// Close 关掉的是当前活动工作簿——恢复时那正是用户的工作簿，而且不保存；
+        /// 按名字 Workbooks[name].Close 也一样。所以先把快照的窗口显示出来并激活
+        /// （恢复期间 ScreenUpdating 关着，不会闪），确认活动工作簿就是快照才关；
+        /// 确认不了就重新隐藏、留着不关——只读的隐藏副本，比关错用户的文件安全得多。
+        /// </summary>
+        private void CloseSnapshotCopy(Workbook snap, Workbook target, RollbackResult result)
+        {
+            var snapFull = SafeGet(() => snap.FullName);
+            try
+            {
+                foreach (Window w in snap.Windows) w.Visible = true;
+                ((Window)snap.Windows[1]).Activate();
+            }
+            catch { }
+
+            var active = SafeGet(() => _app.ActiveWorkbook?.FullName);
+            if (snapFull == null || !string.Equals(active, snapFull, StringComparison.OrdinalIgnoreCase))
+            {
+                try { foreach (Window w in snap.Windows) w.Visible = false; } catch { }
+                Logger.Instance.Warning("SnapshotManager",
+                    $"Snapshot copy left open: active workbook is '{active}', not the snapshot '{snapFull}'");
+                result.Warnings.Add("恢复用的快照副本没能安全关闭，已隐藏保留（不影响你的工作簿，重启 Excel 后消失）");
+                return;
+            }
+
+            try { snap.Close(false); }
+            catch (Exception ex) { Logger.Instance.Warning("SnapshotManager", "Closing the snapshot copy failed: " + ex.Message); }
+
+            if (SafeGet(() => target.Name) == null)
+            {
+                Logger.Instance.Error("SnapshotManager", "The target workbook is gone after closing the snapshot copy", null);
+            }
         }
 
         private Workbook OpenHidden(string file)
