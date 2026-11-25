@@ -148,7 +148,6 @@ var
   InstallCompleted: Boolean;
   PostInstallFailed: Boolean;
   PostInstallError: string;
-  ExcelNotActivated: Boolean;
   PreviousRegistrationExists: Boolean;
   PreviousMainAssembly: string;
   PreviousMainCodeBase: string;
@@ -364,6 +363,30 @@ begin
   if not RegWriteStringValue(rootKey, progIdView + '\CLSID', '', clsid) then RaiseException('Cannot register ProgID CLSID.');
 end;
 
+// ---------------------------------------------------------------------------
+// Elevated hosts need a machine-wide registration
+// ---------------------------------------------------------------------------
+// Windows does not use per-user COM registrations (HKCU\Software\Classes) for a
+// process running elevated: by design, so a non-elevated program cannot plant a
+// class that an elevated one will load. On a machine where UAC is switched off,
+// or under the built-in Administrator account, EVERY program runs elevated --
+// Excel and WPS included -- so a per-user-only registration is invisible to
+// them and activation fails (0x80070002 with UAC off, 0x80040154 for an
+// ordinary elevated process). Confirmed 2026-11-24 on a user's WPS-only machine
+// (EnableLUA=0, built-in Administrator): files, dependencies and the HKCU
+// registration were all correct, activation failed, and copying the same
+// registration to HKLM made it succeed.
+//
+// Setup runs with PrivilegesRequired=lowest, so it is elevated only when the
+// user's programs are elevated anyway (or the user explicitly chose "run as
+// administrator"). Exactly then it can, and must, also register under HKLM.
+// The HKLM copy carries the same current values as the HKCU one, so for a
+// non-elevated process -- where HKCU wins -- nothing changes.
+function MachineRegistrationNeeded(): Boolean;
+begin
+  Result := IsAdmin();
+end;
+
 procedure RegisterComClass(const clsid, progId, dllPath, className, assemblyValue: string);
 begin
   // 64-bit view (native CLSID)
@@ -373,10 +396,34 @@ begin
   // WOW6432Node path under HKCU64 does not register the class in this view.
   RegisterComClassView(HKCU32, clsid, progId, dllPath, className, assemblyValue,
     'Software\Classes\CLSID\' + clsid, 'Software\Classes\' + progId);
+  if MachineRegistrationNeeded() then
+  begin
+    Log('Setup is elevated: also registering ' + progId + ' machine-wide for elevated hosts.');
+    RegisterComClassView(HKLM64, clsid, progId, dllPath, className, assemblyValue,
+      'SOFTWARE\Classes\CLSID\' + clsid, 'SOFTWARE\Classes\' + progId);
+    RegisterComClassView(HKLM32, clsid, progId, dllPath, className, assemblyValue,
+      'SOFTWARE\Classes\CLSID\' + clsid, 'SOFTWARE\Classes\' + progId);
+  end;
+end;
+
+// Machine-wide copies exist only if an elevated Setup wrote them, and deleting
+// them needs the same rights. A non-elevated uninstall (UAC switched back on
+// since) cannot remove them; the next install reports them as residue and
+// offers the one-UAC cleanup.
+procedure UnregisterMachineClasses(const clsid, progId: string);
+begin
+  if MachineRegistrationNeeded() then
+  begin
+    RegDeleteKeyIncludingSubkeys(HKLM64, 'SOFTWARE\Classes\CLSID\' + clsid);
+    RegDeleteKeyIncludingSubkeys(HKLM32, 'SOFTWARE\Classes\CLSID\' + clsid);
+    RegDeleteKeyIncludingSubkeys(HKLM64, 'SOFTWARE\Classes\' + progId);
+    RegDeleteKeyIncludingSubkeys(HKLM32, 'SOFTWARE\Classes\' + progId);
+  end;
 end;
 
 procedure UnregisterComClass(const clsid, progId: string);
 begin
+  UnregisterMachineClasses(clsid, progId);
   RegDeleteKeyIncludingSubkeys(HKCU64, 'Software\Classes\CLSID\' + clsid);
   RegDeleteKeyIncludingSubkeys(HKCU32, 'Software\Classes\CLSID\' + clsid);
   RegDeleteKeyIncludingSubkeys(HKCU64, 'Software\Classes\' + progId);
@@ -683,6 +730,7 @@ end;
 function InitializeSetup(): Boolean;
 var
   ec: Integer;
+  i: Integer;
   hklmCleaned: Boolean;
 begin
   // Always register Excel. Some enterprise/MSI/non-default Office installs
@@ -695,7 +743,10 @@ begin
   else
     Log('Excel detected: False; Excel registration will still be installed.');
   SnapshotPreviousExcelRegistration();
-  if ExcelInstalled and (not IsDotNet48Detected()) then
+  // WPS runs the very same .NET add-in, so a WPS-only machine needs .NET 4.8
+  // just as much; skipping the check there let the install "succeed" with an
+  // add-in that could never load.
+  if (ExcelInstalled or IsWpsInstalled()) and (not IsDotNet48Detected()) then
   begin
     MsgBox('DeepExcel 需要 .NET Framework 4.8。' + #13#10 +
            '请先安装 .NET 4.8 后再运行本安装程序。', mbCriticalError, MB_OK);
@@ -707,6 +758,23 @@ begin
   // 2) Old machine-wide registration shadows the per-user one, so installing
   //    on top of it would "succeed" while Excel keeps loading the old DLL.
   //    Offer to remove it; continue only once it is really gone.
+  //
+  //    An elevated Setup needs neither the question nor a UAC prompt: it can
+  //    delete these DeepExcel-only keys itself, and it rewrites the class keys
+  //    with this version's values right after (see MachineRegistrationNeeded).
+  //    That is also the only way the silent auto-updater can get past them on
+  //    a machine where UAC is off.
+  if HklmResidualExists() and MachineRegistrationNeeded() then
+  begin
+    Log('Setup is elevated: replacing machine-wide DeepExcel keys in place.');
+    for i := 0 to HklmResidualCount - 1 do
+    begin
+      RegDeleteKeyIncludingSubkeys(HKLM64, HklmResidualPath(i));
+      RegDeleteKeyIncludingSubkeys(HKLM32, HklmResidualPath(i));
+    end;
+    if HklmResidualExists() then
+      Log('Machine-wide DeepExcel keys still present after an elevated delete.');
+  end;
   if HklmResidualExists() then
   begin
     // A silent run (the auto-updater) has nobody to approve a UAC prompt.
@@ -732,7 +800,7 @@ begin
   end;
 
   // 3) WebView2 runtime warning (install is attempted after files are copied).
-  if ExcelInstalled and (not IsWebView2Installed()) and (not IsSilentRun()) then
+  if (not IsWebView2Installed()) and (not IsSilentRun()) then
     MsgBox('未检测到 WebView2 运行时，安装程序将自动为您安装（需联网）。' + #13#10 +
            '若离线环境安装失败，请先手动安装“Microsoft Edge WebView2 Runtime”。', mbInformation, MB_OK);
 
@@ -750,14 +818,15 @@ begin
     try
       if ExcelEnabled then
       begin
-        // WPS now runs the same COM add-in and its WebView2 pane, so a
-        // WPS-only machine needs the runtime as much as an Excel one.
-        if (ExcelInstalled or IsWpsInstalled()) and WebView2NeedsInstall() then
+        // The pane is WebView2 in Excel and in WPS alike, and the verification
+        // below treats a missing runtime as blocking. Host detection is not
+        // trusted to skip it (WPS installed per user may have left no key yet).
+        if WebView2NeedsInstall() then
           RunAndRequire(
             ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'),
             '/silent /install',
             '正在安装 WebView2 运行时');
-        if ExcelInstalled and (not IsWebView2Installed()) then
+        if not IsWebView2Installed() then
           RaiseException('WebView2 Runtime installation did not complete successfully.');
 
         RegisterDeepExcel();
@@ -790,6 +859,13 @@ begin
           RestorePreviousExcelRegistration()
         else
           UnregisterDeepExcel();
+        // The HKLM copy written above carries the version that just failed;
+        // elevated hosts would load it while everything else is restored.
+        if PreviousRegistrationExists then
+        begin
+          UnregisterMachineClasses('{#MainClsid}', '{#MainProgId}');
+          UnregisterMachineClasses('{#TaskPaneClsid}', '{#TaskPaneProgId}');
+        end;
       end;
       // Do NOT re-raise. Inno treats an exception from CurStepChanged as
       // non-fatal: it logs "CurStepChanged raised an exception", continues to
@@ -802,53 +878,34 @@ begin
       // mode, hidden behind a successful exit code. Silent/IT deployments and
       // CI see only the exit code, so it has to tell the truth.
       //
-      // Except when no Excel was detected at all. A WPS-only machine cannot
-      // activate the Excel COM add-in by definition, and failing the whole
-      // install there showed a red "安装未完成" over a WPS add-in that was
-      // working. Detection is not trusted to SKIP Excel (see InitializeSetup),
-      // only to decide whether its failure is fatal; ssDone tells the user to
-      // run Repair if they do have Excel.
-      ExcelNotActivated := not ExcelInstalled;
-      if ExcelInstalled then
-      begin
-        PostInstallFailed := True;
-        PostInstallError := errorMessage;
-        Log('Excel post-install step failed; Excel registration rolled back: ' + errorMessage);
-      end;
-      if ExcelNotActivated then
-        Log('Excel not detected and Excel activation failed; continuing for WPS: ' + errorMessage);
+      // This applies on a machine without Excel too. An earlier version let a
+      // WPS-only machine pass on the theory that it "cannot activate the Excel
+      // COM add-in by definition". That premise was wrong: activating the class
+      // needs .NET and the registration, not Excel -- Repair.exe and the 32-bit
+      // probe do it with no Office present. What actually failed there was the
+      // elevated-host case (see MachineRegistrationNeeded), and the exemption
+      // turned it into a "successful" install whose WPS add-in could never load.
+      PostInstallFailed := True;
+      PostInstallError := errorMessage;
+      Log('Post-install verification failed; COM registration rolled back: ' + errorMessage);
     end;
 
-    // WPS is activated in its own try block, NOT chained after the Excel work.
-    //
-    // The WPS add-in is plain JS: no COM, no .NET, no bitness, nothing it needs
-    // from the Excel side. It used to sit at the end of the Excel try block, so
-    // any Excel-side failure skipped it entirely -- the files were copied (the
-    // [Files] section is unconditional) but publish.xml never learned about
-    // them, and WPS silently loaded nothing. On a machine with no Excel at all,
-    // that made the WPS add-in unreachable for a reason that has nothing to do
-    // with WPS.
-    //
-    // The old ordering comment argued WPS must come last so a committed
-    // publish.xml can never point at rolled-back files. That still holds: the
-    // rollback above only touches Excel's COM registration, and the payload in
-    // jsaddons is left in place on failure (Setup now exits non-zero instead of
-    // unwinding the file copy), so the manifest never dangles.
+    // WPS is handled in its own try block so that retiring the old JS add-in
+    // always happens. It loads the same COM classes Excel does, so once the
+    // verification above has failed and rolled them back there is nothing for
+    // WPS to load: registering its add-in entry then would only produce a
+    // DeepExcel entry in WPS that cannot start. Repair.exe re-registers both.
     try
       WizardForm.StatusLabel.Caption := '正在启用 WPS 表格加载项';
       // Retire the JS add-in entry (from this or any earlier version): it cannot
       // run in WPS (no Node), and left in place it would put a second, dead
       // DeepExcel tab next to the COM one.
       UpdateWpsManifest('Uninstall');
-      // A WPS-only machine fails Excel activation by definition, and the except
-      // branch above then unregistered the COM classes. WPS needs them.
-      if ExcelNotActivated then
+      if not PostInstallFailed then
       begin
-        RegisterComClass('{#MainClsid}', '{#MainProgId}', ExpandConstant('{app}') + '\' + '{#AddinDLL}', '{#MainClass}', '{#AssemblyValue}');
-        RegisterComClass('{#TaskPaneClsid}', '{#TaskPaneProgId}', ExpandConstant('{app}') + '\' + '{#AddinDLL}', '{#TaskPaneClass}', '{#AssemblyValue}');
+        RegisterWpsComAddIn('{#MainProgId}', '{#AppName} AI AddIn');
+        wpsActivated := True;
       end;
-      RegisterWpsComAddIn('{#MainProgId}', '{#AppName} AI AddIn');
-      wpsActivated := True;
     except
       errorMessage := GetExceptionMessage();
       Log('WPS activation failed: ' + errorMessage);
@@ -887,14 +944,13 @@ begin
     // was a crash-looking dialog at the very end. For an unsigned installer the
     // user has already had to click through SmartScreen; ending on that box
     // makes a successful install look broken.
-    if ExcelNotActivated and (not IsSilentRun()) then
+    if (not ExcelInstalled) and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 WPS 表格，在功能区中找到“DeepExcel”选项卡即可使用。' + #13#10 +
              '若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”即可。' + #13#10 + #13#10 +
-             '这台电脑上没有检测到 Microsoft Excel，Excel 版暂未启用。' + #13#10 +
-             '如果你其实装了 Excel 却看不到 DeepExcel 选项卡，' + #13#10 +
-             '请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复。', mbInformation, MB_OK);
-    if (not ExcelNotActivated) and (not IsSilentRun()) then
+             '这台电脑上没有检测到 Microsoft Excel；以后装了 Excel 也能直接用，' + #13#10 +
+             '若看不到 DeepExcel 选项卡，请从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复。', mbInformation, MB_OK);
+    if ExcelInstalled and (not IsSilentRun()) then
       MsgBox('DeepExcel 安装完成！' + #13#10 + #13#10 +
              '请关闭并重新打开 Excel 或 WPS 表格，' + #13#10 +
              '在功能区（Ribbon）中找到“DeepExcel”选项卡即可使用。' + #13#10 + #13#10 +

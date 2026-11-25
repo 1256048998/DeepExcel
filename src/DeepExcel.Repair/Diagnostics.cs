@@ -17,6 +17,12 @@ namespace DeepExcel.Repair
         public const string LoadBehavior = "E-REG-004";
         public const string HklmResidual = "E-REG-005";
         public const string CodeBaseStale = "E-REG-006";
+        /// <summary>
+        /// Excel / WPS run elevated (UAC off, or the built-in Administrator) and
+        /// Windows ignores per-user COM registrations for elevated processes, so
+        /// the add-in also needs a current machine-wide registration.
+        /// </summary>
+        public const string MachineRegistration = "E-REG-007";
 
         public const string Activation64 = "E-ACT-001";
         public const string Activation32 = "E-ACT-002";
