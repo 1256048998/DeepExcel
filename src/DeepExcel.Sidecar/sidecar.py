@@ -146,7 +146,7 @@ _COMPUTER_USE_TRIGGERS = (
 )
 
 
-async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
+async def _pre_tool_use_hook(input_data: dict, tool_use_id, context, *, _ask: bool = True) -> dict:
     """PreToolUse hook：对高风险工具弹抽屉式确认，低风险直接放行。
     ★ 这是 AI Native 的权限确认机制，替代旧的同步 MessageBox：
        1. 不阻塞 Excel UI 线程（hook 是异步的，等待期间 Excel 正常响应）
@@ -172,6 +172,8 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
 
         # ★ 合并工具（DEEPEXCEL_TOOLS_V2）：拆成它会调用的那几个原有工具，逐个走下面同一套检查
         # （禁区、只出方案、确认抽屉和预览），任何一步不放行，整个调用就不放行
+        if tools_v2.is_composite(bare_name) and bare_name == "write_cells":
+            return await _gate_write_cells(input_data, tool_use_id, context)
         if tools_v2.is_composite(bare_name):
             try:
                 steps = tools_v2.resolve(bare_name, input_data.get("tool_input") or {})
@@ -281,6 +283,16 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                 }
             }
 
+        if not _ask:
+            # write_cells 逐步检查：这一步没被拒，确认留到整批一起问
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "检查通过，待整批确认",
+                }
+            }
+
         # 高风险工具：向 C#/前端请求权限确认
         sys.stderr.write(f"[sidecar] PreToolUse: {bare_name} requires permission, requesting...\n")
         tool_input = input_data.get("tool_input", {})
@@ -325,6 +337,58 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                 "reason": "权限确认出错",
             }
         return {"continue_": True}
+
+
+async def _gate_write_cells(input_data: dict, tool_use_id, context) -> dict:
+    """write_cells：每一步照旧过禁区 / 只出方案检查（不单独问），有需要确认的步骤时整批只问一次。
+
+    宿主按 write_cells 算一个合并预览（PreviewBuilder.BuildWriteCells），执行时只做一个检查点。"""
+    tool_input = input_data.get("tool_input") or {}
+    try:
+        steps = tools_v2.resolve("write_cells", tool_input)
+    except ValueError as exc:
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": str(exc),
+            },
+            "reason": "参数不对",
+        }
+    for step_name, step_args in steps:
+        verdict = await _pre_tool_use_hook(
+            {"tool_name": "mcp__excel__" + step_name, "tool_input": step_args}, tool_use_id, context, _ask=False)
+        if (verdict.get("hookSpecificOutput") or {}).get("permissionDecision") != "allow":
+            return verdict
+    needs_confirmation = [name for name, _ in steps
+                          if name in _HIGH_RISK_TOOLS and not permission_modes.auto_applies(name)]
+    if not needs_confirmation:
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": "每一步都已放行",
+            }
+        }
+    sys.stderr.write(f"[sidecar] PreToolUse: write_cells requires permission ({len(steps)} steps), requesting...\n")
+    await write_message(ui_events.envelope("status", text="等待你确认", tool="write_cells"))
+    decision = await request_permission("write_cells", tool_input)
+    if decision == "allow":
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": "用户已确认允许",
+            }
+        }
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "用户拒绝执行此操作",
+        },
+        "reason": "用户拒绝了 write_cells 的执行",
+    }
 
 
 def format_steer_context(messages: list) -> str:

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using DeepExcel.AddIn.Executor;
 
@@ -64,6 +65,108 @@ namespace DeepExcel.AddIn.Sidecar
         private static readonly Regex A1Reference = new Regex(
             @"^(\$?[A-Za-z]{1,3}\$?\d+(:\$?[A-Za-z]{1,3}\$?\d+)?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d+:\$?\d+)$",
             RegexOptions.Compiled);
+
+        /// <summary>
+        /// write_cells 每一步的 type → 原有工具（和侧车 tools_v2.WRITE_OPS 一一对应）。
+        /// </summary>
+        public static readonly Dictionary<string, string> WriteCellsOps = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["values"] = "write_range",
+            ["formula"] = "write_formula",
+            ["text"] = "write_value",
+            ["number_format"] = "set_number_format",
+            ["style"] = "set_cell_style",
+            ["merge"] = "merge_cells",
+            ["unmerge"] = "unmerge_cells",
+            ["column_width"] = "set_column_width",
+            ["add_sheet"] = "add_sheet",
+        };
+
+        public const int MaxWriteCellsSteps = 20;
+
+        /// <summary>write_cells 的一步：执行用 Args（JsonElement 值，同 tool_call），预览用 TextArgs（同权限请求的文本参数）。</summary>
+        internal sealed class BatchStep
+        {
+            public int Index { get; set; }
+            public string Type { get; set; }
+            public string Tool { get; set; }
+            public Dictionary<string, object> Args { get; set; }
+            public Dictionary<string, object> TextArgs { get; set; }
+
+            public string Target
+            {
+                get
+                {
+                    if (TextArgs.TryGetValue("address", out var a) && a is string address) return address;
+                    return TextArgs.TryGetValue("name", out var n) ? n as string : null;
+                }
+            }
+        }
+
+        /// <summary>
+        /// 解析 write_cells 的 ops：工具调用里是 JsonElement 数组，权限请求里是 JSON 文本。
+        /// </summary>
+        internal static bool TryParseWriteCells(object ops, out List<BatchStep> steps, out string error)
+        {
+            steps = new List<BatchStep>();
+            error = null;
+            JsonElement array;
+            try
+            {
+                if (ops is JsonElement element) array = element;
+                else if (ops is string text && !string.IsNullOrWhiteSpace(text))
+                {
+                    using (var doc = JsonDocument.Parse(text)) array = doc.RootElement.Clone();
+                }
+                else { error = "ops 至少要有一步"; return false; }
+            }
+            catch (JsonException)
+            {
+                error = "ops 不是合法的 JSON 数组";
+                return false;
+            }
+            if (array.ValueKind != JsonValueKind.Array || array.GetArrayLength() == 0)
+            {
+                error = "ops 至少要有一步";
+                return false;
+            }
+            if (array.GetArrayLength() > MaxWriteCellsSteps)
+            {
+                error = "一次最多 " + MaxWriteCellsSteps + " 步，分成几次调用";
+                return false;
+            }
+            var index = 0;
+            foreach (var op in array.EnumerateArray())
+            {
+                if (op.ValueKind != JsonValueKind.Object)
+                {
+                    error = "第 " + (index + 1) + " 步不是对象";
+                    return false;
+                }
+                var type = op.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
+                if (type == null || !WriteCellsOps.TryGetValue(type, out var tool))
+                {
+                    error = "第 " + (index + 1) + " 步的 type 必须是：" + string.Join(" / ", WriteCellsOps.Keys);
+                    return false;
+                }
+                var args = new Dictionary<string, object>(StringComparer.Ordinal);
+                var textArgs = new Dictionary<string, object>(StringComparer.Ordinal);
+                foreach (var property in op.EnumerateObject())
+                {
+                    if (property.Name == "type") continue;
+                    var value = property.Value.Clone();
+                    args[property.Name] = value;
+                    textArgs[property.Name] = value.ValueKind == JsonValueKind.String ? value.GetString()
+                        : value.ValueKind == JsonValueKind.Null ? null
+                        : value.ValueKind == JsonValueKind.True ? "true"
+                        : value.ValueKind == JsonValueKind.False ? "false"
+                        : (object)value.GetRawText();
+                }
+                steps.Add(new BatchStep { Index = index, Type = type, Tool = tool, Args = args, TextArgs = textArgs });
+                index++;
+            }
+            return true;
+        }
 
         /// <summary>
         /// 推算这次调用会改哪些表。拿不准就返回整本——范围算小了，回滚会漏掉改动；

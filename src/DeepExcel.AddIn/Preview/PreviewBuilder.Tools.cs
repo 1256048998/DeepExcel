@@ -17,6 +17,48 @@ namespace DeepExcel.AddIn.Preview
     public sealed partial class PreviewBuilder
     {
         /// <summary>
+        /// write_cells：把每一步的预览合成一个，用户只确认一次。每步都按执行前的表算（不叠加前面步骤的效果）；
+        /// 有一步算不出来，整批就如实说「无法预览」并点名是第几步。
+        /// </summary>
+        private ChangePreview BuildWriteCells(IDictionary<string, object> args)
+        {
+            object raw = null;
+            if (args != null) args.TryGetValue("ops", out raw);
+            if (!DeepExcel.AddIn.Sidecar.ToolMutationPolicy.TryParseWriteCells(raw, out var steps, out var error))
+            {
+                return ChangePreview.NotPreviewable("write_cells", error);
+            }
+            var merged = new ChangePreview { ToolName = "write_cells" };
+            var affected = 0;
+            foreach (var step in steps)
+            {
+                var part = Build(step.Tool, step.TextArgs);
+                if (part == null) continue;  // 样式、列宽这类不需要确认的步骤
+                if (!part.Previewable)
+                {
+                    return ChangePreview.NotPreviewable("write_cells",
+                        "第 " + (step.Index + 1) + " 步（" + step.Type + "）" + (part.NotPreviewableReason ?? "无法预览"));
+                }
+                affected += part.AffectedCells;
+                merged.Changes.AddRange(part.Changes);
+                merged.DeletedRows.AddRange(part.DeletedRows);
+                merged.DeletedColumns.AddRange(part.DeletedColumns);
+                merged.DeletedSheets.AddRange(part.DeletedSheets);
+                foreach (var warning in part.Warnings)
+                {
+                    if (!merged.Warnings.Contains(warning)) merged.Warnings.Add(warning);
+                }
+                merged.RequiresConfirmation |= part.RequiresConfirmation;
+            }
+            merged.AffectedCells = affected;
+            if (merged.Changes.Count > ChangePreview.MaxListedChanges)
+            {
+                merged.Changes = merged.Changes.Take(ChangePreview.MaxListedChanges).ToList();
+            }
+            return merged;
+        }
+
+        /// <summary>
         /// replace_formula: plain string replacement inside formula text
         /// (ToolDispatcher.ExecuteReplaceFormula). Case-sensitive, formulas only.
         /// </summary>

@@ -109,7 +109,7 @@ def hook(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_risky_steps_get_their_own_confirmation(hook):
+async def test_a_batch_with_risky_steps_is_confirmed_once(hook):
     call, asked = hook
     decision, _ = await call("write_cells", {"ops": [
         {"type": "style", "address": "A1", "bold": True},
@@ -117,7 +117,38 @@ async def test_risky_steps_get_their_own_confirmation(hook):
         {"type": "merge", "address": "A3:B3"},
     ]})
     assert decision == "allow"
-    assert asked == ["write_range", "merge_cells"]
+    assert asked == ["write_cells"]  # one drawer; the host shows one combined preview
+
+
+@pytest.mark.asyncio
+async def test_a_batch_of_low_risk_steps_is_not_confirmed(hook):
+    call, asked = hook
+    decision, _ = await call("write_cells", {"ops": [
+        {"type": "style", "address": "A1", "bold": True},
+        {"type": "number_format", "address": "B:B", "format": "0%"},
+    ]})
+    assert decision == "allow" and asked == []
+
+
+@pytest.mark.asyncio
+async def test_accept_writes_mode_applies_a_batch_without_asking(hook):
+    call, asked = hook
+    permission_modes.set_mode(permission_modes.ACCEPT_WRITES)
+    decision, _ = await call("write_cells", {"ops": [{"type": "values", "address": "A2", "values": [[1]]}]})
+    assert decision == "allow" and asked == []
+
+
+@pytest.mark.asyncio
+async def test_declining_the_batch_refuses_it(hook, monkeypatch):
+    import sidecar
+    call, _ = hook
+
+    async def no(name, tool_input):
+        return "deny"
+
+    monkeypatch.setattr(sidecar, "request_permission", no)
+    decision, _ = await call("write_cells", {"ops": [{"type": "values", "address": "A2", "values": [[1]]}]})
+    assert decision == "deny"
 
 
 @pytest.mark.asyncio
@@ -153,80 +184,76 @@ async def test_a_bad_composite_call_is_refused_with_the_reason(hook):
     assert decision == "deny" and "action" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
-# ---- write_cells execution -----------------------------------------------------
-
-class _FakeTool:
-    def __init__(self, name, results):
-        self.name = name
-        self._results = results
-        self.calls = []
-
-    async def handler(self, args):
-        self.calls.append(args)
-        payload = self._results.pop(0) if self._results else {"success": True}
-        return excel_tools._wrap_result(payload)
-
+# ---- write_cells execution: one host call ------------------------------------
 
 @pytest.fixture
-def fake_tools(monkeypatch):
-    tools = {}
-    rollbacks = []
+def host(monkeypatch):
+    calls = []
+    replies = {}
 
-    def get(name):
-        return tools.setdefault(name, _FakeTool(name, []))
+    async def fake_call_csharp(name, payload, timeout=60.0):
+        calls.append((name, payload))
+        replies.setdefault("_timeouts", {})[name] = timeout
+        return replies.get(name, {"success": True})
 
-    async def fake_call_csharp(name, payload):
-        assert name == "rollback"
-        rollbacks.append(payload["snapshot_id"])
-        return {"success": True}
-
-    monkeypatch.setattr(tools_v2, "_tool", get)
     import ipc
     monkeypatch.setattr(ipc, "call_csharp", fake_call_csharp)
-    return tools, get, rollbacks
+    monkeypatch.setattr(excel_tools, "call_csharp", fake_call_csharp)
+    return calls, replies
 
 
 @pytest.mark.asyncio
-async def test_a_failed_step_rolls_back_the_earlier_ones(fake_tools):
-    tools, get, rollbacks = fake_tools
-    get("write_range")._results = [{"success": True, "checkpoint_id": "cp-1", "backup_snapshot_id": "bk"}]
-    get("set_cell_style")._results = [{"success": False, "error": "颜色写错了", "suggestion": "用 #RRGGBB"}]
+async def test_the_whole_batch_is_one_host_call(host):
+    calls, replies = host
+    replies["write_cells"] = {"success": True, "checkpoint_id": "cp-1", "data": {"message": "已完成 2 步"}}
+    replies["read_range"] = {"success": True, "data": {"values": [["月份", "金额"]]}}
+    ops = [{"type": "values", "address": "A1", "values": [["月份", "金额"]]},
+           {"type": "style", "address": "A1:B1", "bold": True}]
+    out = json.loads((await tools_v2.run_write_cells({"ops": ops}))["content"][0]["text"])
+    assert calls[0] == ("write_cells", {"ops": ops})
+    assert [c[0] for c in calls].count("write_cells") == 1
+    assert replies["_timeouts"]["write_cells"] == tools_v2.BATCH_TIMEOUT_SECONDS > 60
+    assert out["checkpoint_id"] == "cp-1" and out["status"] == "done"
+    assert out["data"]["samples"] == [{"address": "A1:B1", "values": [["月份", "金额"]]}]
+
+
+@pytest.mark.asyncio
+async def test_a_host_failure_is_passed_through(host):
+    calls, replies = host
+    replies["write_cells"] = {"success": False, "error": "第 2 步（style）失败，前 1 步已撤销：颜色写错了",
+                              "suggestion": "用 #RRGGBB", "backup_snapshot_id": "bk"}
     out = json.loads((await tools_v2.run_write_cells({"ops": [
         {"type": "values", "address": "A1", "values": [[1]]},
         {"type": "style", "address": "A1", "bg_color": "紫红"},
     ]}))["content"][0]["text"])
-    assert rollbacks == ["cp-1"]
-    assert out["ok"] is False and "第 2 步（style）失败，前 1 步已撤销" in out["error"]
+    assert out["status"] == "failed" and "第 2 步" in out["error"]
     assert out["next"] == "用 #RRGGBB" and out["backup_snapshot_id"] == "bk"
+    assert [c[0] for c in calls] == ["write_cells"]  # no readback after a failure
 
 
 @pytest.mark.asyncio
-async def test_a_failing_first_step_has_nothing_to_undo(fake_tools):
-    tools, get, rollbacks = fake_tools
-    get("write_range")._results = [{"success": False, "error": "地址不对"}]
-    out = json.loads((await tools_v2.run_write_cells({"ops": [
-        {"type": "values", "address": "??", "values": [[1]]}]}))["content"][0]["text"])
-    assert rollbacks == [] and out["status"] == "failed" and "第 1 步" in out["error"]
+async def test_formula_steps_get_the_pattern_check(host, monkeypatch):
+    calls, replies = host
+    replies["write_cells"] = {"success": True, "checkpoint_id": "cp-1"}
+    checked = []
+
+    async def fake_check(result, address, rows=1, columns=1):
+        checked.append((address, rows, columns))
+        return result
+
+    monkeypatch.setattr(excel_tools, "_pattern_check", fake_check)
+    await tools_v2.run_write_cells({"ops": [
+        {"type": "formula", "address": "C2", "formula": "=A2*B2"},
+        {"type": "values", "address": "D2", "values": [["=A2+1"], ["=A3+1"]]},
+        {"type": "values", "address": "E2", "values": [[1]]},
+    ]})
+    assert checked == [("C2", 1, 1), ("D2", 2, 1)]
 
 
-@pytest.mark.asyncio
-async def test_success_returns_samples_one_checkpoint_and_merged_checks(fake_tools):
-    tools, get, rollbacks = fake_tools
-    get("write_range")._results = [{"success": True, "checkpoint_id": "cp-1", "verification": {"ok": True}}]
-    get("write_formula")._results = [{"success": True, "checkpoint_id": "cp-2",
-                                      "verification": {"ok": False, "summary": "新增 1 个 #DIV/0!"}}]
-    get("read_range")._results = [{"success": True, "data": {"values": [["月份", "金额"]]}},
-                                  {"success": True, "data": {"values": [["#DIV/0!"]]}}]
-    out = json.loads((await tools_v2.run_write_cells({"ops": [
-        {"type": "values", "address": "A1:B1", "values": [["月份", "金额"]]},
-        {"type": "formula", "address": "C2", "formula": "=B2/0"},
-        {"type": "number_format", "address": "B:B", "format": "#,##0"},
-    ]}))["content"][0]["text"])
-    assert rollbacks == []
-    assert out["checkpoint_id"] == "cp-1" and out["status"] == "check_failed"
-    assert out["verification"]["summary"] == "新增 1 个 #DIV/0!"
-    assert [s["address"] for s in out["data"]["samples"]] == ["A1:B1", "C2"]
-    assert get("read_range").calls[0] == {"address": "A1:B1", "limit": tools_v2.SAMPLE_ROWS}
+def test_bad_batches_are_refused_before_the_host_is_called():
+    import asyncio
+    out = json.loads(asyncio.run(tools_v2.run_write_cells({"ops": []}))["content"][0]["text"])
+    assert out["status"] == "failed"
 
 
 @pytest.mark.parametrize("address,values,expected", [
@@ -238,21 +265,10 @@ def test_values_steps_read_back_the_written_block(address, values, expected):
     assert tools_v2._sample_address("values", {"address": address, "values": values}) == expected
 
 
-@pytest.mark.asyncio
-async def test_a_step_missing_a_parameter_fails_cleanly_and_rolls_back(fake_tools):
-    tools, get, rollbacks = fake_tools
-    get("write_range")._results = [{"success": True, "checkpoint_id": "cp-1"}]
-
-    class Broken:
-        name = "write_formula"
-
-        async def handler(self, args):
-            return args["formula"]  # KeyError, like the real handler without it
-
-    tools["write_formula"] = Broken()
-    out = json.loads((await tools_v2.run_write_cells({"ops": [
-        {"type": "values", "address": "A1", "values": [[1]]},
-        {"type": "formula", "address": "B1"},
-    ]}))["content"][0]["text"])
-    assert rollbacks == ["cp-1"]
-    assert out["status"] == "failed" and "参数缺失" in out["error"] and "重新读" in out["error"]
+def test_the_sidecar_and_host_agree_on_the_step_types():
+    """tools_v2.WRITE_OPS and ToolMutationPolicy.WriteCellsOps must name the same tools."""
+    from pathlib import Path
+    cs = (Path(__file__).resolve().parents[2] / "DeepExcel.AddIn" / "Sidecar" / "ToolMutationPolicy.cs").read_text(encoding="utf-8")
+    block = cs.split("WriteCellsOps = new")[1].split("};")[0]
+    host_ops = dict(re.findall(r'\["(\w+)"\] = "(\w+)"', block))
+    assert host_ops == tools_v2.WRITE_OPS

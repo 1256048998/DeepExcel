@@ -136,7 +136,7 @@ namespace DeepExcel.AddIn.Sidecar
                 if (refusal != null) return refusal;
                 using (target)
                 {
-                    var result = ExecuteGuarded(toolName, args);
+                    var result = toolName == "write_cells" ? ExecuteBatch(args) : ExecuteGuarded(toolName, args);
                     AttachUserEditNotice(result);
                     TrackRepeatedError(result);
                     return result;
@@ -229,7 +229,8 @@ namespace DeepExcel.AddIn.Sidecar
         /// </summary>
         public bool IsExecuting { get; private set; }
 
-        private ToolResult ExecuteGuarded(string toolName, Dictionary<string, object> args)
+        /// <param name="takeBackup">false：调用方（write_cells）已经为整批做过检查点，这一步不再单独备份。</param>
+        private ToolResult ExecuteGuarded(string toolName, Dictionary<string, object> args, bool takeBackup = true)
         {
             CellRect target = default;
             var hasTarget = false;
@@ -243,7 +244,9 @@ namespace DeepExcel.AddIn.Sidecar
                     var ledgerRefusal = CheckLedger(toolName, target);
                     if (ledgerRefusal != null) return ledgerRefusal;
                 }
-
+            }
+            if (ToolMutationPolicy.IsMutating(toolName) && takeBackup)
+            {
                 ToolResult refusal;
                 try
                 {
@@ -272,6 +275,135 @@ namespace DeepExcel.AddIn.Sidecar
                 result.Changes = CellDiff.Compare(target, diffBefore, SafeReadFormulas(target));
             }
             return result;
+        }
+
+        private const string BatchTool = "write_cells";
+
+        /// <summary>
+        /// write_cells：多步写入一次完成。先把每一步的「先读后写」都查一遍（有一步不行就什么都不写），
+        /// 再为整批做一个检查点，然后逐步走原来的写入路径（体检、diff、读写账本照旧），只是不再每步备份；
+        /// 第二步起失败就回到这个检查点，整批撤销。
+        /// </summary>
+        private ToolResult ExecuteBatch(Dictionary<string, object> args)
+        {
+            object raw = null;
+            if (args != null) args.TryGetValue("ops", out raw);
+            if (!ToolMutationPolicy.TryParseWriteCells(raw, out var steps, out var parseError))
+            {
+                return RefuseWrite(BatchTool, parseError, "ops 写成 [{type, ...参数}]，type 见工具说明");
+            }
+
+            foreach (var step in steps)
+            {
+                if (!TryResolveWriteTarget(step.Tool, step.Args, out var target)) continue;
+                var refusal = CheckLedger(step.Tool, target);
+                if (refusal != null) return BatchStepFailed(step, refusal, null);
+            }
+
+            string backupId, checkpointId;
+            ToolResult backupRefusal;
+            try
+            {
+                backupRefusal = EnsureBackupBeforeWrite(BatchTool, args, out backupId, out checkpointId, BatchScope(steps));
+            }
+            catch (Exception ex)
+            {
+                Logger.Instance.Error("ToolDispatcher", "Write guard failed: " + BatchTool, ex);
+                backupId = checkpointId = null;
+                backupRefusal = RefuseWrite(BatchTool, "修改前自动备份失败，为保护数据本次未执行（" + ex.Message + "）", null);
+            }
+            if (backupRefusal != null) return backupRefusal;
+
+            var done = new List<object>();
+            var checks = new List<WriteVerification>();
+            var diffs = new List<CellChanges>();
+            foreach (var step in steps)
+            {
+                var result = ExecuteGuarded(step.Tool, step.Args, takeBackup: false);
+                if (result == null || !result.Success)
+                {
+                    bool? rolledBack = null;
+                    if (step.Index > 0)
+                    {
+                        // 回合备份兼任检查点时（步骤太多 / 工作簿太大）回过去会连带撤销本回合更早的修改，不自动做
+                        if (checkpointId != null)
+                        {
+                            var undo = ExecuteGuarded("rollback", new Dictionary<string, object> { ["snapshot_id"] = checkpointId }, takeBackup: false);
+                            rolledBack = undo != null && undo.Success;
+                        }
+                        else rolledBack = false;
+                    }
+                    var failed = BatchStepFailed(step, result, rolledBack);
+                    failed.BackupSnapshotId = backupId;
+                    return failed;
+                }
+                done.Add(new { step = step.Index + 1, type = step.Type, address = step.Target });
+                if (result.Verification is WriteVerification verification) checks.Add(verification);
+                if (result.Changes is CellChanges diff) diffs.Add(diff);
+            }
+
+            var merged = new ToolResult
+            {
+                Name = BatchTool,
+                Success = true,
+                Data = new { message = "已完成 " + steps.Count + " 步", steps = done },
+                BackupSnapshotId = backupId,
+                CheckpointId = checkpointId,
+            };
+            if (checks.Count > 0)
+            {
+                var problems = checks.Where(c => !c.Ok && !string.IsNullOrWhiteSpace(c.Summary)).Select(c => c.Summary.Trim()).ToList();
+                merged.Verification = new WriteVerification
+                {
+                    Ok = checks.All(c => c.Ok),
+                    Summary = problems.Count > 0 ? string.Join("；", problems) : "写后体检通过",
+                };
+            }
+            if (diffs.Count > 0)
+            {
+                var sheets = diffs.Select(d => d.Sheet).Distinct().ToList();
+                merged.Changes = new CellChanges
+                {
+                    Changed = diffs.Sum(d => d.Changed),
+                    Cells = diffs.Sum(d => d.Cells),
+                    Sheet = sheets.Count == 1 ? sheets[0] : null,
+                    Samples = diffs.SelectMany(d => d.Samples ?? new List<CellChange>()).Take(20).ToList(),
+                };
+            }
+            return merged;
+        }
+
+        /// <summary>整批的检查点范围：各步涉及的表合在一起；有一步拿不准就整本（同 ResolveScope 的原则）。</summary>
+        private SnapshotScope BatchScope(List<ToolMutationPolicy.BatchStep> steps)
+        {
+            var sheets = new List<string>();
+            foreach (var step in steps)
+            {
+                var scope = ToolMutationPolicy.ResolveScope(step.Tool,
+                    key => GetArg<string>(step.Args, key),
+                    () => _excel.GetActiveSheetName());
+                if (scope.WholeWorkbook) return SnapshotScope.Whole();
+                foreach (var sheet in scope.Sheets)
+                {
+                    if (!sheets.Contains(sheet, StringComparer.OrdinalIgnoreCase)) sheets.Add(sheet);
+                }
+            }
+            return sheets.Count == 0 ? SnapshotScope.Whole() : SnapshotScope.ForSheets(sheets.ToArray());
+        }
+
+        private static ToolResult BatchStepFailed(ToolMutationPolicy.BatchStep step, ToolResult result, bool? rolledBack)
+        {
+            var undone = rolledBack == true ? "，前 " + step.Index + " 步已撤销（撤销后之前读过的内容要重新读）"
+                : rolledBack == false ? "，前 " + step.Index + " 步没能自动撤销（用 rollback 传 backup_snapshot_id 撤销本回合）"
+                : "";
+            return new ToolResult
+            {
+                Name = BatchTool,
+                Success = false,
+                Error = "第 " + (step.Index + 1) + " 步（" + step.Type + "）失败" + undone + "：" + (result?.Error ?? "原因未知"),
+                Suggestion = result?.Suggestion,
+                Data = new { failed_step = step.Index + 1, rolled_back = rolledBack == true },
+            };
         }
 
         /// <summary>内联 diff 用：目标区域的公式 / 值（一次 COM 调用）；区域太大或读不了返回 null。</summary>
@@ -455,7 +587,9 @@ namespace DeepExcel.AddIn.Sidecar
             }
         }
 
-        private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId, out string checkpointId)
+        /// <param name="scopeOverride">write_cells 传整批各步涉及的表；其余工具按自己的参数推算。</param>
+        private ToolResult EnsureBackupBeforeWrite(string toolName, Dictionary<string, object> args, out string backupId, out string checkpointId,
+            SnapshotScope scopeOverride = null)
         {
             backupId = null;
             checkpointId = null;
@@ -467,7 +601,7 @@ namespace DeepExcel.AddIn.Sidecar
                 return RefuseWrite(toolName, "没有打开的工作簿，无法在修改前备份，本次未执行", null);
             }
 
-            var scope = ToolMutationPolicy.ResolveScope(toolName,
+            var scope = scopeOverride ?? ToolMutationPolicy.ResolveScope(toolName,
                 key => GetArg<string>(args, key),
                 () => _excel.GetActiveSheetName());
 

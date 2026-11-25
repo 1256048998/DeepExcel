@@ -16,11 +16,13 @@ handler, and the PreToolUse hook checks each step exactly as if the model had
 called the old tool (protected zones, plan mode, the confirmation drawer with
 its preview). No second copy of the safety rules.
 
-Known gaps of this first version (documented in the ledger):
-  * every step still makes its own checkpoint and, for risky steps, its own
-    confirmation -- one checkpoint and one combined preview per call needs the
-    host (C#) to grow a batch entry point;
-  * data validation is not offered: the host has no handler for it yet.
+write_cells is one host call (ToolDispatcher.ExecuteBatch): every step's
+read-before-write check first, then one checkpoint, then the steps through the
+usual write path; a failing later step restores that checkpoint. The hook still
+checks every step (protected zones, plan mode) but asks once, and the host
+shows one combined preview (PreviewBuilder.BuildWriteCells).
+
+Known gap: data validation is not offered -- the host has no handler for it yet.
 """
 from __future__ import annotations
 
@@ -94,6 +96,10 @@ for _name, _actions in COMPOSITES.items():
 
 MAX_WRITE_OPS = 20
 SAMPLE_ROWS = 5
+# One host call runs up to MAX_WRITE_OPS writes plus a checkpoint of a possibly large
+# workbook. The default 60 s would report a timeout while the host is still writing,
+# and the model's retry would then write everything twice.
+BATCH_TIMEOUT_SECONDS = 180.0
 
 
 def is_composite(name: str) -> bool:
@@ -202,6 +208,10 @@ async def run_composite(name: str, args) -> dict:
 
 
 async def run_write_cells(args) -> dict:
+    """One host call (ToolDispatcher.ExecuteBatch): one checkpoint for the whole call,
+    every step through the usual write path, the whole batch undone if a later step
+    fails. The sidecar then adds what the host cannot: the formula pattern check
+    and a readback of what was written."""
     import excel_tools
     from ipc import call_csharp
     try:
@@ -209,40 +219,23 @@ async def run_write_cells(args) -> dict:
     except ValueError as exc:
         return excel_tools._wrap_result({"success": False, "error": str(exc)})
 
-    kinds = [str(op.get("type")) for op in args["ops"]]
-    first_checkpoint = None
-    backup = None
-    steps = []
-    checks = []
-    for index, (tool_name, tool_args) in enumerate(ops):
-        payload = await _run_step(tool_name, tool_args)
-        if first_checkpoint is None and isinstance(payload.get("checkpoint_id"), str):
-            first_checkpoint = payload["checkpoint_id"]
-        if backup is None and isinstance(payload.get("backup_snapshot_id"), str):
-            backup = payload["backup_snapshot_id"]
-        if payload.get("success") is False:
-            rolled_back = False
-            if index > 0 and first_checkpoint:
-                undo = await call_csharp("rollback", {"snapshot_id": first_checkpoint})
-                rolled_back = isinstance(undo, dict) and undo.get("success") is True
-            done = f"，前 {index} 步已撤销（撤销后之前读过的内容要重新读）" if rolled_back else (
-                f"，前 {index} 步没能撤销（用 rollback 传 backup_snapshot_id 撤销本回合）" if index > 0 else "")
-            result = {
-                "success": False,
-                "error": f"第 {index + 1} 步（{kinds[index]}）失败{done}：{payload.get('error') or '原因未知'}",
-                "data": {"failed_step": index + 1, "rolled_back": rolled_back},
-            }
-            if payload.get("suggestion"):
-                result["suggestion"] = payload["suggestion"]
-            if backup:
-                result["backup_snapshot_id"] = backup
-            return excel_tools._wrap_result(result)
-        steps.append({"step": index + 1, "type": kinds[index], "address": tool_args.get("address") or tool_args.get("name")})
-        verification = payload.get("verification")
-        if isinstance(verification, dict):
-            checks.append(verification)
+    result = await call_csharp("write_cells", {"ops": args["ops"]}, timeout=BATCH_TIMEOUT_SECONDS)
+    if not isinstance(result, dict) or result.get("success") is not True:
+        return excel_tools._wrap_result(result if isinstance(result, dict)
+                                        else {"success": False, "error": "宿主没有返回结果"})
 
-    # recalculated sample values and error cells of what was written
+    kinds = [str(op.get("type")) for op in args["ops"]]
+    for (tool_name, tool_args), kind in zip(ops, kinds):
+        address = tool_args.get("address")
+        if not isinstance(address, str):
+            continue
+        if kind == "formula":
+            result = await excel_tools._pattern_check(result, address)
+        elif kind == "values" and excel_tools._has_formula(tool_args.get("values")):
+            values = tool_args["values"]
+            width = max((len(row) for row in values if isinstance(row, list)), default=1)
+            result = await excel_tools._pattern_check(result, address, rows=len(values), columns=width)
+
     samples = []
     for (tool_name, tool_args), kind in zip(ops, kinds):
         address = _sample_address(kind, tool_args) if kind in ("values", "formula", "text") else None
@@ -251,19 +244,8 @@ async def run_write_cells(args) -> dict:
             data = read.get("data") if isinstance(read.get("data"), dict) else {}
             if read.get("success") is not False and data.get("values") is not None:
                 samples.append({"address": address, "values": data.get("values")})
-
-    failed = [c for c in checks if c.get("ok") is False]
-    summaries = [str(c.get("summary")).strip() for c in failed if str(c.get("summary") or "").strip()]
-    result = {
-        "success": True,
-        "data": {"message": f"已完成 {len(steps)} 步", "steps": steps, "samples": samples},
-    }
-    if checks:
-        result["verification"] = {"ok": not failed, "summary": "；".join(summaries) if summaries else "写后体检通过"}
-    if first_checkpoint:
-        result["checkpoint_id"] = first_checkpoint
-    if backup:
-        result["backup_snapshot_id"] = backup
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    result["data"] = {**data, "samples": samples}
     return excel_tools._wrap_result(result)
 
 

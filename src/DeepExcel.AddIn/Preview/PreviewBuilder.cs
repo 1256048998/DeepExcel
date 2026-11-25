@@ -103,6 +103,8 @@ namespace DeepExcel.AddIn.Preview
                     case "write_range":
                     case "write_table":
                         return BuildRangeWrite(toolName, sheet, args);
+                    case "write_cells":
+                        return BuildWriteCells(args);
                     case "clear_range":
                         return BuildClear(toolName, sheet, args);
                     case "delete_rows":

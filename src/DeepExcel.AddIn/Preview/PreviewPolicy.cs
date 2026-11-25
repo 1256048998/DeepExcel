@@ -51,7 +51,7 @@ namespace DeepExcel.AddIn.Preview
         private static readonly HashSet<string> NeedsPreview =
             new HashSet<string>(StringComparer.OrdinalIgnoreCase)
             {
-                "write_range", "write_table", "write_value", "write_formula",
+                "write_range", "write_table", "write_value", "write_formula", "write_cells",
                 "fill_formula_down", "replace_formula",
                 "delete_rows", "delete_columns", "delete_blank_rows",
                 "clear_range", "delete_sheet",
