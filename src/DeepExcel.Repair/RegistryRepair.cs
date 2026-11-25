@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32;
 
@@ -47,6 +48,36 @@ namespace DeepExcel.Repair
             new ComClassSpec(AddInIdentity.MainClsid, AddInIdentity.MainProgId, AddInIdentity.MainClass),
             new ComClassSpec(AddInIdentity.TaskPaneClsid, AddInIdentity.TaskPaneProgId, AddInIdentity.TaskPaneClass)
         };
+
+        /// <summary>
+        /// Whether programs this user starts run elevated.
+        ///
+        /// Repair.exe is started like any other program -- from the Start menu,
+        /// or by an installer that itself runs at the user's level -- so its own
+        /// token is the answer: elevated here means UAC is off or this is the
+        /// built-in Administrator, and then Excel and WPS are elevated too.
+        /// Windows ignores HKCU\Software\Classes for elevated COM clients, which
+        /// is why those machines need the HKLM copy (2026-11-24, user machine:
+        /// HKCU registration correct, activation 0x80070002; same registration
+        /// copied to HKLM, activation succeeded).
+        /// </summary>
+        public static bool HostsRunElevated
+        {
+            get
+            {
+                try
+                {
+                    using (var identity = WindowsIdentity.GetCurrent())
+                    {
+                        return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                    }
+                }
+                catch (Exception)
+                {
+                    return false;
+                }
+            }
+        }
 
         // ------------------------------------------------------------------
         // Verification
@@ -104,9 +135,49 @@ namespace DeepExcel.Repair
                 }
             }
 
+            var elevated = HostsRunElevated;
+            if (elevated)
+            {
+                VerifyMachineRegistration(report, expectedCodeBase, expectedAssembly, version);
+            }
+
             VerifyLoadBehavior(report);
-            VerifyHklmResidual(report);
+            VerifyHklmResidual(report, elevated);
             VerifyResiliency(report);
+        }
+
+        /// <summary>
+        /// Elevated hosts see only HKLM, so there it has to say exactly what the
+        /// HKCU registration says.
+        /// </summary>
+        private static void VerifyMachineRegistration(
+            Report report, string expectedCodeBase, string expectedAssembly, string version)
+        {
+            foreach (var view in Views)
+            {
+                foreach (var spec in Classes)
+                {
+                    var inproc = @"SOFTWARE\Classes\CLSID\" + spec.Clsid + @"\InprocServer32";
+                    string codeBase, assembly, versionedCodeBase, versionedAssembly;
+                    // Both keys, as for HKCU: some Office builds read the
+                    // version-qualified one instead.
+                    if (!TryReadInprocPath(RegistryHive.LocalMachine, view, inproc, out codeBase, out assembly) ||
+                        !TryReadInprocPath(RegistryHive.LocalMachine, view, inproc + "\\" + version,
+                                           out versionedCodeBase, out versionedAssembly) ||
+                        !string.Equals(codeBase, expectedCodeBase, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(versionedCodeBase, expectedCodeBase, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(assembly, expectedAssembly, StringComparison.Ordinal))
+                    {
+                        report.Add(new Finding(
+                            Codes.MachineRegistration,
+                            Severity.Blocking,
+                            "Excel / WPS 以管理员权限运行（已关闭 UAC 或使用内置 Administrator 账户），" +
+                            "Windows 不认只登记给当前用户的加载项；需要补上机器级登记",
+                            true));
+                        return;
+                    }
+                }
+            }
         }
 
         private static void VerifyLoadBehavior(Report report)
@@ -128,14 +199,14 @@ namespace DeepExcel.Repair
         }
 
         /// <summary>
-        /// HKLM wins over HKCU for CLSID resolution. A machine-wide leftover from
+        /// A machine-wide leftover from
         /// an old admin install silently shadows the per-user registration and
         /// points Excel at a DLL path that no longer exists -- the root cause
         /// behind the v0.3.4-v0.4.15 "add-in does not load" reports.
         /// </summary>
-        private static void VerifyHklmResidual(Report report)
+        private static void VerifyHklmResidual(Report report, bool elevated)
         {
-            foreach (var path in HklmResidualPaths())
+            foreach (var path in HklmResidualPaths(includeClasses: !elevated))
             {
                 foreach (var view in Views)
                 {
@@ -156,10 +227,18 @@ namespace DeepExcel.Repair
             }
         }
 
-        private static IEnumerable<string> HklmResidualPaths()
+        /// <summary>
+        /// With elevated hosts the class keys under HKLM are not residue but the
+        /// registration they actually use; VerifyMachineRegistration checks
+        /// them for staleness instead.
+        /// </summary>
+        private static IEnumerable<string> HklmResidualPaths(bool includeClasses)
         {
-            yield return @"SOFTWARE\Classes\CLSID\" + AddInIdentity.MainClsid;
-            yield return @"SOFTWARE\Classes\CLSID\" + AddInIdentity.TaskPaneClsid;
+            if (includeClasses)
+            {
+                yield return @"SOFTWARE\Classes\CLSID\" + AddInIdentity.MainClsid;
+                yield return @"SOFTWARE\Classes\CLSID\" + AddInIdentity.TaskPaneClsid;
+            }
             yield return @"SOFTWARE\Microsoft\Office\Excel\Addins\" + AddInIdentity.MainProgId;
             yield return @"SOFTWARE\Microsoft\Office\16.0\Excel\Addins\" + AddInIdentity.MainProgId;
         }
@@ -201,11 +280,17 @@ namespace DeepExcel.Repair
             var version = AddInIdentity.AssemblyVersion(dllPath);
             var codeBase = AddInIdentity.CodeBase(dllPath);
 
-            foreach (var view in Views)
+            var hives = HostsRunElevated
+                ? new[] { RegistryHive.CurrentUser, RegistryHive.LocalMachine }
+                : new[] { RegistryHive.CurrentUser };
+            foreach (var hive in hives)
             {
-                foreach (var spec in Classes)
+                foreach (var view in Views)
                 {
-                    RegisterComClass(view, spec, dllPath, codeBase, assemblyValue, version);
+                    foreach (var spec in Classes)
+                    {
+                        RegisterComClass(hive, view, spec, dllPath, codeBase, assemblyValue, version);
+                    }
                 }
             }
 
@@ -213,10 +298,10 @@ namespace DeepExcel.Repair
         }
 
         private static void RegisterComClass(
-            RegistryView view, ComClassSpec spec, string dllPath,
+            RegistryHive hive, RegistryView view, ComClassSpec spec, string dllPath,
             string codeBase, string assemblyValue, string version)
         {
-            using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view))
+            using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
             {
                 var clsidPath = @"Software\Classes\CLSID\" + spec.Clsid;
                 var inprocPath = clsidPath + @"\InprocServer32";
@@ -367,9 +452,15 @@ namespace DeepExcel.Repair
 
         private static bool TryReadInprocPath(RegistryView view, string path, out string codeBase, out string assembly)
         {
+            return TryReadInprocPath(RegistryHive.CurrentUser, view, path, out codeBase, out assembly);
+        }
+
+        private static bool TryReadInprocPath(
+            RegistryHive hive, RegistryView view, string path, out string codeBase, out string assembly)
+        {
             codeBase = null;
             assembly = null;
-            using (var baseKey = RegistryKey.OpenBaseKey(RegistryHive.CurrentUser, view))
+            using (var baseKey = RegistryKey.OpenBaseKey(hive, view))
             using (var key = baseKey.OpenSubKey(path))
             {
                 if (key == null)

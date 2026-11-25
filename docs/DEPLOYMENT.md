@@ -122,7 +122,7 @@ python scripts\package_release.py --version 0.4.17 --force-unsigned
 powershell -ExecutionPolicy Bypass -File scripts\verify-install-sandbox.ps1 -Launch -NoPause
 ```
 
-注意 Windows Sandbox 里**没有 Office**，所以它覆盖不了任何依赖 Excel 的步骤（上面第 3 条）。它能验的是 SHA-256、静默安装、注册表写入和卸载残留。没有 Excel 时安装器按「仅 WPS」处理（退出码 0），所以沙箱里 COM 注册 / LoadBehavior / Repair --verify 这 4 项失败是预期的。
+注意 Windows Sandbox 里**没有 Office**，所以它覆盖不了任何依赖 Excel 的步骤（上面第 3 条）。它能验的是 SHA-256、静默安装、注册表写入和卸载残留。**沙箱的默认账户以提升权限运行、UAC 关闭（`EnableLUA=0`），正好是「内置 Administrator / 关了 UAC」那类用户机器：** Windows 对提升进程不认 HKCU 的 COM 登记，所以 v0.6.2 及以前的安装器在沙箱里虽然退出码 0，COM 激活却必然失败——以前把这 4 项失败当成「没有 Excel 的预期」是误判（2026-11-24 在真实用户机上定位，见 `docs/HANDOFF-2026-11-23.md`）。现在安装器在自身以提升权限运行时同时登记到 HKLM，校验失败一律报错；沙箱里这 4 项应当全部通过。
 
 **2026-10 起沙箱有两个坑：**
 

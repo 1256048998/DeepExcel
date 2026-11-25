@@ -141,18 +141,17 @@ def main():
     check("a failed install restores the previous registration",
           "RestorePreviousExcelRegistration" in iss
           and "SnapshotPreviousExcelRegistration" in iss)
-    # WPS activation used to be the last statement of the Excel try block, with
-    # a revert if a later step failed. It is now its own try block, so:
-    #   * an Excel-side failure no longer skips it -- WPS needs only the COM
-    #     classes and its own HKCU entry, but it was unreachable on any machine
-    #     where the Excel half failed (reported from the field, WPS installed
-    #     but unusable), and on machines with no Excel at all;
-    #   * nothing runs after it, so there is no "later step" left to revert for.
-    # What must not regress is the independence itself.
-    check("WPS activation is not chained behind the Excel block",
-          re.search(r"Log\('Excel post-install step failed.*?\n\s*end;\s*\n.*?try\s*\n.*?RegisterWpsComAddIn\(",
+    # WPS has its own try block after the verification, so retiring the old JS
+    # add-in always runs. Its add-in entry is written only when the COM classes
+    # it loads survived verification: an entry for classes that were just rolled
+    # back is a DeepExcel item in WPS that can never start.
+    check("WPS handling is its own block after the verification",
+          re.search(r"Log\('Post-install verification failed.*?\n\s*end;\s*\n.*?try\s*\n.*?RegisterWpsComAddIn\(",
                     iss, re.S) is not None,
-          "an Excel failure must not skip WPS activation")
+          "retiring the JS add-in must not depend on the verification")
+    check("WPS is registered only when the add-in verified",
+          re.search(r"if not PostInstallFailed then\s*begin\s*RegisterWpsComAddIn\(", iss) is not None,
+          "an entry for rolled-back classes cannot start")
     check("a WPS activation failure still fails the install",
           re.search(r"RegisterWpsComAddIn\([^;]*\);.*?except.*?PostInstallFailed := True", iss, re.S)
           is not None)
@@ -174,7 +173,7 @@ def main():
           "jsaddons\\DeepExcel_{#AppVersion}" not in iss and "{#PayloadDir}Wps" not in iss,
           "the JS add-in is retired; WPS loads the COM add-in")
     check("install retires the old JS add-in before registering COM for WPS",
-          re.search(r"try\s*RetireWpsJsAddIn\(\);\s*except.*?end;\s*if ExcelNotActivated then",
+          re.search(r"try\s*RetireWpsJsAddIn\(\);\s*except.*?end;\s*if not PostInstallFailed then",
                     iss, re.S) is not None,
           "a JS entry in publish.xml gives WPS a second, dead DeepExcel tab")
     check("a broken publish.xml does not fail the install",
@@ -192,8 +191,9 @@ def main():
           "selectNodes('*[@name=\"DeepExcel\"]')" in iss)
     check("uninstall also retires the old JS add-in, and survives a broken manifest",
           re.search(r"usUninstall then.*?try\s*RetireWpsJsAddIn\(\);\s*except", iss, re.S) is not None)
-    check("a WPS-only machine keeps the COM classes WPS needs",
-          re.search(r"if ExcelNotActivated then\s*begin\s*RegisterComClass\('\{#MainClsid\}'", iss) is not None)
+    check("nothing re-registers rolled-back classes behind the verification's back",
+          "ExcelNotActivated" not in iss,
+          "the old WPS-only exemption re-registered classes that had just failed")
     check("uninstall removes the WPS COM registration",
           re.search(r"usUninstall then.*?UnregisterWpsComAddIn\('\{#MainProgId\}'\)", iss, re.S) is not None)
 
@@ -241,12 +241,43 @@ def main():
           "ExitProcess@kernel32.dll" in iss and "ExitProcess(4)" in iss)
     check("the failure exit happens after rollback, in ssDone",
           iss.index("PostInstallFailed := True") < iss.index("ExitProcess(4)"))
-    # A WPS-only machine must not end on "安装未完成", but detected Excel still
-    # fails loudly: detection only decides fatality, it never skips Excel.
-    check("Excel failure is fatal only when Excel was detected",
-          re.search(r"if ExcelInstalled then\s*begin\s*PostInstallFailed := True;", iss) is not None
-          and "ExcelNotActivated := not ExcelInstalled;" in iss,
-          "a WPS-only install would end on a red failure dialog")
+    # Activation needs .NET and the registration, not Excel. The old exemption
+    # ("a WPS-only machine fails by definition") is what turned the elevated-host
+    # failure of 2026-11-24 into a "successful" install whose add-in could never
+    # load, so a failed verification is fatal on every machine.
+    check("a failed verification is fatal with or without Excel",
+          re.search(r"except\s*errorMessage := GetExceptionMessage\(\);.*?"
+                    r"UnregisterDeepExcel\(\);\s*end;\s*PostInstallFailed := True;", iss, re.S) is not None,
+          "the failure must not depend on whether Excel was detected")
+    check(".NET 4.8 is required on WPS-only machines too",
+          "(ExcelInstalled or IsWpsInstalled()) and (not IsDotNet48Detected())" in iss,
+          "WPS loads the same .NET add-in")
+
+    # ---- elevated hosts (UAC off / built-in Administrator) -----------------
+    # Windows ignores HKCU\Software\Classes for elevated COM clients. Where
+    # UAC is off every program is elevated, Excel and WPS included, so a
+    # per-user-only registration is invisible to them (field case 2026-11-24:
+    # 0x80070002; fixed on that machine by the same registration in HKLM).
+    check("an elevated Setup also registers the classes machine-wide",
+          "function MachineRegistrationNeeded" in iss and "Result := IsAdmin();" in iss
+          and re.search(r"if MachineRegistrationNeeded\(\) then\s*begin.*?RegisterComClassView\(HKLM64.*?"
+                        r"RegisterComClassView\(HKLM32", iss, re.S) is not None,
+          "elevated Excel / WPS cannot see an HKCU-only registration")
+    check("uninstall also removes the machine-wide classes",
+          re.search(r"procedure UnregisterMachineClasses.*?RegDeleteKeyIncludingSubkeys\(HKLM64, 'SOFTWARE\\Classes\\CLSID\\'",
+                    iss, re.S) is not None
+          and re.search(r"procedure UnregisterComClass\(.*?\nbegin\s*UnregisterMachineClasses\(", iss, re.S) is not None)
+    init = iss[iss.find("function InitializeSetup()"):iss.find("procedure CurStepChanged")]
+    check("an elevated Setup replaces machine-wide residue without asking",
+          re.search(r"HklmResidualExists\(\) and MachineRegistrationNeeded\(\).*?"
+                    r"if HklmResidualExists\(\) then\s*begin\s*if IsSilentRun\(\) then", init, re.S) is not None,
+          "otherwise the silent updater stops on a prompt it can never answer")
+    check("a failed verification also drops the HKLM copy when restoring",
+          re.search(r"RestorePreviousExcelRegistration\(\);\s*UnregisterMachineClasses\(", iss) is not None,
+          "elevated hosts would keep loading the version that just failed")
+    check("WebView2 is installed whatever host was detected",
+          re.search(r"if WebView2NeedsInstall\(\) then\s*RunAndRequire", iss) is not None,
+          "the verification treats a missing runtime as blocking on every machine")
     check("Excel is still always registered regardless of detection",
           "ExcelEnabled := True;" in iss)
 
