@@ -384,13 +384,16 @@ cp dist/update.json /srv/deepexcel/updates/stable.json
 - 不要使用 `MsgBox`、`InputBox` 或独立 `End`；
 - 如果提示 VBA 工程未授权，只需启用“信任对 VBA 工程对象模型的访问”，不建议启用所有宏。
 
-### WPS 没有图标或任务窗格打不开
+### WPS 里没有 DeepExcel 选项卡或面板打不开
 
-1. 确认使用最新安装包并完全重启 WPS；
-2. 检查 `%APPDATA%\kingsoft\wps\jsaddons\publish.xml` 是否包含 DeepExcel；
-3. 检查同目录下是否存在 `DeepExcel_<版本>` 文件夹；
-4. 按 `Alt+F12` 打开 WPS 加载项调试器，查看第一条红色 Console 错误；
-5. 将 WPS 版本号、错误截图和 Console 错误一起反馈。
+1. 确认使用最新安装包并完全重启 WPS（任务管理器里没有残留的 `et.exe` / `wps.exe`）；
+2. WPS 若提示“已禁用的COM加载项”，点 DeepExcel.AddIn 旁的“启用”；
+   若「工具」（或「开发工具」）→「COM 加载项」列表里没有 DeepExcel、只提示「此电脑已禁用可能拖慢启动速度的第三方加载项」，点「点击此处进行管理」，在弹出的确认框里放行 DeepExcel，确定后重开 WPS（这是 WPS 自己的开关，安装器清不掉）；
+3. 检查注册表 `HKCU\Software\Kingsoft\Office\ET\AddIns\DeepExcel.AddIn` 存在且 `LoadBehavior` 为 3；
+4. 从「开始菜单 → DeepExcel → DeepExcel 诊断与修复」修复 COM 注册；
+5. 将 WPS 版本号、截图和 `%APPDATA%\DeepExcel\logs\` 下的日志一起反馈。
+
+详见 [WPS 说明](docs/README-WPS.md)。
 
 ### 如何卸载
 

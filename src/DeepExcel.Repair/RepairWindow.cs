@@ -118,7 +118,9 @@ namespace DeepExcel.Repair
                 {
                     if (!report.HasBlocking)
                     {
-                        _status.Text = "DeepExcel 状态正常。如果 Excel 中仍看不到选项卡，请完全关闭 Excel 后重新打开。";
+                        _status.Text = report.Notes.Count > 0
+                            ? "DeepExcel 状态正常。仍看不到选项卡时，请按结果里的「提示」操作，再完全关闭 Excel / WPS 后重新打开。"
+                            : "DeepExcel 状态正常。如果 Excel 中仍看不到选项卡，请完全关闭 Excel 后重新打开。";
                         _status.ForeColor = Color.ForestGreen;
                         _repair.Enabled = false;
                     }
