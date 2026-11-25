@@ -1410,11 +1410,21 @@ async def send_keys(args):
 
 
 def register_all_tools() -> list:
-    """返回全部 @tool 工具对象列表。
+    """返回给模型的全部工具。
 
     这份列表同时决定 MCP 注册和 allowed_tools，是工具清单的唯一来源；
     system_prompt.py 的 <available-tools> 由 tests/test_excel_tools.py 与它对齐。
+    打开 DEEPEXCEL_TOOLS_V2 时，30 个写入/结构/图表/透视工具换成 4 个合并工具（见 tools_v2）。
     """
+    import tools_v2
+    tools = base_tools()
+    if not tools_v2.enabled():
+        return tools
+    return [t for t in tools if t.name not in tools_v2.REPLACED] + tools_v2.build_tools()
+
+
+def base_tools() -> list:
+    """一个个独立的工具（v1 工具集）；合并工具的每一步也是调用它们。"""
     tools = [
         read_workbook, read_selection, read_range, find, list_objects, inspect_sheet, explore_workbook,
         read_attachment,

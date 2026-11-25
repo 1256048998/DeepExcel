@@ -118,7 +118,13 @@ describe('applyUiEvent', () => {
 describe('toolCatalog', () => {
   // 侧车注册表是真相来源：新增工具没写中文文案，面板就会显示英文函数名
   const py = readFileSync(resolve(__dirname, '../../../DeepExcel.Sidecar/excel_tools.py'), 'utf-8')
-  const registered = [...py.matchAll(/@tool\(\s*"(\w+)"/g)].map(m => m[1])
+  // tools_v2.py: the converged set behind DEEPEXCEL_TOOLS_V2 (write_cells plus the action-table tools)
+  const v2 = readFileSync(resolve(__dirname, '../../../DeepExcel.Sidecar/tools_v2.py'), 'utf-8')
+  const registered = [
+    ...[...py.matchAll(/@tool\(\s*"(\w+)"/g)].map(m => m[1]),
+    ...[...v2.matchAll(/tool\("(\w+)"/g)].map(m => m[1]),
+    ...[...v2.matchAll(/\(\s*"(\w+)",\s*\w+_ACTIONS,/g)].map(m => m[1]),
+  ]
 
   it('parses the sidecar registry', () => {
     expect(registered.length).toBeGreaterThan(40)
@@ -154,6 +160,17 @@ describe('toolCatalog', () => {
     expect(toolLabel('write_range', { address: 'A1', values: { __shape: [500, 3], head: [] } })).toBe('批量写入 A1 500 行 × 3 列')
     expect(toolLabel('execute_vba', { code: 'Sub A()\nEnd Sub' })).toBe('运行 VBA（2 行）')
     expect(toolLabel('unknown_tool')).toBe('unknown_tool')
+  })
+
+  it('labels the converged tools as the tool they run', () => {
+    expect(registered).toEqual(expect.arrayContaining(['write_cells', 'chart', 'pivot', 'edit_structure']))
+    expect(toolLabel('mcp__excel__chart', { action: 'title', title: '月度销售' })).toBe('设置图表标题「月度销售」')
+    expect(toolLabel('edit_structure', { action: 'delete_rows', row: 3, count: 2 })).toBe('从第 3 行起删除 2 行')
+    expect(toolLabel('pivot', { action: 'nope' })).toBe('pivot')
+    expect(toolLabel('write_cells', { ops: [{ type: 'style', address: 'A1:F1' }] })).toBe('设置样式 A1:F1')
+    expect(toolLabel('write_cells', { ops: [
+      { type: 'add_sheet', name: '汇总' }, { type: 'values', address: '汇总!A1' }, { type: 'style', address: '汇总!A1' },
+    ] })).toBe('写入 3 步 汇总、汇总!A1')
   })
 })
 

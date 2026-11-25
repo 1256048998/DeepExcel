@@ -115,8 +115,8 @@ def test_generated_skill_still_parses_for_the_sidecar(source, monkeypatch):
 
 
 def test_bundled_skills_declare_their_tools():
-    from excel_tools import register_all_tools
-    registered = {t.name for t in register_all_tools()}
+    from excel_tools import base_tools
+    registered = {t.name for t in base_tools()}
     for skill in knowledge_skills._scan(knowledge_skills.BUNDLED_DIR).values():
         tools = knowledge_errors.skill_tools((skill.directory / "SKILL.md").read_text(encoding="utf-8"))
         assert tools, skill.name

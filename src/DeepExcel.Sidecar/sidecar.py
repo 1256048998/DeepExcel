@@ -78,6 +78,7 @@ import explorer
 import selfcheck
 import knowledge_skills
 import permission_modes
+import tools_v2
 import turn_context
 import workbook_memory
 import ui_events
@@ -167,6 +168,34 @@ async def _pre_tool_use_hook(input_data: dict, tool_use_id, context) -> dict:
                 "reason": "只允许 DeepExcel 工具",
             }
         bare_name = tool_name.replace("mcp__excel__", "")
+
+        # ★ 合并工具（DEEPEXCEL_TOOLS_V2）：拆成它会调用的那几个原有工具，逐个走下面同一套检查
+        # （禁区、只出方案、确认抽屉和预览），任何一步不放行，整个调用就不放行
+        if tools_v2.is_composite(bare_name):
+            try:
+                steps = tools_v2.resolve(bare_name, input_data.get("tool_input") or {})
+            except ValueError as exc:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": str(exc),
+                    },
+                    "reason": "参数不对",
+                }
+            for step_name, step_args in steps:
+                verdict = await _pre_tool_use_hook(
+                    {"tool_name": "mcp__excel__" + step_name, "tool_input": step_args}, tool_use_id, context)
+                decision = (verdict.get("hookSpecificOutput") or {}).get("permissionDecision")
+                if decision != "allow":
+                    return verdict
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "每一步都已放行",
+                }
+            }
 
         # ★ Computer Use 门槛检查必须在高风险判断之前。
         # 它是一道"拒绝"门禁，不是"询问"门禁：用户没要求截图时，AI 自作主张调用
@@ -1330,7 +1359,8 @@ async def main():
         explorer.configure(env_config, model)
         server = create_sdk_mcp_server(name="excel", tools=all_tools)
         # 知识技能索引放在末尾：正文不常驻，模型按需 load_skill
-        system_prompt = SYSTEM_PROMPT + knowledge_skills.index_prompt()
+        base_prompt = tools_v2.system_prompt(SYSTEM_PROMPT) if tools_v2.enabled() else SYSTEM_PROMPT
+        system_prompt = base_prompt + knowledge_skills.index_prompt()
 
         options = ClaudeAgentOptions(
             model=model,

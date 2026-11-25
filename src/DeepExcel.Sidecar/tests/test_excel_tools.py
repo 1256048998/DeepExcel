@@ -37,7 +37,8 @@ async def test_clarify_intent_calls_csharp_clarify():
     assert "COUNTA计数" in result["content"][0]["text"]
 
 
-def test_register_all_tools_returns_list_with_expected_names():
+def test_register_all_tools_returns_list_with_expected_names(monkeypatch):
+    monkeypatch.delenv("DEEPEXCEL_TOOLS_V2", raising=False)  # v1 tool set; v2 is tests/test_tools_v2.py
     from excel_tools import register_all_tools
     tools = register_all_tools()
     # @tool 装饰后的对象可能有 .name 属性或需要查 __name__
@@ -126,7 +127,7 @@ def test_placeholder_tools_are_not_offered_to_the_model(name):
     assert f'"{name}"' not in open(sidecar.__file__, encoding="utf-8").read()
 
 
-def test_system_prompt_tool_list_matches_what_is_registered():
+def test_system_prompt_tool_list_matches_what_is_registered(monkeypatch):
     """<available-tools> 必须与实际注册的工具一致。
 
     曾经清单里写着根本不存在的 remove_duplicates（它是 clean_data 的一个操作），
@@ -134,6 +135,7 @@ def test_system_prompt_tool_list_matches_what_is_registered():
     """
     import re
     from system_prompt import SYSTEM_PROMPT
+    monkeypatch.delenv("DEEPEXCEL_TOOLS_V2", raising=False)  # v1 tool set; v2 is tests/test_tools_v2.py
     block = SYSTEM_PROMPT.split("<available-tools>")[1].split("</available-tools>")[0]
     # 只看每行冒号后面、括号外的工具名；括号里是说明文字
     listed = set()

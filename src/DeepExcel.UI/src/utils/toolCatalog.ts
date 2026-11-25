@@ -154,6 +154,47 @@ export const TOOL_LABELS: Record<string, Label> = {
   send_keys: a => at('发送按键', a.keys),
 }
 
+// Converged tools (sidecar tools_v2, behind DEEPEXCEL_TOOLS_V2): each call is
+// one of the tools above, picked by action / op type -- label it as that tool.
+const COMPOSITE_ACTIONS: Record<string, Record<string, string>> = {
+  chart: {
+    create: 'create_chart', combo: 'create_combo_chart', data_labels: 'add_data_labels',
+    title: 'set_chart_title', colors: 'set_chart_colors', export: 'export_chart',
+  },
+  pivot: {
+    create: 'create_pivot_table', refresh: 'refresh_pivot', group_date: 'group_pivot_date',
+    value_display: 'set_pivot_value_display', totals: 'set_pivot_totals', slicer: 'add_pivot_slicer',
+  },
+  edit_structure: {
+    add_sheet: 'add_sheet', delete_sheet: 'delete_sheet', rename_sheet: 'rename_sheet',
+    insert_rows: 'insert_rows', delete_rows: 'delete_rows', insert_columns: 'insert_columns',
+    delete_columns: 'delete_columns', freeze_panes: 'freeze_panes', clear: 'clear_range',
+  },
+}
+const WRITE_OPS: Record<string, string> = {
+  values: 'write_range', formula: 'write_formula', text: 'write_value', number_format: 'set_number_format',
+  style: 'set_cell_style', merge: 'merge_cells', unmerge: 'unmerge_cells', column_width: 'set_column_width',
+  add_sheet: 'add_sheet',
+}
+
+for (const [name, actions] of Object.entries(COMPOSITE_ACTIONS)) {
+  TOOL_LABELS[name] = a => {
+    const target = actions[s(a.action)]
+    const label = target ? TOOL_LABELS[target] : undefined
+    return label ? label(a) : name
+  }
+}
+
+TOOL_LABELS.write_cells = a => {
+  const ops = Array.isArray(a.ops) ? (a.ops as Args[]) : []
+  if (ops.length === 1) {
+    const label = TOOL_LABELS[WRITE_OPS[s(ops[0]?.type)]]
+    if (label) return label(ops[0] ?? {})
+  }
+  const where = Array.from(new Set(ops.map(op => s(op?.address || op?.name)).filter(Boolean))).slice(0, 3)
+  return `写入 ${ops.length} 步${where.length ? ` ${where.join('、')}` : ''}`.trim()
+}
+
 export function toolLabel(name: string, args?: Args): string {
   const bare = (name || '').replace(/^mcp__excel__/, '')
   const label = TOOL_LABELS[bare]
