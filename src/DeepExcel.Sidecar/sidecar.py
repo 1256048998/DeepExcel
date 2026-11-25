@@ -1466,7 +1466,15 @@ async def main():
             """断开当前客户端，用 resume 连回 session_id 那段会话"""
             import dataclasses
             fresh = ClaudeSDKClient(options=dataclasses.replace(options, resume=session_id))
-            await fresh.connect()
+            try:
+                await fresh.connect()
+            except BaseException:
+                # A half-started CLI process would otherwise outlive the fallback
+                try:
+                    await fresh.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
             old = current["client"]
             current["client"] = fresh
             if old is not None:
